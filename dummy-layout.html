@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dummy Parser Layout</title>
+    <style>
+      :root {
+        --bg: #f6f7fb;
+        --panel: #ffffff;
+        --ink: #1f2330;
+        --muted: #667085;
+        --line: #d8dce8;
+        --accent: #0f6fff;
+        --accent-soft: #e8f0ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Manrope", "Avenir Next", "Segoe UI", sans-serif;
+        background: radial-gradient(
+          circle at 20% 0%,
+          #ffffff 0%,
+          var(--bg) 55%
+        );
+        color: var(--ink);
+        min-height: 100vh;
+      }
+
+      .app {
+        display: grid;
+        grid-template-rows: 72px 1fr 68px;
+        min-height: 100vh;
+      }
+
+      .top {
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(95deg, #ffffff, #f8fafe);
+        display: grid;
+        grid-template-columns: 1fr auto;
+        padding: 14px 18px;
+        gap: 16px;
+      }
+
+      .controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .url-input {
+        width: min(520px, 52vw);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 9px 10px;
+        font-size: 14px;
+      }
+
+      .load-btn {
+        border: 1px solid #0a58d6;
+        background: #0f6fff;
+        color: white;
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .status {
+        font-size: 14px;
+        color: var(--muted);
+      }
+
+      .status strong {
+        color: var(--ink);
+      }
+
+      .content {
+        display: grid;
+        grid-template-columns: 280px 1fr 320px;
+        gap: 14px;
+        padding: 14px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .panel-head {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+        font-weight: 700;
+      }
+
+      .panel-body {
+        padding: 12px;
+        overflow: auto;
+        min-height: 0;
+      }
+
+      .toc-node {
+        margin: 2px 0;
+      }
+
+      .toc-btn {
+        width: 100%;
+        text-align: left;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        padding: 8px 10px;
+        background: transparent;
+        color: var(--ink);
+        cursor: pointer;
+        font-size: 14px;
+      }
+
+      .toc-btn:hover {
+        border-color: var(--line);
+        background: #f9fafc;
+      }
+
+      .toc-btn.active {
+        background: var(--accent-soft);
+        border-color: #b7ceff;
+        color: #0a47a3;
+        font-weight: 700;
+      }
+
+      .toc-children {
+        margin-left: 12px;
+        border-left: 1px dashed #cfd6e8;
+        padding-left: 8px;
+      }
+
+      .title {
+        font-size: 26px;
+        margin: 2px 0 8px;
+        line-height: 1.2;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 12px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+        background: #fcfdff;
+      }
+
+      .card h4 {
+        margin: 0 0 6px;
+        font-size: 14px;
+      }
+
+      .card p,
+      .aside-item p {
+        margin: 0;
+        font-size: 14px;
+        color: #4c556b;
+      }
+
+      /* List box styles */
+      .list-box {
+        border: 1px dashed #e1e6f2;
+        border-radius: 10px;
+        padding: 8px;
+        margin-bottom: 10px;
+        background: #fbfcff;
+      }
+
+      .list-item {
+        border: 1px solid #eef3ff;
+        border-radius: 8px;
+        padding: 8px;
+        margin: 6px 0 6px 8px;
+        background: #ffffff;
+      }
+
+      .list-item .label {
+        font-size: 13px;
+        color: #24324a;
+      }
+
+      .aside-item {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        margin-bottom: 10px;
+      }
+
+      .aside-item h5 {
+        margin: 0 0 5px;
+        font-size: 13px;
+        color: #344054;
+      }
+
+      .bottom {
+        border-top: 1px solid var(--line);
+        background: #fff;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        overflow-x: auto;
+      }
+
+      .tab {
+        border: 1px solid var(--line);
+        background: #fff;
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-size: 13px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+
+      .tab.active {
+        border-color: #a8c3ff;
+        background: #eef4ff;
+        color: #174ea6;
+        font-weight: 700;
+      }
+
+      @media (max-width: 980px) {
+        .content {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto auto auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header class="top" aria-live="polite">
+        <div>
+          <div style="font-weight: 800">Parser Dummy View</div>
+          <div class="status" id="statusLine"></div>
+        </div>
+        <div class="controls">
+          <input
+            id="urlInput"
+            class="url-input"
+            value="https://developer.mozilla.org/en-US/blog/mdn-turns-20/"
+            aria-label="URL to parse"
+          />
+          <button id="loadBtn" class="load-btn">Load Parsed IR</button>
+        </div>
+      </header>
+
+      <main class="content">
+        <section class="panel" aria-label="Table of contents">
+          <div class="panel-head">Left: TOC</div>
+          <div class="panel-body" id="tocContainer"></div>
+        </section>
+
+        <section class="panel" aria-label="Active content">
+          <div class="panel-head">Center: Active Content</div>
+          <div class="panel-body" id="activeContent"></div>
+        </section>
+
+        <aside class="panel" aria-label="Aside section">
+          <div class="panel-head">Right: Aside For Active Section</div>
+          <div class="panel-body" id="asideContent"></div>
+        </aside>
+      </main>
+
+      <footer class="bottom" id="tabsBar" aria-label="Open pages tabs"></footer>
+    </div>
+
+    <script type="module">
+      import { parsePageToIR } from "/src/ir/parser.ts";
+
+      let appData = {
+        toc: { id: "main", label: "Main", children: [] },
+        byId: {},
+        tabs: [],
+        activeId: null,
+      };
+      let currentIR = null;
+
+      const statusLine = document.getElementById("statusLine");
+      const tocContainer = document.getElementById("tocContainer");
+      const activeContent = document.getElementById("activeContent");
+      const asideContent = document.getElementById("asideContent");
+      const tabsBar = document.getElementById("tabsBar");
+      const urlInput = document.getElementById("urlInput");
+      const loadBtn = document.getElementById("loadBtn");
+
+      function normalizeLabel(value, fallback = "Untitled") {
+        if (typeof value === "string" && value.trim()) return value.trim();
+        return fallback;
+      }
+
+      function buildListStruct(nodeId, nodes) {
+        const node = nodes[nodeId];
+        if (!node) return null;
+        // children of a list are usually listitems; listitems may contain nested lists
+        const items = (node.children ?? [])
+          .map((childId) => {
+            const child = nodes[childId];
+            if (!child) return null;
+            const label = normalizeLabel(child.label, childId);
+            const sublistChildren = (child.children ?? []).filter((cid) => {
+              const c = nodes[cid];
+              return !!c && (c.role === "list" || c.role === "listitem");
+            });
+            const sublist =
+              child.children && child.children.length
+                ? child.children
+                    .map((cid) => buildListStruct(cid, nodes))
+                    .filter(Boolean)
+                : [];
+
+            return {
+              id: childId,
+              label,
+              sublist: sublist.length ? sublist : null,
+            };
+          })
+          .filter(Boolean);
+
+        return { id: nodeId, items };
+      }
+
+      function collectSubtreeIds(node) {
+        const ids = [node.id];
+        for (const child of node.children ?? []) {
+          ids.push(...collectSubtreeIds(child));
+        }
+        return ids;
+      }
+
+      function collectContentIds(rootId, nodes) {
+        const ids = [];
+        const visited = new Set();
+        const walk = (id) => {
+          if (!id || visited.has(id)) return;
+          visited.add(id);
+          const node = nodes[id];
+          if (!node) return;
+          if (!node.landmark) ids.push(id);
+          for (const childId of node.children ?? []) {
+            walk(childId);
+          }
+        };
+        walk(rootId);
+        return ids;
+      }
+
+      function buildAppDataFromIR(ir) {
+        const tocRoot = ir.landmarks?.children?.find(
+          (node) => node.id === "main",
+        ) ?? {
+          id: "main",
+          label: "Main",
+          children: [],
+        };
+
+        const sectionNodes = tocRoot.children ?? [];
+        const tabs = sectionNodes.map((section, idx) => ({
+          id: `tab-${idx}`,
+          label: normalizeLabel(section.label, section.id),
+          target: section.id,
+        }));
+
+        const byId = {};
+
+        for (const section of sectionNodes) {
+          const sectionNode = ir.nodes[section.id];
+          const subtreeIds = collectSubtreeIds(section);
+          const subsectionItems = (section.children ?? []).map((child) => ({
+            id: child.id,
+            label: normalizeLabel(child.label, child.id),
+          }));
+
+          const contentIds = collectContentIds(section.id, ir.nodes).slice(
+            0,
+            12,
+          );
+          const content = contentIds.map((id) => {
+            const node = ir.nodes[id];
+            if (!node) return { type: "text", text: `missing-${id}`, id };
+            if (node.role === "img") {
+              return {
+                type: "img",
+                src: node.attributes?.src ?? null,
+                alt: normalizeLabel(node.label, id),
+                id,
+              };
+            }
+            if (node.role === "link") {
+              return {
+                type: "link",
+                href: node.attributes?.href ?? null,
+                text: normalizeLabel(node.label, id),
+                id,
+              };
+            }
+            if (node.role === "list") {
+              // build nested list structure
+              const struct = buildListStruct(id, ir.nodes);
+              return { type: "list", struct, id };
+            }
+            return {
+              type: "text",
+              text: `${normalizeLabel(node.label, id)} [${node.role ?? "generic"}]`,
+              id,
+            };
+          });
+
+          // deduplicate content items: skip unlabeled fallback nodes and collapse repeated labels
+          const deduped = [];
+          const seenLabels = new Set();
+          for (const item of content) {
+            if (!item) continue;
+            if (item.type === "text") {
+              // strip trailing role marker
+              const textOnly = (item.text || "")
+                .replace(/\s*\[.*\]$/, "")
+                .trim();
+              // skip unlabeled fallback like 'section-1-node-1'
+              if (/^[a-zA-Z0-9_-]+$/.test(textOnly)) continue;
+              if (seenLabels.has(textOnly)) continue;
+              seenLabels.add(textOnly);
+              deduped.push(item);
+              continue;
+            }
+            // images and lists: include always but avoid duplicate image srcs
+            if (item.type === "img") {
+              const src = item.src || "";
+              if (seenLabels.has(src)) continue;
+              seenLabels.add(src);
+              deduped.push(item);
+              continue;
+            }
+            if (item.type === "list") {
+              deduped.push(item);
+              continue;
+            }
+            if (item.type === "link") {
+              const href = item.href || "";
+              if (seenLabels.has(href)) continue;
+              seenLabels.add(href);
+              deduped.push(item);
+              continue;
+            }
+          }
+
+          const finalContent = deduped;
+
+          const aside = subtreeIds
+            .filter((id) => {
+              const node = ir.nodes[id];
+              return !!node && node.role === "complementary";
+            })
+            .map((id, idx) => {
+              const node = ir.nodes[id];
+              return {
+                title: `Aside ${idx + 1}`,
+                text: normalizeLabel(node?.label, id),
+                id,
+              };
+            });
+
+          byId[section.id] = {
+            title: normalizeLabel(sectionNode?.label, section.id),
+            content:
+              finalContent.length > 0
+                ? finalContent
+                : ["No content nodes discovered for this section yet."],
+            aside,
+            subsectionItems,
+          };
+        }
+
+        return {
+          toc: {
+            id: tocRoot.id,
+            label: normalizeLabel(tocRoot.label, "Main"),
+            children: sectionNodes,
+          },
+          byId,
+          tabs,
+          activeId: sectionNodes.length > 0 ? sectionNodes[0].id : null,
+        };
+      }
+
+      function setStatus(text) {
+        statusLine.innerHTML = `<strong>Status:</strong> ${text}`;
+      }
+
+      function resolveImgSrc(src) {
+        if (!src) return null;
+        try {
+          // If src is already absolute this will normalize; base on parsed page URL when relative
+          if (currentIR && currentIR.meta && currentIR.meta.url) {
+            return new URL(src, currentIR.meta.url).href;
+          }
+          return new URL(src, window.location.href).href;
+        } catch (e) {
+          return src;
+        }
+      }
+
+      function renderTOCNode(node, depth = 0) {
+        const wrap = document.createElement("div");
+        wrap.className = "toc-node";
+
+        if (node.id !== "main") {
+          const btn = document.createElement("button");
+          btn.className =
+            "toc-btn" + (node.id === appData.activeId ? " active" : "");
+          btn.textContent = normalizeLabel(node.label, node.id);
+          btn.style.paddingLeft = `${10 + depth * 12}px`;
+          btn.addEventListener("click", () => {
+            appData.activeId = node.id;
+            setStatus(
+              `Active section changed to ${normalizeLabel(node.label, node.id)}`,
+            );
+            render();
+          });
+          wrap.appendChild(btn);
+        }
+
+        if (node.children && node.children.length) {
+          const children = document.createElement("div");
+          children.className = "toc-children";
+          for (const child of node.children) {
+            children.appendChild(renderTOCNode(child, depth + 1));
+          }
+          wrap.appendChild(children);
+        }
+
+        return wrap;
+      }
+
+      function renderCenter() {
+        const data = appData.byId[appData.activeId];
+        if (!data) {
+          activeContent.innerHTML =
+            "<p class='meta'>No active section selected.</p>";
+          return;
+        }
+
+        activeContent.innerHTML = "";
+
+        const title = document.createElement("h2");
+        title.className = "title";
+        title.textContent = data.title;
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `activeId: ${appData.activeId}`;
+
+        activeContent.appendChild(title);
+        activeContent.appendChild(meta);
+
+        const subsectionCard = document.createElement("article");
+        subsectionCard.className = "card";
+        subsectionCard.innerHTML = `<h4>Sub-sections</h4><p>${
+          data.subsectionItems?.length
+            ? data.subsectionItems
+                .map((item) => normalizeLabel(item.label, item.id))
+                .join(" | ")
+            : "No sub-sections"
+        }</p>`;
+        activeContent.appendChild(subsectionCard);
+
+        for (const item of data.content) {
+          if (item.type === "list") {
+            const container = document.createElement("div");
+            container.className = "list-box";
+            const title = document.createElement("h4");
+            title.textContent = "List";
+            container.appendChild(title);
+
+            const renderListItems = (struct, parentEl) => {
+              if (!struct || !struct.items) return;
+              for (const it of struct.items) {
+                const li = document.createElement("div");
+                li.className = "list-item";
+                const lbl = document.createElement("div");
+                lbl.className = "label";
+                lbl.textContent = it.label;
+                li.appendChild(lbl);
+                if (it.sublist && it.sublist.length) {
+                  for (const sub of it.sublist) {
+                    const subContainer = document.createElement("div");
+                    subContainer.style.marginLeft = "8px";
+                    renderListItems(sub, subContainer);
+                    li.appendChild(subContainer);
+                  }
+                }
+                parentEl.appendChild(li);
+              }
+            };
+
+            renderListItems(item.struct, container);
+            activeContent.appendChild(container);
+            continue;
+          }
+
+          if (item.type === "link") {
+            const card = document.createElement("article");
+            card.className = "card";
+            const resolved = resolveImgSrc(item.href);
+            const a = document.createElement("a");
+            a.href = resolved || item.href || "#";
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            a.textContent = item.text || item.href || "link";
+            const meta = document.createElement("div");
+            meta.className = "meta";
+            meta.textContent = `URL: ${a.href}`;
+            card.appendChild(a);
+            card.appendChild(meta);
+            activeContent.appendChild(card);
+            continue;
+          }
+
+          const card = document.createElement("article");
+          card.className = "card";
+          if (item.type === "img") {
+            const imgEl = document.createElement("img");
+            imgEl.style.maxWidth = "100%";
+            imgEl.style.borderRadius = "8px";
+            const resolved = resolveImgSrc(item.src);
+            if (resolved) imgEl.src = resolved;
+            imgEl.alt = item.alt || "";
+            card.innerHTML = `<h4>Image</h4>`;
+            card.appendChild(imgEl);
+          } else {
+            card.innerHTML = `<h4>Content Block</h4><p>${item.text}</p>`;
+          }
+          activeContent.appendChild(card);
+        }
+      }
+
+      function renderAside() {
+        const data = appData.byId[appData.activeId];
+        asideContent.innerHTML = "";
+
+        if (!data || !data.aside.length) {
+          asideContent.innerHTML =
+            "<p class='meta'>No aside data for this section.</p>";
+          return;
+        }
+
+        for (const item of data.aside) {
+          const box = document.createElement("div");
+          box.className = "aside-item";
+          // if aside refers to an image node, render image
+          const ref = currentIR?.nodes?.[item.id];
+          if (ref && ref.role === "img") {
+            const img = document.createElement("img");
+            img.style.maxWidth = "100%";
+            img.style.borderRadius = "8px";
+            const resolved = resolveImgSrc(ref.attributes?.src);
+            if (resolved) img.src = resolved;
+            img.alt = normalizeLabel(ref.label, item.id);
+            box.innerHTML = `<h5>${item.title}</h5>`;
+            box.appendChild(img);
+          } else if (ref && ref.role === "link") {
+            const resolved = resolveImgSrc(ref.attributes?.href);
+            box.innerHTML = `<h5>${item.title}</h5>`;
+            const a = document.createElement("a");
+            a.href = resolved || ref.attributes?.href || "#";
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            a.textContent = normalizeLabel(ref.label, item.id) || a.href;
+            box.appendChild(a);
+          } else {
+            box.innerHTML = `<h5>${item.title}</h5><p>${item.text}</p>`;
+          }
+          asideContent.appendChild(box);
+        }
+      }
+
+      function renderTabs() {
+        tabsBar.innerHTML = "";
+
+        for (const tab of appData.tabs) {
+          const btn = document.createElement("button");
+          btn.className =
+            "tab" + (tab.target === appData.activeId ? " active" : "");
+          btn.textContent = tab.label;
+          btn.addEventListener("click", () => {
+            appData.activeId = tab.target;
+            setStatus(`Tab switched to ${tab.label}`);
+            render();
+          });
+          tabsBar.appendChild(btn);
+        }
+      }
+
+      function render() {
+        tocContainer.innerHTML = "";
+        tocContainer.appendChild(renderTOCNode(appData.toc));
+        renderCenter();
+        renderAside();
+        renderTabs();
+      }
+
+      async function fetchHTML(url) {
+        const res = await fetch(`/proxy?url=${encodeURIComponent(url)}`);
+        if (!res.ok) {
+          throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+        }
+        return res.text();
+      }
+
+      async function loadParsedData() {
+        const url = urlInput.value.trim();
+        if (!url) {
+          setStatus("Enter a URL first.");
+          return;
+        }
+
+        try {
+          loadBtn.disabled = true;
+          setStatus("Fetching page...");
+          const html = await fetchHTML(url);
+          setStatus("Parsing IR...");
+          const ir = await parsePageToIR(html, url);
+          currentIR = ir;
+          // expose for debugging/inspection in the page context
+          try {
+            window.currentIR = ir;
+          } catch (e) {
+            /* noop */
+          }
+          appData = buildAppDataFromIR(ir);
+          setStatus(
+            `Loaded ${Object.keys(ir.nodes).length} nodes | ${appData.tabs.length} sections`,
+          );
+          render();
+        } catch (err) {
+          setStatus(`Error: ${String(err)}`);
+        } finally {
+          loadBtn.disabled = false;
+        }
+      }
+
+      loadBtn.addEventListener("click", loadParsedData);
+      urlInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") loadParsedData();
+      });
+
+      setStatus("Ready. Click Load Parsed IR.");
+      await loadParsedData();
+    </script>
+  </body>
+</html>
