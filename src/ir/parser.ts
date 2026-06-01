@@ -45,6 +45,7 @@ export interface IRNodeAttributes {
   required: string | null;
   controls: string | null;
   describedby: string | null;
+  labelledby: string | null;
   haspopup: string | null;
   alt: string | null;
   src: string | null;
@@ -215,12 +216,27 @@ function directTextContent(element: Element): string {
   return text.trim();
 }
 
-function resolveNodeLabel(element: Element): string | null {
+function resolveNodeLabel(element: Element, doc?: Document): string | null {
+  // 1. aria-labelledby — dereference to text content of referenced element(s)
+  if (doc) {
+    const labelledby = element.getAttribute("aria-labelledby")?.trim();
+    if (labelledby) {
+      const text = labelledby
+        .split(/\s+/)
+        .map((id) => doc.getElementById(id)?.textContent?.trim() ?? "")
+        .filter(Boolean)
+        .join(" ");
+      if (text) return text;
+    }
+  }
+
+  // 2. aria-label
   const ariaLabel = element.getAttribute("aria-label")?.trim() ?? "";
   if (ariaLabel) return ariaLabel;
 
   const tag = element.tagName.toLowerCase();
 
+  // 3. img alt / src fallback
   if (tag === "img") {
     const alt = element.getAttribute("alt")?.trim() ?? "";
     if (alt) return alt;
@@ -231,9 +247,27 @@ function resolveNodeLabel(element: Element): string | null {
     }
   }
 
+  // 4. <label for="id"> association for form controls
+  if (doc && (tag === "input" || tag === "textarea" || tag === "select")) {
+    const id = element.getAttribute("id");
+    if (id) {
+      const labelEl = doc.querySelector(`label[for="${CSS.escape(id)}"]`);
+      const labelText = labelEl?.textContent?.trim();
+      if (labelText) return labelText;
+    }
+    // 5. Wrapping <label>
+    const wrappingLabel = element.closest("label");
+    if (wrappingLabel) {
+      // Clone to avoid including the input's own value in the label text
+      const clone = wrappingLabel.cloneNode(true) as Element;
+      clone.querySelector("input,textarea,select")?.remove();
+      const labelText = clone.textContent?.trim();
+      if (labelText) return labelText;
+    }
+  }
+
   // For leaf-like elements (no element children) use full textContent.
-  // For container elements use only direct text nodes to avoid subtree bleed —
-  // children will produce their own labelled IR nodes.
+  // For container elements use only direct text nodes to avoid subtree bleed.
   const hasElementChildren = Array.from(element.children).some(
     (c) =>
       !SKIP_TAGS.has(c.tagName.toLowerCase()) &&
@@ -245,8 +279,6 @@ function resolveNodeLabel(element: Element): string | null {
     return text ? text : null;
   }
 
-  // Container: only harvest text that lives directly on this element,
-  // not text belonging to children.
   const direct = directTextContent(element);
   return direct ? direct : null;
 }
@@ -261,6 +293,7 @@ function readNodeAttributes(element: Element): IRNodeAttributes {
     required: element.getAttribute("aria-required") ?? null,
     controls: element.getAttribute("aria-controls") ?? null,
     describedby: element.getAttribute("aria-describedby") ?? null,
+    labelledby: element.getAttribute("aria-labelledby") ?? null,
     haspopup: element.getAttribute("aria-haspopup") ?? null,
     alt: element.getAttribute("alt") ?? null,
     src: element.getAttribute("src") ?? null,
@@ -292,10 +325,86 @@ type LandmarkRecord = {
   parentId: string;
 };
 
-function resolveRoleFromTag(tag: string): {
+// Maps ARIA role= attribute values to IR roles.
+const ARIA_ROLE_MAP: Partial<Record<string, IRRole>> = {
+  main: "main",
+  navigation: "navigation",
+  banner: "banner",
+  contentinfo: "contentinfo",
+  complementary: "complementary",
+  search: "search",
+  form: "form",
+  region: "region",
+  heading: "heading",
+  list: "list",
+  listitem: "listitem",
+  link: "link",
+  button: "button",
+  img: "img",
+  figure: "figure",
+  separator: "separator",
+  table: "table",
+  row: "row",
+  cell: "cell",
+  columnheader: "columnheader",
+  rowheader: "rowheader",
+  textbox: "textbox",
+  searchbox: "textbox",
+  checkbox: "checkbox",
+  radio: "radio",
+  combobox: "combobox",
+  slider: "slider",
+  spinbutton: "spinbutton",
+  switch: "switch",
+  group: "group",
+  // common widget aliases
+  menuitem: "button",
+  menuitemcheckbox: "checkbox",
+  menuitemradio: "radio",
+  option: "listitem",
+  tab: "button",
+  treeitem: "listitem",
+};
+
+/**
+ * Resolves an element's IR role by first checking for an explicit ARIA role=
+ * attribute (Layer 1 — explicit), then falling back to structural tag
+ * inference (Layer 2 — structural).  Returns the resolved role, level, and
+ * the source layer that produced it.
+ */
+function resolveRoleFromElement(element: Element): {
   role: IRRole;
   level: number | null;
+  source: Extract<IRSource, "explicit" | "structural">;
 } {
+  // ── Layer 1: explicit ARIA role= always wins ─────────────────────────────
+  const ariaRole = element.getAttribute("role")?.trim().toLowerCase();
+  if (ariaRole && ARIA_ROLE_MAP[ariaRole] !== undefined) {
+    const level =
+      ariaRole === "heading"
+        ? Number.parseInt(element.getAttribute("aria-level") ?? "2", 10) || 2
+        : null;
+    return { role: ARIA_ROLE_MAP[ariaRole]!, level, source: "explicit" };
+  }
+
+  // ── Layer 2: structural inference from HTML tag ──────────────────────────
+  const tag = element.tagName.toLowerCase();
+  return { ...resolveRoleFromTag(tag, element), source: "structural" };
+}
+
+function resolveRoleFromTag(
+  tag: string,
+  element?: Element,
+): { role: IRRole; level: number | null } {
+  // Landmark / sectioning elements
+  if (tag === "main") return { role: "main", level: null };
+  if (tag === "header") return { role: "banner", level: null };
+  if (tag === "footer") return { role: "contentinfo", level: null };
+  if (tag === "aside") return { role: "complementary", level: null };
+  if (tag === "nav") return { role: "navigation", level: null };
+  if (tag === "form") return { role: "form", level: null };
+  if (tag === "section") return { role: "region", level: null };
+
   if (tag === "p") return { role: "paragraph", level: null };
   if (tag === "article") return { role: "group", level: null };
   if (tag === "img") return { role: "img", level: null };
@@ -304,17 +413,23 @@ function resolveRoleFromTag(tag: string): {
   if (tag === "a") return { role: "link", level: null };
 
   if (tag === "button") return { role: "button", level: null };
-  if (tag === "input") return { role: "textbox", level: null };
+
+  if (tag === "input") {
+    const type = element?.getAttribute("type")?.toLowerCase() ?? "text";
+    if (type === "checkbox") return { role: "checkbox", level: null };
+    if (type === "radio") return { role: "radio", level: null };
+    if (type === "range") return { role: "slider", level: null };
+    if (type === "number") return { role: "spinbutton", level: null };
+    // text, email, password, search, tel, url, date, time, hidden, submit, etc.
+    return { role: "textbox", level: null };
+  }
+
   if (tag === "textarea") return { role: "textbox", level: null };
   if (tag === "select") return { role: "combobox", level: null };
-
-  if (tag === "nav") return { role: "navigation", level: null };
-  if (tag === "form") return { role: "form", level: null };
 
   if (tag === "figure" || tag === "figcaption")
     return { role: "figure", level: null };
   if (tag === "blockquote") return { role: "blockquote", level: null };
-
   if (tag === "code" || tag === "pre") return { role: "code", level: null };
   if (tag === "hr") return { role: "separator", level: null };
 
@@ -335,6 +450,10 @@ function resolveRoleFromTag(tag: string): {
   return { role: "generic", level: null };
 }
 
+// Tags that are HTML5 landmark elements and should be treated as landmark
+// nodes in the IR (same promotion path as <section>).
+const LANDMARK_TAGS = new Set(["main", "header", "footer", "aside", "nav"]);
+
 function buildDescendantTree(
   element: Element,
   sectionIndex: number,
@@ -344,6 +463,7 @@ function buildDescendantTree(
   nodes: Record<string, IRNode>,
   counters: TreeCounters,
   landmarkRecords: LandmarkRecord[],
+  doc?: Document,
 ): string[] {
   const childIds: string[] = [];
 
@@ -363,48 +483,76 @@ function buildDescendantTree(
     const tag = child.tagName.toLowerCase();
     if (SKIP_TAGS.has(tag)) continue;
 
-    // ── nested <section> ─────────────────────────────────────────────────
-    if (tag === "section") {
-      const sectionId = `${sectionScopeId}-section-${counters.section++}`;
-      const sectionLabel = resolveSectionLabel(sectionId);
+    // ── landmark elements and <section> — promoted to landmark nodes ──────
+    // Covers <section>, <main>, <header>, <footer>, <aside>, <nav>, and any
+    // element whose explicit role= maps to a landmark IR role.
+    const isLandmarkTag = tag === "section" || LANDMARK_TAGS.has(tag);
+    const explicitLandmarkRole =
+      !isLandmarkTag && child.hasAttribute("role")
+        ? (() => {
+            const r = child.getAttribute("role")!.trim().toLowerCase();
+            const mapped = ARIA_ROLE_MAP[r];
+            return mapped &&
+              [
+                "main",
+                "banner",
+                "contentinfo",
+                "complementary",
+                "navigation",
+                "search",
+                "form",
+                "region",
+              ].includes(mapped)
+              ? mapped
+              : null;
+          })()
+        : null;
+
+    if (isLandmarkTag || explicitLandmarkRole !== null) {
+      const landmarkId = `${sectionScopeId}-section-${counters.section++}`;
+      const { role, level, source } = resolveRoleFromElement(child);
+      const landmarkLabel =
+        resolveNodeLabel(child, doc) ?? resolveSectionLabel(landmarkId);
+
       landmarkRecords.push({
-        id: sectionId,
-        label: sectionLabel,
+        id: landmarkId,
+        label: landmarkLabel,
         parentId: landmarkParentId,
       });
 
       const nestedChildIds = buildDescendantTree(
         child,
         sectionIndex,
-        sectionId,
-        sectionId,
-        sectionId,
+        landmarkId,
+        landmarkId,
+        landmarkId,
         nodes,
         { node: 0, section: 0 },
         landmarkRecords,
+        doc,
       );
 
-      nodes[sectionId] = {
-        id: sectionId,
-        role: "region",
-        level: null,
-        label: sectionLabel,
-        unlabelledYet: false,
+      nodes[landmarkId] = {
+        id: landmarkId,
+        role,
+        level,
+        label: landmarkLabel,
+        unlabelledYet: landmarkLabel === null,
         landmark: true,
-        source: "structural",
+        source,
         parent: parentId,
         children: nestedChildIds,
         attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
       };
 
-      childIds.push(sectionId);
+      childIds.push(landmarkId);
       continue;
     }
 
     // ── regular node ─────────────────────────────────────────────────────
     const id = `${sectionScopeId}-node-${counters.node++}`;
-    const label = resolveNodeLabel(child);
-    const resolved = resolveRoleFromTag(tag);
+    const label = resolveNodeLabel(child, doc);
+    const { role, level, source } = resolveRoleFromElement(child);
 
     const nestedChildIds = buildDescendantTree(
       child,
@@ -415,16 +563,17 @@ function buildDescendantTree(
       nodes,
       counters,
       landmarkRecords,
+      doc,
     );
 
     nodes[id] = {
       id,
-      role: resolved.role,
-      level: resolved.level,
+      role,
+      level,
       label,
       unlabelledYet: label === null,
       landmark: false,
-      source: "structural",
+      source,
       parent: parentId,
       children: nestedChildIds,
       attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
@@ -555,6 +704,7 @@ export const parsePageToIR = async (
       required: null,
       controls: null,
       describedby: null,
+      labelledby: null,
       haspopup: null,
       alt: null,
       src: null,
@@ -577,6 +727,7 @@ export const parsePageToIR = async (
       required: null,
       controls: null,
       describedby: null,
+      labelledby: null,
       haspopup: null,
       alt: null,
       src: null,
@@ -599,6 +750,7 @@ export const parsePageToIR = async (
       required: null,
       controls: null,
       describedby: null,
+      labelledby: null,
       haspopup: null,
       alt: null,
       src: null,
