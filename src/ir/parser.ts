@@ -1,5 +1,3 @@
-const LABEL_MAX_CHARS = 280;
-
 export type IRRole =
   | "main"
   | "navigation"
@@ -219,17 +217,17 @@ function directTextContent(element: Element): string {
 
 function resolveNodeLabel(element: Element): string | null {
   const ariaLabel = element.getAttribute("aria-label")?.trim() ?? "";
-  if (ariaLabel) return ariaLabel.slice(0, LABEL_MAX_CHARS);
+  if (ariaLabel) return ariaLabel;
 
   const tag = element.tagName.toLowerCase();
 
   if (tag === "img") {
     const alt = element.getAttribute("alt")?.trim() ?? "";
-    if (alt) return alt.slice(0, LABEL_MAX_CHARS);
+    if (alt) return alt;
     const src = element.getAttribute("src")?.trim() ?? "";
     if (src) {
       const fallback = src.split("/").pop() ?? src;
-      return fallback.slice(0, LABEL_MAX_CHARS);
+      return fallback;
     }
   }
 
@@ -244,31 +242,16 @@ function resolveNodeLabel(element: Element): string | null {
 
   if (!hasElementChildren) {
     const text = element.textContent?.trim() ?? "";
-    return text ? text.slice(0, LABEL_MAX_CHARS) : null;
+    return text ? text : null;
   }
 
   // Container: only harvest text that lives directly on this element,
   // not text belonging to children.
   const direct = directTextContent(element);
-  return direct ? direct.slice(0, LABEL_MAX_CHARS) : null;
+  return direct ? direct : null;
 }
 
-function findSectionLabelHeading(section: Element): HTMLElement | null {
-  for (let level = 1; level <= 6; level++) {
-    const heading = section.querySelector(`h${level}`) as HTMLElement | null;
-    const text = heading?.textContent?.trim() ?? "";
-    if (text) return heading;
-  }
-  return null;
-}
-
-function resolveSectionLabel(
-  section: Element,
-  fallbackLabel: string,
-  heading: HTMLElement | null = findSectionLabelHeading(section),
-): string {
-  const text = heading?.textContent?.trim() ?? "";
-  if (text) return text.slice(0, LABEL_MAX_CHARS);
+function resolveSectionLabel(fallbackLabel: string): string {
   return fallbackLabel;
 }
 
@@ -380,55 +363,10 @@ function buildDescendantTree(
     const tag = child.tagName.toLowerCase();
     if (SKIP_TAGS.has(tag)) continue;
 
-    // ── multi-child or text-only inert wrapper ───────────────────────────
-    // pierceWrapperChain stopped because the wrapper has >1 element children
-    // (promote them flat) or 0 element children (wrapper holds only text —
-    // emit it as a paragraph so the content isn't silently dropped).
-    if (isInertWrapper(child)) {
-      const elementChildren = Array.from(child.children).filter(
-        (c) => !SKIP_TAGS.has(c.tagName.toLowerCase()),
-      );
-
-      if (elementChildren.length === 0) {
-        // Text-only wrapper: emit as a paragraph node.
-        const text = child.textContent?.trim() ?? "";
-        if (text) {
-          const id = `${sectionScopeId}-node-${counters.node++}`;
-          nodes[id] = {
-            id,
-            role: "paragraph",
-            level: null,
-            label: text.slice(0, LABEL_MAX_CHARS),
-            unlabelledYet: false,
-            landmark: false,
-            source: "structural",
-            parent: parentId,
-            children: [],
-            attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
-          };
-          childIds.push(id);
-        }
-      } else {
-        // Multi-child inert wrapper: promote children directly.
-        const promotedIds = buildDescendantTree(
-          child,
-          sectionIndex,
-          sectionScopeId,
-          parentId,
-          landmarkParentId,
-          nodes,
-          counters,
-          landmarkRecords,
-        );
-        childIds.push(...promotedIds);
-      }
-      continue;
-    }
-
     // ── nested <section> ─────────────────────────────────────────────────
     if (tag === "section") {
       const sectionId = `${sectionScopeId}-section-${counters.section++}`;
-      const sectionLabel = resolveSectionLabel(child, sectionId);
+      const sectionLabel = resolveSectionLabel(sectionId);
       landmarkRecords.push({
         id: sectionId,
         label: sectionLabel,
@@ -498,12 +436,6 @@ function buildDescendantTree(
   return childIds;
 }
 
-function getTopLevelSections(parsedDoc: Document): HTMLElement[] {
-  return Array.from(parsedDoc.body.querySelectorAll("section")).filter(
-    (section) => section.parentElement?.closest("section") === null,
-  ) as HTMLElement[];
-}
-
 function buildLandmarkTree(
   rootLabel: string | null,
   records: LandmarkRecord[],
@@ -553,15 +485,13 @@ export const parsePageToIR = async (
   const fallbackLog: IRFallbackEntry[] = [];
   const rootChildIds: string[] = [];
   const landmarkRecords: LandmarkRecord[] = [];
-  const tocChildren: string[] = [];
 
-  const sections = getTopLevelSections(parsedDoc);
   const effectiveSections = [parsedDoc.body as HTMLElement];
 
   effectiveSections.forEach((section, index) => {
     const sectionId = `section-${index}`;
     const sectionCounters = { node: 0, section: 0 };
-    const sectionLabel = resolveSectionLabel(section, sectionId);
+    const sectionLabel = resolveSectionLabel(sectionId);
 
     landmarkRecords.push({
       id: sectionId,
@@ -596,37 +526,6 @@ export const parsePageToIR = async (
     rootChildIds.push(sectionId);
   });
 
-  effectiveSections.forEach((section, index) => {
-    const sectionId = `section-${index}`;
-    const itemId = `toc-item-${index}`;
-    const sectionLabel = resolveSectionLabel(section, sectionId);
-
-    tocChildren.push(itemId);
-    landmarkRecords.push({ id: itemId, label: sectionLabel, parentId: "toc" });
-
-    nodes[itemId] = {
-      id: itemId,
-      role: "link",
-      level: null,
-      label: sectionLabel,
-      unlabelledYet: false,
-      landmark: false,
-      source: "structural",
-      parent: "toc",
-      children: [],
-      attributes: {
-        expanded: null,
-        required: null,
-        controls: sectionId,
-        describedby: null,
-        haspopup: null,
-        alt: null,
-        src: null,
-        href: null,
-      },
-    };
-  });
-
   const parsedTitle = parsedDoc.title?.trim() || null;
   landmarkRecords.push({
     id: "toc",
@@ -650,7 +549,7 @@ export const parsePageToIR = async (
     landmark: true,
     source: "structural",
     parent: "landmarks",
-    children: tocChildren,
+    children: rootChildIds,
     attributes: {
       expanded: null,
       required: null,

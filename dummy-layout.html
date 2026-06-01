@@ -525,7 +525,11 @@
             a.href = resolveUrl(node.attributes?.href) ?? "#";
             a.target = "_blank";
             a.rel = "noopener noreferrer";
-            a.textContent = label(node, node.attributes?.href ?? "link");
+            // If the link has children they carry the content — show only the
+            // href as the identifier. Only fall back to label() for childless links.
+            a.textContent = node.children?.length
+              ? (node.attributes?.href ?? "link")
+              : label(node, node.attributes?.href ?? "link");
             wrap.appendChild(a);
             break;
           }
@@ -544,16 +548,21 @@
               const img = document.createElement("img");
               img.className = "node-img";
               img.src = src;
-              img.alt = label(node, "");
+              img.alt = node.attributes?.alt ?? "";
               img.loading = "lazy";
               wrap.appendChild(img);
             }
-            const cap = document.createElement("div");
-            cap.className = "node-label";
-            cap.style.color = "var(--muted)";
-            cap.style.fontSize = "11px";
-            cap.textContent = label(node, node.attributes?.src ?? "image");
-            wrap.appendChild(cap);
+            // Only show a caption when the img has a real alt text — skip
+            // filename fallbacks produced by the parser for decorative images.
+            const realAlt = (node.attributes?.alt ?? "").trim();
+            if (realAlt) {
+              const cap = document.createElement("div");
+              cap.className = "node-label";
+              cap.style.color = "var(--muted)";
+              cap.style.fontSize = "11px";
+              cap.textContent = realAlt;
+              wrap.appendChild(cap);
+            }
             break;
           }
 
