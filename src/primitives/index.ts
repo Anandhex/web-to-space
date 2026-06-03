@@ -9,15 +9,32 @@ import * as THREE from "three";
 
 const INTERACTIVE_ROLES = new Set([
   "textbox",
+  "searchbox",
   "checkbox",
   "radio",
   "combobox",
   "slider",
   "spinbutton",
   "switch",
+  "button",
+  "link",
+  "tab",
+  "menuitem",
+  "treeitem",
+  "option",
 ]);
 
-const COLLECTION_ROLES = new Set(["list", "table", "row"]);
+const COLLECTION_ROLES = new Set([
+  "list",
+  "table",
+  "row",
+  "menu",
+  "menubar",
+  "tablist",
+  "tree",
+  "grid",
+  "feed",
+]);
 
 const LANDMARK_ROLES = new Set([
   "main",
@@ -30,7 +47,7 @@ const LANDMARK_ROLES = new Set([
   "region",
 ]);
 
-const COMPOSITION_ROLES = new Set(["form", "search"]);
+const COMPOSITION_ROLES = new Set(["form", "search", "dialog", "tabpanel"]);
 
 const HIERARCHY_ROLES = new Set(["figure", "blockquote"]);
 
