@@ -445,6 +445,11 @@
 
     <script type="module">
       import { parsePageToIR } from "/src/ir/parser.ts";
+      import { mapIRToScene } from "/src/mapper/mapper.ts";
+      import {
+        computeLayoutPlan,
+        mergeLayoutPlan,
+      } from "/src/layout/engine.ts";
 
       // ── state ─────────────────────────────────────────────────────────────
       let ir = null; // raw PageIR from parser
@@ -843,6 +848,27 @@
           const html = await res.text();
           setStatus("parsing…");
           ir = await parsePageToIR(html, url);
+          const mappedScene = mapIRToScene(ir, {
+            generateTOC: true,
+            generateTOCAlways: true,
+            viewingDistance: 0,
+            comfortHalfAngleDeg: 0,
+            panelCurveRadius: 0,
+            eyeLevelOffset: 0,
+            lowConfidenceThreshold: 0,
+            elidePresentation: false,
+            minCardGridItems: 0,
+            maxPanelChildren: 0,
+            cardWidth: 0,
+            panelWidth: 0,
+            maxCardColumns: 0,
+          });
+          console.log("Parsed IR:", ir);
+          console.log("Mapped Scene:", mappedScene);
+          const layoutPlan = computeLayoutPlan(mappedScene);
+          console.log("Layout Plan:", layoutPlan);
+          const mergedPlan = mergeLayoutPlan(mappedScene, layoutPlan);
+          console.log("Merged Layout Plan:", mergedPlan);
           window.currentIR = ir;
           const ids = sectionIds();
           activeId = ids[0] ?? null;
@@ -851,6 +877,7 @@
           );
           render();
         } catch (e) {
+          console.error(e);
           setStatus(String(e), "err");
         } finally {
           $btn.disabled = false;

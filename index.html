@@ -7,35 +7,8 @@
     <title>from-space-to-web</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="root"></div>
 
-    <div
-      id="controls"
-      style="
-        position: fixed;
-        left: 12px;
-        top: 12px;
-        padding: 8px;
-        background: rgba(0, 0, 0, 0.6);
-        color: #fff;
-        border-radius: 6px;
-        z-index: 9999;
-      "
-    >
-      <input
-        id="url-input"
-        type="text"
-        placeholder="https://example.com"
-        style="width: 260px; margin-right: 8px"
-        value="https://developer.mozilla.org/en-US/blog/mdn-turns-20/"
-      />
-      <button id="parse-btn">Load</button>
-      <button id="xr-btn" style="display: none; margin-left: 8px">
-        Enter XR
-      </button>
-      <div id="status" style="margin-top: 6px; font-size: 12px"></div>
-    </div>
-
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -109,6 +109,7 @@ export interface IRNodeAttributes {
   multiselectable: string | null;
   captions: string[];
   componentType: string | null;
+  autoplay: string | null;
 }
 
 export interface IRNodeState {
@@ -132,28 +133,24 @@ export interface IRNodeState {
   valueMax: string | null;
 }
 
+/**
+ * ARIA relationship fields stored as node ID arrays.
+ * Using string IDs rather than direct object references prevents graph cycles
+ * that break JSON serialisation, snapshot testing, and diffing.
+ * Consumers resolve IDs via `PageIR.nodes`.
+ */
 export interface IRNodeRelations {
-  controls: IRNode[];
-  labelledBy: IRNode[];
-  describedBy: IRNode[];
-  owns: IRNode[];
-  details: IRNode[];
-  errorMessage: IRNode[];
-  flowTo: IRNode[];
-  figureCaption: IRNode[];
-}
-
-export interface XRMetadata {
-  /** Semantic importance score (0.0 – 1.0). Used by XR layout engine for placement priority. */
-  importance: number;
-  /** Estimated rendered width in CSS pixels (heuristic). */
-  estimatedWidth: number;
-  /** Estimated rendered height in CSS pixels (heuristic). */
-  estimatedHeight: number;
-  /** Composite spatial priority for XR panel placement (0.0 – 1.0). */
-  spatialPriority: number;
-  /** Depth in the reading order tree — used to decide panel vs floating control. */
-  readingDepth: number;
+  controls: string[];
+  labelledBy: string[];
+  describedBy: string[];
+  owns: string[];
+  details: string[];
+  errorMessage: string[];
+  flowTo: string[];
+  /** IDs of caption nodes that are direct children of a figure node. */
+  figureCaption: string[];
+  /** IDs of header cells (th) associated with this cell via headers= or scope=. */
+  headers: string[];
 }
 
 export interface IRNode {
@@ -166,12 +163,19 @@ export interface IRNode {
   source: IRSource;
   confidence: number;
   readingIndex: number;
+  /**
+   * Depth of this node in the semantic containment tree.
+   * 0 = top-level landmarks (main, nav, aside).
+   * Increases by 1 for each nested semantic container (region, article, list).
+   * Used by the spatial mapping engine to decide panel vs. floating control placement.
+   * This is a semantic property — the mapping engine converts it to physical depth offset.
+   */
+  readingDepth: number;
   parent: string | null;
   children: string[];
   relations: IRNodeRelations;
   state: IRNodeState;
   attributes: IRNodeAttributes;
-  xr: XRMetadata;
 }
 
 export interface IRMeta {
@@ -672,13 +676,10 @@ interface BuildContext {
   doc?: Document;
   counters: TreeCounters;
   elementToNodeId: WeakMap<Element, string>;
-  nodeLookup: Map<string, IRNode>;
   fallbackProvider: AIFallbackProvider;
   fallbackLog: IRFallbackEntry[];
   config: ParserConfig;
-  /** Effective skip-tag set derived from config (excludes svg/canvas when their include flags are on). */
   skipTags: Set<string>;
-  /** Effective wrapper-tag set derived from config + extraWrapperTags. */
   wrapperTags: Set<string>;
 }
 
@@ -724,6 +725,7 @@ function createEmptyAttributes(): IRNodeAttributes {
     multiselectable: null,
     captions: [],
     componentType: null,
+    autoplay: null,
   };
 }
 
@@ -760,6 +762,7 @@ function createEmptyRelations(): IRNodeRelations {
     errorMessage: [],
     flowTo: [],
     figureCaption: [],
+    headers: [],
   };
 }
 
@@ -791,30 +794,6 @@ function isAccessibilityHidden(element: Element): boolean {
     element.hasAttribute("inert") ||
     html.style?.display === "none" ||
     html.style?.visibility === "hidden"
-  );
-}
-
-function isExplicitSemantics(element: Element): boolean {
-  return (
-    element.hasAttribute("role") ||
-    element.hasAttribute("aria-label") ||
-    element.hasAttribute("aria-labelledby") ||
-    element.hasAttribute("aria-describedby") ||
-    element.hasAttribute("aria-controls") ||
-    element.hasAttribute("aria-owns") ||
-    element.hasAttribute("aria-details") ||
-    element.hasAttribute("aria-errormessage") ||
-    element.hasAttribute("aria-flowto") ||
-    element.hasAttribute("aria-expanded") ||
-    element.hasAttribute("aria-checked") ||
-    element.hasAttribute("aria-selected") ||
-    element.hasAttribute("aria-disabled") ||
-    element.hasAttribute("aria-pressed") ||
-    element.hasAttribute("aria-current") ||
-    element.hasAttribute("aria-hidden") ||
-    element.hasAttribute("aria-busy") ||
-    element.hasAttribute("aria-required") ||
-    element.hasAttribute("aria-haspopup")
   );
 }
 
@@ -897,6 +876,7 @@ function readNodeAttributes(element: Element): IRNodeAttributes {
       return tracks.map((t) => t.getAttribute("src") ?? "").filter(Boolean);
     })(),
     componentType: null,
+    autoplay: element.getAttribute("autoplay") ?? null,
   };
 }
 
@@ -1284,154 +1264,183 @@ function isListCandidate(element: Element, config: ParserConfig): boolean {
   return tag !== "ul" && tag !== "ol" && tag !== "li";
 }
 
+/** Resolve space-separated ID refs to node IDs, skipping missing refs silently. */
 function relationTargets(
   raw: string | null,
   doc: Document | undefined,
   elementToNodeId: WeakMap<Element, string>,
-  nodeLookup: Map<string, IRNode>,
-): IRNode[] {
-  if (!doc) return [];
-  const nodes: IRNode[] = [];
-  for (const id of parseIdRefs(raw)) {
-    const element = doc.getElementById(id);
+): string[] {
+  if (!doc || !raw?.trim()) return [];
+  const ids: string[] = [];
+  for (const ref of parseIdRefs(raw)) {
+    const element = doc.getElementById(ref);
     if (!element) continue;
     const nodeId = elementToNodeId.get(element);
-    if (!nodeId) continue;
-    const node = nodeLookup.get(nodeId);
-    if (node) nodes.push(node);
+    if (nodeId) ids.push(nodeId);
   }
-  return nodes;
+  return ids;
 }
 
 function hydrateRelations(
   nodes: Record<string, IRNode>,
   doc: Document | undefined,
   elementToNodeId: WeakMap<Element, string>,
-  nodeLookup: Map<string, IRNode>,
 ): void {
-  nodeLookup.clear();
-  for (const node of Object.values(nodes)) nodeLookup.set(node.id, node);
-
+  // ── ARIA ID-ref relations ────────────────────────────────────────────────
   for (const node of Object.values(nodes)) {
-    node.relations = {
-      controls: relationTargets(
-        node.attributes.controls,
-        doc,
-        elementToNodeId,
-        nodeLookup,
-      ),
-      labelledBy: relationTargets(
-        node.attributes.labelledby,
-        doc,
-        elementToNodeId,
-        nodeLookup,
-      ),
-      describedBy: relationTargets(
-        node.attributes.describedby,
-        doc,
-        elementToNodeId,
-        nodeLookup,
-      ),
-      owns: relationTargets(
-        node.attributes.owns,
-        doc,
-        elementToNodeId,
-        nodeLookup,
-      ),
-      details: relationTargets(
-        node.attributes.details,
-        doc,
-        elementToNodeId,
-        nodeLookup,
-      ),
-      errorMessage: relationTargets(
-        node.attributes.errormessage,
-        doc,
-        elementToNodeId,
-        nodeLookup,
-      ),
-      flowTo: relationTargets(
-        node.attributes.flowto,
-        doc,
-        elementToNodeId,
-        nodeLookup,
-      ),
-      figureCaption: relationTargets(
-        node.attributes.flowto,
-        doc,
-        elementToNodeId,
-        nodeLookup,
-      ),
-    };
+    node.relations.controls = relationTargets(
+      node.attributes.controls,
+      doc,
+      elementToNodeId,
+    );
+    node.relations.labelledBy = relationTargets(
+      node.attributes.labelledby,
+      doc,
+      elementToNodeId,
+    );
+    node.relations.describedBy = relationTargets(
+      node.attributes.describedby,
+      doc,
+      elementToNodeId,
+    );
+    node.relations.owns = relationTargets(
+      node.attributes.owns,
+      doc,
+      elementToNodeId,
+    );
+    node.relations.details = relationTargets(
+      node.attributes.details,
+      doc,
+      elementToNodeId,
+    );
+    node.relations.errorMessage = relationTargets(
+      node.attributes.errormessage,
+      doc,
+      elementToNodeId,
+    );
+    node.relations.flowTo = relationTargets(
+      node.attributes.flowto,
+      doc,
+      elementToNodeId,
+    );
   }
 
-  // Populate figureCaption from children of figure nodes
+  // ── figureCaption: IDs of caption children of figure nodes ──────────────
   for (const node of Object.values(nodes)) {
     if (node.role === "figure") {
-      node.relations.figureCaption = node.children
-        .map((id) => nodes[id])
-        .filter((n): n is IRNode => !!n && n.role === "caption");
+      node.relations.figureCaption = node.children.filter(
+        (id) => nodes[id]?.role === "caption",
+      );
     }
   }
-}
 
-const XR_IMPORTANCE: Partial<Record<IRRole, number>> = {
-  heading: 1.0,
-  button: 0.9,
-  link: 0.85,
-  textbox: 0.85,
-  searchbox: 0.85,
-  checkbox: 0.8,
-  radio: 0.8,
-  combobox: 0.8,
-  slider: 0.8,
-  dialog: 0.9,
-  alert: 0.95,
-  navigation: 0.8,
-  main: 0.75,
-  banner: 0.7,
-  img: 0.6,
-  figure: 0.6,
-  list: 0.55,
-  table: 0.6,
-  paragraph: 0.5,
-  group: 0.4,
-  region: 0.4,
-  generic: 0.2,
-};
+  // ── Form label association: <label for="id"> → input.relations.labelledBy
+  // Supplements aria-labelledby for native HTML form controls.
+  // We walk every label element, resolve its `for` target, and add the
+  // label's node ID to that input's labelledBy array (deduplicating).
+  if (doc) {
+    for (const labelEl of Array.from(doc.querySelectorAll("label[for]"))) {
+      const forId = labelEl.getAttribute("for");
+      if (!forId) continue;
+      const targetEl = doc.getElementById(forId);
+      if (!targetEl) continue;
+      const labelNodeId = elementToNodeId.get(labelEl);
+      const targetNodeId = elementToNodeId.get(targetEl);
+      if (!labelNodeId || !targetNodeId) continue;
+      const targetNode = nodes[targetNodeId];
+      if (!targetNode) continue;
+      if (!targetNode.relations.labelledBy.includes(labelNodeId)) {
+        targetNode.relations.labelledBy.push(labelNodeId);
+      }
+    }
+  }
 
-function computeXRMetadata(role: IRRole, readingDepth: number): XRMetadata {
-  const importance = XR_IMPORTANCE[role] ?? 0.3;
-  // Heuristic dimensions based on role — refined by layout engine at runtime
-  const estimatedWidth =
-    role === "heading"
-      ? 600
-      : role === "button" || role === "checkbox" || role === "radio"
-        ? 200
-        : role === "img" || role === "figure"
-          ? 400
-          : role === "table"
-            ? 700
-            : 500;
-  const estimatedHeight =
-    role === "heading"
-      ? 60
-      : role === "button"
-        ? 44
-        : role === "img" || role === "figure"
-          ? 300
-          : role === "table"
-            ? 400
-            : 80;
-  // spatialPriority decays with depth so deeply nested nodes float further away
-  const spatialPriority = importance * Math.max(0.1, 1 - readingDepth * 0.05);
-  return {
-    importance,
-    estimatedWidth,
-    estimatedHeight,
-    spatialPriority,
-    readingDepth,
-  };
+  // ── Table header association: cell.relations.headers ────────────────────
+  // Two strategies are combined:
+  //
+  // 1. Explicit `headers=""` attribute on <td>/<th> — direct ID refs to header
+  //    cells, honoured exactly.
+  //
+  // 2. Implicit scope-based association when `headers` is absent:
+  //    - `scope="col"` (or th in thead without scope) → associated with every
+  //      cell in the same column index.
+  //    - `scope="row"` → associated with every cell in the same row.
+  //
+  // The result is stored as string[] of header node IDs on each data cell.
+  if (doc) {
+    for (const tableEl of Array.from(doc.querySelectorAll("table"))) {
+      // Pass 1: explicit headers= attribute
+      for (const cellEl of Array.from(tableEl.querySelectorAll("td, th"))) {
+        const headersAttr = cellEl.getAttribute("headers");
+        if (!headersAttr?.trim()) continue;
+        const cellNodeId = elementToNodeId.get(cellEl);
+        if (!cellNodeId || !nodes[cellNodeId]) continue;
+        const resolved = relationTargets(headersAttr, doc, elementToNodeId);
+        for (const hId of resolved) {
+          if (!nodes[cellNodeId].relations.headers.includes(hId)) {
+            nodes[cellNodeId].relations.headers.push(hId);
+          }
+        }
+      }
+
+      // Pass 2: scope-based implicit association
+      // Build a column-index → header node ID map from scope="col" headers.
+      const rows = Array.from(tableEl.querySelectorAll("tr"));
+      const colHeaders: Map<number, string> = new Map(); // colIndex → nodeId
+      const rowHeadersByRow: Map<Element, string[]> = new Map(); // tr → nodeIds
+
+      for (const rowEl of rows) {
+        const cells = Array.from(rowEl.children).filter(
+          (c) => c.tagName === "TD" || c.tagName === "TH",
+        );
+        const rowScopeIds: string[] = [];
+
+        cells.forEach((cellEl, colIndex) => {
+          if (cellEl.tagName !== "TH") return;
+          const scope = cellEl.getAttribute("scope")?.toLowerCase();
+          const nodeId = elementToNodeId.get(cellEl);
+          if (!nodeId) return;
+
+          // Treat th in thead without scope as col header
+          const inThead = !!cellEl.closest("thead");
+          if (scope === "col" || (!scope && inThead)) {
+            colHeaders.set(colIndex, nodeId);
+          } else if (scope === "row") {
+            rowScopeIds.push(nodeId);
+          }
+        });
+
+        if (rowScopeIds.length) rowHeadersByRow.set(rowEl, rowScopeIds);
+      }
+
+      // Apply implicit associations to data cells that have no explicit headers=
+      for (const rowEl of rows) {
+        const cells = Array.from(rowEl.children).filter(
+          (c) => c.tagName === "TD" || c.tagName === "TH",
+        );
+        const rowScopeIds = rowHeadersByRow.get(rowEl) ?? [];
+
+        cells.forEach((cellEl, colIndex) => {
+          if (cellEl.getAttribute("headers")?.trim()) return; // already handled in pass 1
+          const cellNodeId = elementToNodeId.get(cellEl);
+          if (!cellNodeId || !nodes[cellNodeId]) return;
+
+          const toAdd: string[] = [];
+          const colHeaderId = colHeaders.get(colIndex);
+          if (colHeaderId && colHeaderId !== cellNodeId)
+            toAdd.push(colHeaderId);
+          for (const rId of rowScopeIds) {
+            if (rId !== cellNodeId) toAdd.push(rId);
+          }
+          for (const hId of toAdd) {
+            if (!nodes[cellNodeId].relations.headers.includes(hId)) {
+              nodes[cellNodeId].relations.headers.push(hId);
+            }
+          }
+        });
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1649,7 +1658,7 @@ async function createNode(
     relations: createEmptyRelations(),
     state: readNodeState(element),
     attributes: mergeAttributes(readNodeAttributes(element), liftedAttrs),
-    xr: computeXRMetadata(resolvedRole, readingDepth),
+    readingDepth,
   };
 
   return id;
@@ -1706,7 +1715,7 @@ async function buildChildrenFromSiblings(
         relations: createEmptyRelations(),
         state: createEmptyState(),
         attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
-        xr: computeXRMetadata("img", readingDepth),
+        readingDepth,
       };
       childIds.push(id);
       index += 1;
@@ -1756,7 +1765,7 @@ async function buildChildrenFromSiblings(
         relations: createEmptyRelations(),
         state: readNodeState(child),
         attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
-        xr: computeXRMetadata(roleInfo.role, readingDepth),
+        readingDepth,
       };
 
       childIds.push(landmarkId);
@@ -1838,7 +1847,7 @@ async function buildChildrenFromSiblings(
           relations: createEmptyRelations(),
           state: createEmptyState(),
           attributes: createEmptyAttributes(),
-          xr: computeXRMetadata("region", readingDepth),
+          readingDepth,
         };
 
         childIds.push(sectionId);
@@ -1902,7 +1911,7 @@ async function buildChildrenFromSiblings(
             ...createEmptyAttributes(),
             listType: "unordered",
           },
-          xr: computeXRMetadata("list", readingDepth),
+          readingDepth,
         };
 
         childIds.push(listId);
@@ -1967,7 +1976,7 @@ async function buildChildrenFromSiblings(
           relations: createEmptyRelations(),
           state: createEmptyState(),
           attributes: createEmptyAttributes(),
-          xr: computeXRMetadata("navigation", readingDepth),
+          readingDepth,
         };
         childIds.push(navId);
         index = scan;
@@ -2023,7 +2032,7 @@ async function buildChildrenFromSiblings(
           relations: createEmptyRelations(),
           state: createEmptyState(),
           attributes: createEmptyAttributes(),
-          xr: computeXRMetadata("article", readingDepth),
+          readingDepth,
         };
         childIds.push(articleId);
         index = scan;
@@ -2118,7 +2127,6 @@ export const parsePageToIR = async (
     doc: parsedDoc,
     counters: { node: 0, section: 0, reading: 4 },
     elementToNodeId: new WeakMap<Element, string>(),
-    nodeLookup: new Map<string, IRNode>(),
     fallbackProvider,
     fallbackLog,
     config,
@@ -2178,7 +2186,7 @@ export const parsePageToIR = async (
     relations: createEmptyRelations(),
     state: createEmptyState(),
     attributes: createEmptyAttributes(),
-    xr: computeXRMetadata("region", 0),
+    readingDepth: 0,
   };
 
   nodes["toc"] = {
@@ -2196,7 +2204,7 @@ export const parsePageToIR = async (
     relations: createEmptyRelations(),
     state: createEmptyState(),
     attributes: createEmptyAttributes(),
-    xr: computeXRMetadata("navigation", 0),
+    readingDepth: 0,
   };
 
   nodes["main"] = {
@@ -2214,7 +2222,7 @@ export const parsePageToIR = async (
     relations: createEmptyRelations(),
     state: createEmptyState(),
     attributes: createEmptyAttributes(),
-    xr: computeXRMetadata("main", 0),
+    readingDepth: 0,
   };
 
   nodes["body"] = {
@@ -2232,10 +2240,10 @@ export const parsePageToIR = async (
     relations: createEmptyRelations(),
     state: createEmptyState(),
     attributes: createEmptyAttributes(),
-    xr: computeXRMetadata("generic", 0),
+    readingDepth: 0,
   };
 
-  hydrateRelations(nodes, parsedDoc, ctx.elementToNodeId, ctx.nodeLookup);
+  hydrateRelations(nodes, parsedDoc, ctx.elementToNodeId);
 
   const allNodes = Object.values(nodes);
 
@@ -2252,8 +2260,7 @@ export const parsePageToIR = async (
     orderedNodes = [...landmarks, ...content];
   } else if (config.readingOrderStrategy === "flowto-aware") {
     // Graph traversal following aria-flowto edges where present.
-    // Nodes with no incoming flowTo edge (roots in the flowTo graph) are
-    // visited in DOM order; flowTo successors are inserted immediately after.
+    const nodeMap = new Map(Object.values(nodes).map((n) => [n.id, n]));
     const domOrdered = [...allNodes].sort(
       (a, b) => a.readingIndex - b.readingIndex,
     );
@@ -2264,8 +2271,9 @@ export const parsePageToIR = async (
       if (visited.has(node.id)) return;
       visited.add(node.id);
       result.push(node);
-      for (const target of node.relations.flowTo) {
-        visit(target);
+      for (const targetId of node.relations.flowTo) {
+        const target = nodeMap.get(targetId);
+        if (target) visit(target);
       }
     };
 

@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import type { Plugin } from "vite";
+import react from "@vitejs/plugin-react";
 
 function corsProxyPlugin(): Plugin {
   return {
@@ -36,5 +37,5 @@ function corsProxyPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [corsProxyPlugin()],
+  plugins: [corsProxyPlugin(), react()],
 });
