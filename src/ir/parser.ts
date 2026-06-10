@@ -1,292 +1,41 @@
-export type IRRole =
-  | "main"
-  | "navigation"
-  | "banner"
-  | "contentinfo"
-  | "complementary"
-  | "search"
-  | "form"
-  | "region"
-  | "heading"
-  | "paragraph"
-  | "list"
-  | "listitem"
-  | "link"
-  | "button"
-  | "img"
-  | "figure"
-  | "blockquote"
-  | "separator"
-  | "code"
-  | "table"
-  | "row"
-  | "cell"
-  | "columnheader"
-  | "rowheader"
-  | "textbox"
-  | "searchbox"
-  | "checkbox"
-  | "radio"
-  | "combobox"
-  | "slider"
-  | "spinbutton"
-  | "switch"
-  | "tab"
-  | "tablist"
-  | "tabpanel"
-  | "menu"
-  | "menubar"
-  | "menuitem"
-  | "dialog"
-  | "tree"
-  | "treeitem"
-  | "grid"
-  | "progressbar"
-  | "status"
-  | "alert"
-  | "tooltip"
-  | "feed"
-  | "group"
-  | "caption"
-  | "video"
-  | "audio"
-  | "application"
-  | "article"
-  | "document"
-  | "note"
-  | "log"
-  | "marquee"
-  | "timer"
-  | "toolbar"
-  | "option"
-  | "menuitemcheckbox"
-  | "menuitemradio"
-  | "presentation"
-  | "none"
-  | "generic";
-
-export type IRSource =
-  | "explicit"
-  | "structural"
-  | "ai"
-  | "ai-timeout"
-  | "generic";
-
-export interface IRNodeAttributes {
-  expanded: string | null;
-  checked: string | null;
-  selected: string | null;
-  disabled: string | null;
-  pressed: string | null;
-  current: string | null;
-  hidden: string | null;
-  busy: string | null;
-  required: string | null;
-  controls: string | null;
-  describedby: string | null;
-  labelledby: string | null;
-  owns: string | null;
-  details: string | null;
-  errormessage: string | null;
-  flowto: string | null;
-  haspopup: string | null;
-  alt: string | null;
-  src: string | null;
-  href: string | null;
-  live: string | null;
-  rowspan: string | null;
-  colspan: string | null;
-  listType: "ordered" | "unordered" | null;
-  placeholder: string | null;
-  title: string | null;
-  valueNow: string | null;
-  valueMin: string | null;
-  valueMax: string | null;
-  orientation: string | null;
-  invalid: string | null;
-  readonly: string | null;
-  modal: string | null;
-  multiselectable: string | null;
-  captions: string[];
-  componentType: string | null;
-  autoplay: string | null;
-}
-
-export interface IRNodeState {
-  expanded: string | null;
-  checked: string | null;
-  selected: string | null;
-  disabled: string | null;
-  pressed: string | null;
-  current: string | null;
-  hidden: string | null;
-  busy: string | null;
-  required: string | null;
-  live: string | null;
-  invalid: string | null;
-  readonly: string | null;
-  modal: string | null;
-  multiselectable: string | null;
-  orientation: string | null;
-  valueNow: string | null;
-  valueMin: string | null;
-  valueMax: string | null;
-}
-
-/**
- * ARIA relationship fields stored as node ID arrays.
- * Using string IDs rather than direct object references prevents graph cycles
- * that break JSON serialisation, snapshot testing, and diffing.
- * Consumers resolve IDs via `PageIR.nodes`.
- */
-export interface IRNodeRelations {
-  controls: string[];
-  labelledBy: string[];
-  describedBy: string[];
-  owns: string[];
-  details: string[];
-  errorMessage: string[];
-  flowTo: string[];
-  /** IDs of caption nodes that are direct children of a figure node. */
-  figureCaption: string[];
-  /** IDs of header cells (th) associated with this cell via headers= or scope=. */
-  headers: string[];
-}
-
-export interface IRNode {
-  id: string;
-  role: IRRole;
-  level: number | null;
-  label: string | null;
-  unlabelledYet: boolean;
-  landmark: boolean;
-  source: IRSource;
-  confidence: number;
-  readingIndex: number;
-  /**
-   * Depth of this node in the semantic containment tree.
-   * 0 = top-level landmarks (main, nav, aside).
-   * Increases by 1 for each nested semantic container (region, article, list).
-   * Used by the spatial mapping engine to decide panel vs. floating control placement.
-   * This is a semantic property — the mapping engine converts it to physical depth offset.
-   */
-  readingDepth: number;
-  parent: string | null;
-  children: string[];
-  relations: IRNodeRelations;
-  state: IRNodeState;
-  attributes: IRNodeAttributes;
-}
-
-export interface IRMeta {
-  url: string;
-  title: string | null;
-  lang: string | null;
-  parsedAt: string;
-  config: ParserConfig;
-}
-
-export interface IRFallbackEntry {
-  id: string;
-  tag: string;
-  reason: "ai-timeout";
-}
-
-export interface LandmarkTOCNode {
-  id: string;
-  label: string | null;
-  children: LandmarkTOCNode[];
-}
-
-export interface IRAnalytics {
-  headingCount: number;
-  landmarkCount: number;
-  controlCount: number;
-  sectionCount: number;
-  textDensity: number;
-  wordCount: number;
-  textLength: number;
-  childCount: number;
-  liveRegionCount: number;
-}
-
-export interface PageIR {
-  meta: IRMeta;
-  landmarks: LandmarkTOCNode;
-  root: string;
-  fallbackLog: IRFallbackEntry[];
-  analytics: IRAnalytics;
-  readingOrder: string[];
-  nodes: Record<string, IRNode>;
-}
-
-const SKIP_TAGS = new Set([
-  "script",
-  "style",
-  "noscript",
-  "meta",
-  "link",
-  "head",
-  "br",
-  "wbr",
-  "svg",
-  "canvas",
-  "template",
-]);
-
-const WRAPPER_TAGS = new Set(["div", "span", "picture"]);
-
-const LANDMARK_ROLES = new Set([
-  "main",
-  "navigation",
-  "banner",
-  "contentinfo",
-  "complementary",
-  "search",
-  "form",
-  "region",
-]);
-
-const INTERACTIVE_ROLES = new Set([
-  "button",
-  "link",
-  "textbox",
-  "searchbox",
-  "checkbox",
-  "radio",
-  "combobox",
-  "slider",
-  "spinbutton",
-  "switch",
-  "tab",
-  "menuitem",
-  "menuitemcheckbox",
-  "menuitemradio",
-  "treeitem",
-  "option",
-]);
-
-// ---------------------------------------------------------------------------
-// Layer 3: AI-assisted fallback — provider interface and stub
-// ---------------------------------------------------------------------------
-
-/** The structured response the AI provider must return for each node. */
-export interface AIFallbackResponse {
-  role: IRRole;
-  confidence: number;
-  reasoning: string;
-}
-
-/**
- * Provider interface. Swap the stub for a real implementation that calls
- * Ollama / llama.cpp / a cloud API without changing any other parser code.
- */
-export interface AIFallbackProvider {
-  classify(
-    domSubtree: string,
-    nodeId: string,
-  ): Promise<AIFallbackResponse | null>;
-}
+import {
+  DEFAULT_CONFIG,
+  INLINE_TAGS,
+  INTERACTIVE_ROLES,
+  LANDMARK_ROLES,
+  SKIP_TAGS,
+  WRAPPER_TAGS,
+} from "./defaults";
+import type {
+  AIFallbackProvider,
+  AIFallbackResponse,
+  BuildContext,
+  IRAnalytics,
+  IRFallbackEntry,
+  IRNode,
+  IRNodeAttributes,
+  IRSource,
+  LandmarkRecord,
+  LandmarkTOCNode,
+  PageIR,
+  ParserConfig,
+} from "./types";
+import {
+  readNodeAttributes,
+  assignIfDefined,
+  directTextContent,
+  resolveRoleFromElement,
+  resolveNodeLabel,
+  confidenceForSource,
+  createEmptyRelations,
+  readNodeState,
+  mergeAttributes,
+  isAccessibilityHidden,
+  createEmptyState,
+  createEmptyAttributes,
+  isListCandidate,
+  hydrateRelations,
+} from "./utils";
 
 /**
  * Stub provider — always returns null so the node stays "generic".
@@ -300,272 +49,6 @@ export class StubAIProvider implements AIFallbackProvider {
     return null; // ai-fallback-value: no classification attempted
   }
 }
-
-// ---------------------------------------------------------------------------
-// Parser configuration — feature flags for controlled evaluation
-// ---------------------------------------------------------------------------
-
-/**
- * Controls which pipeline layers are active during a parse.
- *
- * Flags are checked at the exact decision point in the code — not as
- * top-level gates — so each flag isolates exactly one capability and
- * combinations are independently composable.
- */
-export interface ParserConfig {
-  // ── Layer flags ───────────────────────────────────────────────────────────
-
-  /**
-   * Layer 1 — honour explicit `role=` attributes.
-   * When false every element is resolved through structural tag mapping only.
-   * Disabling simulates a site that uses semantic HTML tags but no ARIA roles.
-   */
-  useExplicitSemantics: boolean;
-
-  /**
-   * Layer 2a — resolve labels from `aria-label`, `aria-labelledby`,
-   * `<label for>`, wrapping `<label>`, and `alt`.
-   * When false label resolution falls back to text-content heuristics only.
-   * Disabling simulates a site with no accessible naming whatsoever.
-   */
-  useAriaLabels: boolean;
-
-  /**
-   * Layer 2b — structural inference: heading-bounded implicit sections,
-   * `<a>`-run → navigation, `<p>`-run → article group, repeated-subtree → list.
-   * When false no grouping is inferred beyond explicit landmark elements.
-   * Disabling simulates a completely flat, un-sectioned document.
-   */
-  useStructuralInference: boolean;
-
-  /**
-   * Layer 3 — AI-assisted fallback for nodes that remain `generic` after
-   * layers 1 and 2.
-   * When false generic nodes stay generic; nothing is sent to the provider.
-   */
-  useAIFallback: boolean;
-
-  // ── Wrapper behaviour ─────────────────────────────────────────────────────
-
-  /**
-   * Pierce inert `div`/`span`/`picture` wrapper chains to reach the real
-   * semantic child.  When false every wrapper element is emitted as its own
-   * `generic` node, reproducing the raw "div soup" tree.
-   *
-   * Disabling this is the most direct simulation of what happens when a
-   * site has no semantic structure and wrappers are not elided.
-   */
-  useWrapperPiercing: boolean;
-
-  /**
-   * Extra tags treated as potentially-inert wrappers in addition to the
-   * fixed set (`div`, `span`, `picture`).  Each tag is only pierced when it
-   * carries no ARIA attributes or `id`.
-   *
-   * Useful for testing whether `article` / `section` without ARIA should be
-   * collapsed in the same way as anonymous divs.
-   *
-   * @example ["article", "section"]
-   */
-  extraWrapperTags: string[];
-
-  // ── Run-detection thresholds ──────────────────────────────────────────────
-
-  /**
-   * Minimum consecutive identical siblings required to trigger the
-   * repeated-subtree → inferred list heuristic.
-   * Default 3.  Lower values produce more (possibly spurious) list nodes;
-   * higher values suppress grouping on short runs.
-   */
-  minListRun: number;
-
-  /**
-   * Minimum consecutive `<a>` siblings required to trigger the
-   * `<a>`-run → inferred navigation heuristic.
-   * Default 3.
-   */
-  minLinkRun: number;
-
-  /**
-   * Minimum consecutive `<p>` siblings required to trigger the
-   * `<p>`-run → inferred article-body group heuristic.
-   * Default 3.
-   */
-  minParagraphRun: number;
-
-  // ── Label behaviour ───────────────────────────────────────────────────────
-
-  /**
-   * Maximum characters kept from any resolved label string.
-   * Longer labels are truncated at this boundary.
-   * Default 280.
-   */
-  labelMaxChars: number;
-
-  // ── SVG / Canvas inclusion ────────────────────────────────────────────────
-
-  /**
-   * When true `<svg>` elements are not skipped; the parser attempts to
-   * extract a label from their `aria-label`, `aria-labelledby`, or `<title>`
-   * child and emits them as `img` nodes.
-   *
-   * Useful for testing sites that place meaningful content inside SVG
-   * (icon labels, inline charts).
-   */
-  includeSvg: boolean;
-
-  /**
-   * When true `<canvas>` elements are not skipped and are emitted as `img`
-   * nodes (label sourced from `aria-label` or `aria-labelledby` only, since
-   * canvas has no accessible text content by default).
-   */
-  includeCanvas: boolean;
-
-  // ── Confidence scores ─────────────────────────────────────────────────────
-
-  /**
-   * Per-source confidence scores used when tagging IR nodes.
-   * Override individual values to explore how confidence weighting affects
-   * downstream spatial mapping decisions.
-   */
-  sourceConfidence: Record<IRSource, number>;
-
-  /**
-   * Confidence threshold below which a node is sent to the AI fallback.
-   * Any node whose resolved confidence is strictly less than this value
-   * triggers a provider call (when `useAIFallback` is also true).
-   * Default 0.6.
-   */
-  aiFallbackThreshold: number;
-
-  // ── Reading order strategy ────────────────────────────────────────────────
-
-  /**
-   * How the final `readingOrder` array is computed.
-   *
-   * - `"dom"` — nodes are ordered by DOM traversal sequence (default).
-   *   Produces the most faithful left-to-right, top-to-bottom reading order.
-   *
-   * - `"landmark-first"` — all landmark nodes are sorted before their
-   *   non-landmark children, preserving DOM order within each tier.
-   *   Useful for spatial layouts that render the navigation shell before
-   *   content panels.
-   *
-   * - `"flowto-aware"` — follows `aria-flowto` relationships via graph
-   *   traversal. Nodes with an outgoing flowTo relation are visited in
-   *   flowTo order; remaining nodes are appended in DOM order.
-   */
-  readingOrderStrategy: "dom" | "landmark-first" | "flowto-aware";
-
-  excludeHiddenContent: boolean;
-}
-
-/** All layers enabled — the default production configuration. */
-export const DEFAULT_CONFIG: ParserConfig = {
-  useExplicitSemantics: true,
-  useAriaLabels: true,
-  useStructuralInference: true,
-  useAIFallback: true,
-  useWrapperPiercing: true,
-  extraWrapperTags: [],
-  minListRun: 3,
-  minLinkRun: 3,
-  minParagraphRun: 3,
-  labelMaxChars: 280,
-  includeSvg: false,
-  includeCanvas: false,
-  sourceConfidence: {
-    explicit: 0.95,
-    structural: 0.75,
-    ai: 0.61,
-    "ai-timeout": 0.4,
-    generic: 0.55,
-  },
-  aiFallbackThreshold: 0.6,
-  readingOrderStrategy: "dom",
-  excludeHiddenContent: true,
-};
-
-/** Convenience presets for evaluation conditions. */
-export const PARSER_CONFIGS = {
-  /**
-   * Absolute baseline — div/span soup with no ARIA, no inference, no
-   * wrapper elision.  Represents the worst-case accessible HTML quality.
-   */
-  baseline: {
-    ...DEFAULT_CONFIG,
-    useExplicitSemantics: false,
-    useAriaLabels: false,
-    useStructuralInference: false,
-    useAIFallback: false,
-    useWrapperPiercing: false,
-  },
-
-  /**
-   * Wrapper piercing only — elides inert div/span chains but applies no
-   * ARIA or structural inference.  Isolates the contribution of wrapper
-   * elision to IR quality.
-   */
-  withWrapperPiercing: {
-    ...DEFAULT_CONFIG,
-    useExplicitSemantics: false,
-    useAriaLabels: false,
-    useStructuralInference: false,
-    useAIFallback: false,
-    useWrapperPiercing: true,
-  },
-
-  /** Add explicit ARIA `role=` mapping over wrapper piercing. */
-  withExplicitSemantics: {
-    ...DEFAULT_CONFIG,
-    useExplicitSemantics: true,
-    useAriaLabels: false,
-    useStructuralInference: false,
-    useAIFallback: false,
-    useWrapperPiercing: true,
-  },
-
-  /** Add ARIA label resolution over explicit semantics. */
-  withAriaLabels: {
-    ...DEFAULT_CONFIG,
-    useExplicitSemantics: true,
-    useAriaLabels: true,
-    useStructuralInference: false,
-    useAIFallback: false,
-    useWrapperPiercing: true,
-  },
-
-  /** Add structural inference — full Layer 2, no AI. */
-  withStructuralInference: {
-    ...DEFAULT_CONFIG,
-    useExplicitSemantics: true,
-    useAriaLabels: true,
-    useStructuralInference: true,
-    useAIFallback: false,
-    useWrapperPiercing: true,
-  },
-
-  /** Full pipeline including AI fallback. */
-  full: DEFAULT_CONFIG,
-
-  /** DOM reading order (same as full, explicit for comparison harness). */
-  readingOrderDom: {
-    ...DEFAULT_CONFIG,
-    readingOrderStrategy: "dom" as const,
-  },
-
-  /** Landmark-first reading order — all landmarks before content nodes. */
-  readingOrderLandmarkFirst: {
-    ...DEFAULT_CONFIG,
-    readingOrderStrategy: "landmark-first" as const,
-  },
-
-  /** Flow-to-aware reading order — follows aria-flowto edges via graph traversal. */
-  readingOrderFlowtoAware: {
-    ...DEFAULT_CONFIG,
-    readingOrderStrategy: "flowto-aware" as const,
-  },
-} satisfies Record<string, ParserConfig>;
 
 /** Serialise a DOM subtree to a compact string for the AI prompt. */
 function serialiseDOMSubtree(
@@ -595,388 +78,6 @@ function serialiseDOMSubtree(
     return `<${tag}${attrs}>${inner}</${tag}>`;
   }
   return walk(element, 0);
-}
-
-const ARIA_ROLE_MAP: Partial<Record<string, IRRole>> = {
-  main: "main",
-  navigation: "navigation",
-  banner: "banner",
-  contentinfo: "contentinfo",
-  complementary: "complementary",
-  search: "search",
-  form: "form",
-  region: "region",
-  heading: "heading",
-  dialog: "dialog",
-  tablist: "tablist",
-  tabpanel: "tabpanel",
-  menu: "menu",
-  menubar: "menubar",
-  menuitem: "menuitem",
-  grid: "grid",
-  tree: "tree",
-  treeitem: "treeitem",
-  progressbar: "progressbar",
-  status: "status",
-  alert: "alert",
-  tooltip: "tooltip",
-  feed: "feed",
-  list: "list",
-  listitem: "listitem",
-  link: "link",
-  button: "button",
-  img: "img",
-  figure: "figure",
-  separator: "separator",
-  table: "table",
-  row: "row",
-  cell: "cell",
-  columnheader: "columnheader",
-  rowheader: "rowheader",
-  textbox: "textbox",
-  searchbox: "searchbox",
-  checkbox: "checkbox",
-  radio: "radio",
-  combobox: "combobox",
-  slider: "slider",
-  spinbutton: "spinbutton",
-  switch: "switch",
-  tab: "tab",
-  group: "group",
-  menuitemcheckbox: "menuitemcheckbox",
-  menuitemradio: "menuitemradio",
-  option: "option",
-  application: "application",
-  article: "article",
-  document: "document",
-  note: "note",
-  log: "log",
-  marquee: "marquee",
-  timer: "timer",
-  toolbar: "toolbar",
-  presentation: "presentation",
-  none: "none",
-};
-
-interface LandmarkRecord {
-  id: string;
-  label: string;
-  parentId: string;
-}
-
-interface TreeCounters {
-  node: number;
-  section: number;
-  reading: number;
-}
-
-interface BuildContext {
-  nodes: Record<string, IRNode>;
-  landmarkRecords: LandmarkRecord[];
-  doc?: Document;
-  counters: TreeCounters;
-  elementToNodeId: WeakMap<Element, string>;
-  fallbackProvider: AIFallbackProvider;
-  fallbackLog: IRFallbackEntry[];
-  config: ParserConfig;
-  skipTags: Set<string>;
-  wrapperTags: Set<string>;
-}
-
-function parseIdRefs(value: string | null): string[] {
-  return value?.trim() ? value.trim().split(/\s+/) : [];
-}
-
-function createEmptyAttributes(): IRNodeAttributes {
-  return {
-    expanded: null,
-    checked: null,
-    selected: null,
-    disabled: null,
-    pressed: null,
-    current: null,
-    hidden: null,
-    busy: null,
-    required: null,
-    controls: null,
-    describedby: null,
-    labelledby: null,
-    owns: null,
-    details: null,
-    errormessage: null,
-    flowto: null,
-    haspopup: null,
-    alt: null,
-    src: null,
-    href: null,
-    live: null,
-    rowspan: null,
-    colspan: null,
-    listType: null,
-    placeholder: null,
-    title: null,
-    valueNow: null,
-    valueMin: null,
-    valueMax: null,
-    orientation: null,
-    invalid: null,
-    readonly: null,
-    modal: null,
-    multiselectable: null,
-    captions: [],
-    componentType: null,
-    autoplay: null,
-  };
-}
-
-function createEmptyState(): IRNodeState {
-  return {
-    expanded: null,
-    checked: null,
-    selected: null,
-    disabled: null,
-    pressed: null,
-    current: null,
-    hidden: null,
-    busy: null,
-    required: null,
-    live: null,
-    invalid: null,
-    readonly: null,
-    modal: null,
-    multiselectable: null,
-    orientation: null,
-    valueNow: null,
-    valueMin: null,
-    valueMax: null,
-  };
-}
-
-function createEmptyRelations(): IRNodeRelations {
-  return {
-    controls: [],
-    labelledBy: [],
-    describedBy: [],
-    owns: [],
-    details: [],
-    errorMessage: [],
-    flowTo: [],
-    figureCaption: [],
-    headers: [],
-  };
-}
-
-/**
- * Assign `value` into `target[key]` only when `value` is defined
- * (not `undefined` or `null`) and the target slot is currently empty
- * (`null` or `undefined`). Centralises the repeated pattern used by
- * `pierceWrapperChain` and `mergeAttributes`.
- */
-function assignIfDefined<T extends Record<string, any>>(
-  target: T,
-  key: keyof T,
-  value: any,
-): void {
-  if (value !== undefined && value !== null && target[key] == null) {
-    target[key] = value as any;
-  }
-}
-
-function confidenceForSource(source: IRSource, config: ParserConfig): number {
-  return config.sourceConfidence[source];
-}
-
-function isAccessibilityHidden(element: Element): boolean {
-  const html = element as HTMLElement;
-  return (
-    element.getAttribute("aria-hidden") === "true" ||
-    element.hasAttribute("hidden") ||
-    element.hasAttribute("inert") ||
-    html.style?.display === "none" ||
-    html.style?.visibility === "hidden"
-  );
-}
-
-function readNodeState(element: Element): IRNodeState {
-  return {
-    expanded: element.getAttribute("aria-expanded") ?? null,
-    checked: element.getAttribute("aria-checked") ?? null,
-    selected: element.getAttribute("aria-selected") ?? null,
-    disabled:
-      element.getAttribute("aria-disabled") ??
-      (element.hasAttribute("disabled") ? "true" : null),
-    pressed: element.getAttribute("aria-pressed") ?? null,
-    current: element.getAttribute("aria-current") ?? null,
-    hidden:
-      element.getAttribute("aria-hidden") ??
-      (element.hasAttribute("hidden") ? "true" : null),
-    busy: element.getAttribute("aria-busy") ?? null,
-    required: element.getAttribute("aria-required") ?? null,
-    live: element.getAttribute("aria-live") ?? null,
-    invalid: element.getAttribute("aria-invalid") ?? null,
-    readonly: element.getAttribute("aria-readonly") ?? null,
-    modal: element.getAttribute("aria-modal") ?? null,
-    multiselectable: element.getAttribute("aria-multiselectable") ?? null,
-    orientation: element.getAttribute("aria-orientation") ?? null,
-    valueNow: element.getAttribute("aria-valuenow") ?? null,
-    valueMin: element.getAttribute("aria-valuemin") ?? null,
-    valueMax: element.getAttribute("aria-valuemax") ?? null,
-  };
-}
-
-function readNodeAttributes(element: Element): IRNodeAttributes {
-  return {
-    expanded: element.getAttribute("aria-expanded") ?? null,
-    checked: element.getAttribute("aria-checked") ?? null,
-    selected: element.getAttribute("aria-selected") ?? null,
-    disabled:
-      element.getAttribute("aria-disabled") ??
-      (element.hasAttribute("disabled") ? "true" : null),
-    pressed: element.getAttribute("aria-pressed") ?? null,
-    current: element.getAttribute("aria-current") ?? null,
-    hidden:
-      element.getAttribute("aria-hidden") ??
-      (element.hasAttribute("hidden") ? "true" : null),
-    busy: element.getAttribute("aria-busy") ?? null,
-    required: element.getAttribute("aria-required") ?? null,
-    controls: element.getAttribute("aria-controls") ?? null,
-    describedby: element.getAttribute("aria-describedby") ?? null,
-    labelledby: element.getAttribute("aria-labelledby") ?? null,
-    owns: element.getAttribute("aria-owns") ?? null,
-    details: element.getAttribute("aria-details") ?? null,
-    errormessage: element.getAttribute("aria-errormessage") ?? null,
-    flowto: element.getAttribute("aria-flowto") ?? null,
-    haspopup: element.getAttribute("aria-haspopup") ?? null,
-    alt: element.getAttribute("alt") ?? null,
-    src: element.getAttribute("src") ?? null,
-    href: element.getAttribute("href") ?? null,
-    live: element.getAttribute("aria-live") ?? null,
-    rowspan: element.getAttribute("rowspan") ?? null,
-    colspan: element.getAttribute("colspan") ?? null,
-    listType:
-      element.tagName.toLowerCase() === "ol"
-        ? "ordered"
-        : element.tagName.toLowerCase() === "ul"
-          ? "unordered"
-          : null,
-    placeholder: element.getAttribute("placeholder") ?? null,
-    title: element.getAttribute("title") ?? null,
-    valueNow: element.getAttribute("aria-valuenow") ?? null,
-    valueMin: element.getAttribute("aria-valuemin") ?? null,
-    valueMax: element.getAttribute("aria-valuemax") ?? null,
-    orientation: element.getAttribute("aria-orientation") ?? null,
-    invalid: element.getAttribute("aria-invalid") ?? null,
-    readonly: element.getAttribute("aria-readonly") ?? null,
-    modal: element.getAttribute("aria-modal") ?? null,
-    multiselectable: element.getAttribute("aria-multiselectable") ?? null,
-    captions: (() => {
-      const tracks = Array.from(
-        element.querySelectorAll("track[kind='captions']"),
-      );
-      return tracks.map((t) => t.getAttribute("src") ?? "").filter(Boolean);
-    })(),
-    componentType: null,
-    autoplay: element.getAttribute("autoplay") ?? null,
-  };
-}
-
-function mergeAttributes(
-  base: IRNodeAttributes,
-  lifted: Partial<IRNodeAttributes>,
-): IRNodeAttributes {
-  const result = { ...base };
-  for (const key of Object.keys(lifted) as (keyof IRNodeAttributes)[]) {
-    assignIfDefined(result, key, lifted[key]);
-  }
-  return result;
-}
-
-function directTextContent(element: Element): string {
-  let text = "";
-  for (const node of Array.from(element.childNodes)) {
-    if (node.nodeType === Node.TEXT_NODE) text += node.textContent ?? "";
-  }
-  return text.trim();
-}
-
-function resolveNodeLabel(
-  element: Element,
-  config: ParserConfig,
-  doc?: Document,
-): string | null {
-  const cap = (s: string) => s.slice(0, config.labelMaxChars) || null;
-
-  if (config.useAriaLabels) {
-    if (doc) {
-      const labelledby = element.getAttribute("aria-labelledby")?.trim();
-      if (labelledby) {
-        const text = labelledby
-          .split(/\s+/)
-          .map((id) => doc.getElementById(id)?.textContent?.trim() ?? "")
-          .filter(Boolean)
-          .join(" ");
-        if (text) return cap(text);
-      }
-    }
-
-    const ariaLabel = element.getAttribute("aria-label")?.trim() ?? "";
-    if (ariaLabel) return cap(ariaLabel);
-
-    const tag = element.tagName.toLowerCase();
-    if (tag === "img") {
-      const alt = element.getAttribute("alt")?.trim() ?? "";
-      if (alt) return cap(alt);
-      const src = element.getAttribute("src")?.trim() ?? "";
-      if (src) return cap(src.split("/").pop() ?? src);
-    }
-
-    if (doc && (tag === "input" || tag === "textarea" || tag === "select")) {
-      const id = element.getAttribute("id");
-      if (id) {
-        const labelEl = doc.querySelector(`label[for="${CSS.escape(id)}"]`);
-        const labelText = labelEl?.textContent?.trim();
-        if (labelText) return cap(labelText);
-      }
-      const wrappingLabel = element.closest("label");
-      if (wrappingLabel) {
-        const clone = wrappingLabel.cloneNode(true) as Element;
-        clone.querySelector("input,textarea,select")?.remove();
-        const labelText = clone.textContent?.trim();
-        if (labelText) return cap(labelText);
-      }
-    }
-    if (tag === "fieldset") {
-      const legend = element.querySelector("legend")?.textContent?.trim();
-      if (legend) return cap(legend);
-    }
-
-    // FIX: Extract native HTML label for figures
-    if (tag === "figure") {
-      const figcaption = element
-        .querySelector("figcaption")
-        ?.textContent?.trim();
-      if (figcaption) return cap(figcaption);
-    }
-
-    // SVG: extract label from <title> child when includeSvg is on
-    if (tag === "svg" && config.includeSvg) {
-      const title = element.querySelector("title")?.textContent?.trim();
-      if (title) return cap(title);
-    }
-  }
-
-  // Text-content fallback — always active regardless of config
-  const hasElementChildren = Array.from(element.children).some(
-    (child) => !SKIP_TAGS.has(child.tagName.toLowerCase()),
-  );
-
-  if (!hasElementChildren) {
-    const text = element.textContent?.trim() ?? "";
-    return text ? cap(text) : null;
-  }
-
-  const direct = directTextContent(element);
-  return direct ? cap(direct) : null;
 }
 
 function resolveSectionLabel(
@@ -1022,143 +123,6 @@ function resolveSectionLabel(
     }
   }
   return fallbackLabel;
-}
-
-function resolveRoleFromElement(
-  element: Element,
-  config: ParserConfig,
-): {
-  role: IRRole;
-  level: number | null;
-  source: Extract<IRSource, "explicit" | "structural">;
-} {
-  if (config.useExplicitSemantics) {
-    const ariaRole = element.getAttribute("role")?.trim().toLowerCase();
-    if (ariaRole) {
-      const level =
-        ariaRole === "heading"
-          ? Number.parseInt(element.getAttribute("aria-level") ?? "2", 10) || 2
-          : null;
-      return {
-        role: ARIA_ROLE_MAP[ariaRole] ?? "generic",
-        level,
-        source: "explicit",
-      };
-    }
-  }
-
-  const tag = element.tagName.toLowerCase();
-  let tagResolved = resolveRoleFromTag(tag, element);
-  if (tagResolved.role === "generic" && element.hasAttribute("aria-live")) {
-    const liveValue = element.getAttribute("aria-live")?.toLowerCase();
-    tagResolved = {
-      role: liveValue === "assertive" ? "alert" : "status",
-      level: null,
-    };
-  }
-
-  if (
-    tagResolved.role === "generic" &&
-    element.getAttribute("tabindex") === "0"
-  ) {
-    tagResolved = {
-      role: "button",
-      level: null,
-    };
-  }
-
-  return { ...tagResolved, source: "structural" };
-}
-
-function resolveRoleFromTag(
-  tag: string,
-  element?: Element,
-): { role: IRRole; level: number | null } {
-  if (tag === "main") return { role: "main", level: null };
-  if (tag === "header") {
-    // A header is only a banner if it is NOT scoped to a sectioning element
-    if (element && element.closest("main, article, section, nav, aside")) {
-      return { role: "generic", level: null };
-    }
-    return { role: "banner", level: null };
-  }
-  if (tag === "footer") {
-    // A footer is only a contentinfo if it is NOT scoped to a sectioning element
-    if (element && element.closest("main, article, section, nav, aside")) {
-      return { role: "generic", level: null };
-    }
-    return { role: "contentinfo", level: null };
-  }
-  if (tag === "aside") return { role: "complementary", level: null };
-  if (tag === "nav") return { role: "navigation", level: null };
-  if (tag === "form") return { role: "form", level: null };
-  if (tag === "section") return { role: "region", level: null };
-
-  if (tag === "p") return { role: "paragraph", level: null };
-  if (tag === "article") return { role: "article", level: null };
-  if (tag === "img") return { role: "img", level: null };
-  if (tag === "ul" || tag === "ol") return { role: "list", level: null };
-  if (tag === "li") return { role: "listitem", level: null };
-  if (tag === "a") return { role: "link", level: null };
-  if (tag === "dialog") return { role: "dialog", level: null };
-  if (tag === "details") return { role: "group", level: null };
-  if (tag === "summary") return { role: "button", level: null };
-  if (tag === "progress") return { role: "progressbar", level: null };
-  if (tag === "meter") return { role: "progressbar", level: null };
-  if (tag === "output") return { role: "status", level: null };
-
-  if (tag === "button") return { role: "button", level: null };
-
-  if (tag === "input") {
-    const type = element?.getAttribute("type")?.toLowerCase() ?? "text";
-    if (type === "checkbox") return { role: "checkbox", level: null };
-    if (type === "radio") return { role: "radio", level: null };
-    if (type === "range") return { role: "slider", level: null };
-    if (type === "number") return { role: "spinbutton", level: null };
-    if (type === "search") return { role: "searchbox", level: null };
-    if (["button", "submit", "reset", "image"].includes(type)) {
-      return { role: "button", level: null };
-    }
-    return { role: "textbox", level: null };
-  }
-
-  if (tag === "textarea") return { role: "textbox", level: null };
-  if (tag === "select") return { role: "combobox", level: null };
-
-  if (tag === "figure") return { role: "figure", level: null };
-
-  if (tag === "figcaption") return { role: "caption", level: null };
-
-  if (tag === "blockquote") return { role: "blockquote", level: null };
-  if (tag === "code" || tag === "pre") return { role: "code", level: null };
-  if (tag === "hr") return { role: "separator", level: null };
-
-  if (tag === "table") return { role: "table", level: null };
-  if (tag === "tr") return { role: "row", level: null };
-  if (tag === "td") return { role: "cell", level: null };
-  if (tag === "th") {
-    const scope = element?.getAttribute("scope");
-    return {
-      role: scope === "row" ? "rowheader" : "columnheader",
-      level: null,
-    };
-  }
-  if (tag === "thead" || tag === "tbody" || tag === "tfoot") {
-    return { role: "group", level: null };
-  }
-  if (tag === "fieldset") return { role: "group", level: null };
-
-  if (tag.length === 2 && tag[0] === "h") {
-    const parsed = Number.parseInt(tag[1], 10);
-    if (!Number.isNaN(parsed) && parsed >= 1 && parsed <= 6) {
-      return { role: "heading", level: parsed };
-    }
-  }
-  if (tag === "video") return { role: "video", level: null };
-
-  if (tag === "audio") return { role: "audio", level: null };
-
-  return { role: "generic", level: null };
 }
 
 function isInertWrapper(element: Element, ctx: BuildContext): boolean {
@@ -1255,233 +219,9 @@ function childSignature(element: Element): string {
   ].join("|");
 }
 
-function isListCandidate(element: Element, config: ParserConfig): boolean {
-  const role = resolveRoleFromElement(element, config).role;
-  if (LANDMARK_ROLES.has(role)) return false;
-  if (INTERACTIVE_ROLES.has(role)) return false;
-  if (role === "heading") return false;
-  const tag = element.tagName.toLowerCase();
-  return tag !== "ul" && tag !== "ol" && tag !== "li";
-}
-
-/** Resolve space-separated ID refs to node IDs, skipping missing refs silently. */
-function relationTargets(
-  raw: string | null,
-  doc: Document | undefined,
-  elementToNodeId: WeakMap<Element, string>,
-): string[] {
-  if (!doc || !raw?.trim()) return [];
-  const ids: string[] = [];
-  for (const ref of parseIdRefs(raw)) {
-    const element = doc.getElementById(ref);
-    if (!element) continue;
-    const nodeId = elementToNodeId.get(element);
-    if (nodeId) ids.push(nodeId);
-  }
-  return ids;
-}
-
-function hydrateRelations(
-  nodes: Record<string, IRNode>,
-  doc: Document | undefined,
-  elementToNodeId: WeakMap<Element, string>,
-): void {
-  // ── ARIA ID-ref relations ────────────────────────────────────────────────
-  for (const node of Object.values(nodes)) {
-    node.relations.controls = relationTargets(
-      node.attributes.controls,
-      doc,
-      elementToNodeId,
-    );
-    node.relations.labelledBy = relationTargets(
-      node.attributes.labelledby,
-      doc,
-      elementToNodeId,
-    );
-    node.relations.describedBy = relationTargets(
-      node.attributes.describedby,
-      doc,
-      elementToNodeId,
-    );
-    node.relations.owns = relationTargets(
-      node.attributes.owns,
-      doc,
-      elementToNodeId,
-    );
-    node.relations.details = relationTargets(
-      node.attributes.details,
-      doc,
-      elementToNodeId,
-    );
-    node.relations.errorMessage = relationTargets(
-      node.attributes.errormessage,
-      doc,
-      elementToNodeId,
-    );
-    node.relations.flowTo = relationTargets(
-      node.attributes.flowto,
-      doc,
-      elementToNodeId,
-    );
-  }
-
-  // ── figureCaption: IDs of caption children of figure nodes ──────────────
-  for (const node of Object.values(nodes)) {
-    if (node.role === "figure") {
-      node.relations.figureCaption = node.children.filter(
-        (id) => nodes[id]?.role === "caption",
-      );
-    }
-  }
-
-  // ── Form label association: <label for="id"> → input.relations.labelledBy
-  // Supplements aria-labelledby for native HTML form controls.
-  // We walk every label element, resolve its `for` target, and add the
-  // label's node ID to that input's labelledBy array (deduplicating).
-  if (doc) {
-    for (const labelEl of Array.from(doc.querySelectorAll("label[for]"))) {
-      const forId = labelEl.getAttribute("for");
-      if (!forId) continue;
-      const targetEl = doc.getElementById(forId);
-      if (!targetEl) continue;
-      const labelNodeId = elementToNodeId.get(labelEl);
-      const targetNodeId = elementToNodeId.get(targetEl);
-      if (!labelNodeId || !targetNodeId) continue;
-      const targetNode = nodes[targetNodeId];
-      if (!targetNode) continue;
-      if (!targetNode.relations.labelledBy.includes(labelNodeId)) {
-        targetNode.relations.labelledBy.push(labelNodeId);
-      }
-    }
-  }
-
-  // ── Table header association: cell.relations.headers ────────────────────
-  // Two strategies are combined:
-  //
-  // 1. Explicit `headers=""` attribute on <td>/<th> — direct ID refs to header
-  //    cells, honoured exactly.
-  //
-  // 2. Implicit scope-based association when `headers` is absent:
-  //    - `scope="col"` (or th in thead without scope) → associated with every
-  //      cell in the same column index.
-  //    - `scope="row"` → associated with every cell in the same row.
-  //
-  // The result is stored as string[] of header node IDs on each data cell.
-  if (doc) {
-    for (const tableEl of Array.from(doc.querySelectorAll("table"))) {
-      // Pass 1: explicit headers= attribute
-      for (const cellEl of Array.from(tableEl.querySelectorAll("td, th"))) {
-        const headersAttr = cellEl.getAttribute("headers");
-        if (!headersAttr?.trim()) continue;
-        const cellNodeId = elementToNodeId.get(cellEl);
-        if (!cellNodeId || !nodes[cellNodeId]) continue;
-        const resolved = relationTargets(headersAttr, doc, elementToNodeId);
-        for (const hId of resolved) {
-          if (!nodes[cellNodeId].relations.headers.includes(hId)) {
-            nodes[cellNodeId].relations.headers.push(hId);
-          }
-        }
-      }
-
-      // Pass 2: scope-based implicit association
-      // Build a column-index → header node ID map from scope="col" headers.
-      const rows = Array.from(tableEl.querySelectorAll("tr"));
-      const colHeaders: Map<number, string> = new Map(); // colIndex → nodeId
-      const rowHeadersByRow: Map<Element, string[]> = new Map(); // tr → nodeIds
-
-      for (const rowEl of rows) {
-        const cells = Array.from(rowEl.children).filter(
-          (c) => c.tagName === "TD" || c.tagName === "TH",
-        );
-        const rowScopeIds: string[] = [];
-
-        cells.forEach((cellEl, colIndex) => {
-          if (cellEl.tagName !== "TH") return;
-          const scope = cellEl.getAttribute("scope")?.toLowerCase();
-          const nodeId = elementToNodeId.get(cellEl);
-          if (!nodeId) return;
-
-          // Treat th in thead without scope as col header
-          const inThead = !!cellEl.closest("thead");
-          if (scope === "col" || (!scope && inThead)) {
-            colHeaders.set(colIndex, nodeId);
-          } else if (scope === "row") {
-            rowScopeIds.push(nodeId);
-          }
-        });
-
-        if (rowScopeIds.length) rowHeadersByRow.set(rowEl, rowScopeIds);
-      }
-
-      // Apply implicit associations to data cells that have no explicit headers=
-      for (const rowEl of rows) {
-        const cells = Array.from(rowEl.children).filter(
-          (c) => c.tagName === "TD" || c.tagName === "TH",
-        );
-        const rowScopeIds = rowHeadersByRow.get(rowEl) ?? [];
-
-        cells.forEach((cellEl, colIndex) => {
-          if (cellEl.getAttribute("headers")?.trim()) return; // already handled in pass 1
-          const cellNodeId = elementToNodeId.get(cellEl);
-          if (!cellNodeId || !nodes[cellNodeId]) return;
-
-          const toAdd: string[] = [];
-          const colHeaderId = colHeaders.get(colIndex);
-          if (colHeaderId && colHeaderId !== cellNodeId)
-            toAdd.push(colHeaderId);
-          for (const rId of rowScopeIds) {
-            if (rId !== cellNodeId) toAdd.push(rId);
-          }
-          for (const hId of toAdd) {
-            if (!nodes[cellNodeId].relations.headers.includes(hId)) {
-              nodes[cellNodeId].relations.headers.push(hId);
-            }
-          }
-        });
-      }
-    }
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Mixed-content normalisation
 // ---------------------------------------------------------------------------
-
-/**
- * Inline-level HTML tags. Text nodes and these elements together form prose
- * runs that should be grouped into a single paragraph-like node rather than
- * being split or silently dropped.
- */
-const INLINE_TAGS = new Set([
-  "a",
-  "abbr",
-  "acronym",
-  "b",
-  "bdi",
-  "bdo",
-  "cite",
-  "code",
-  "data",
-  "dfn",
-  "em",
-  "i",
-  "kbd",
-  "mark",
-  "q",
-  "rp",
-  "rt",
-  "ruby",
-  "s",
-  "samp",
-  "small",
-  "span",
-  "strong",
-  "sub",
-  "sup",
-  "time",
-  "u",
-  "var",
-]);
 
 /**
  * Normalise the direct children of `element` for parser consumption.
@@ -1634,7 +374,9 @@ async function createNode(
     resolvedRole === "list";
 
   const childDepth = isSemanticContainer ? readingDepth + 1 : readingDepth;
-
+  if (LANDMARK_ROLES.has(resolvedRole)) {
+    console.log("[createNode-is-landmark]", id, resolvedRole);
+  }
   const children = await buildChildrenFromSiblings(
     normaliseChildContent(element, ctx.skipTags),
     id,
@@ -1664,382 +406,554 @@ async function createNode(
   return id;
 }
 
+// ---------------------------------------------------------------------------
+// buildChildrenFromSiblings — refactored
+//
+// The original single function is split into six focused handlers, each
+// responsible for exactly one pattern-match case. The main loop becomes a
+// dispatcher that tries each handler in priority order.
+//
+// Changes vs original:
+//   1. peelSibling() helper deduplicates the isInertWrapper/pierceWrapperChain
+//      pattern that appeared 8 times inline
+//   2. handleLinkRun: label is now taken from ctx.nodes[parentId]?.label
+//      rather than child.parentElement — the original always resolved to the
+//      grandparent container, not a meaningful nav title
+//   3. handleHeadingSection: uses siblings.slice() + map instead of a manual
+//      index loop — cleaner and eliminates the sectionNodePromises array
+// ---------------------------------------------------------------------------
+
+// ── Shared peel helper ───────────────────────────────────────────────────────
+
+function peelSibling(
+  el: Element,
+  ctx: BuildContext,
+): { element: Element; liftedAttrs: Partial<IRNodeAttributes> } {
+  return isInertWrapper(el, ctx)
+    ? pierceWrapperChain(el, ctx)
+    : { element: el, liftedAttrs: {} };
+}
+
+// ── Handler 1: SVG / canvas → img leaf ──────────────────────────────────────
+
+function handleMediaLeaf(
+  child: Element,
+  liftedAttrs: Partial<IRNodeAttributes>,
+  parentId: string,
+  ctx: BuildContext,
+  readingDepth: number,
+): string {
+  const id = `${parentId}-node-${ctx.counters.node++}`;
+  const readingIndex = ctx.counters.reading++;
+  const label = resolveNodeLabel(child, ctx.config, ctx.doc);
+  ctx.elementToNodeId.set(child, id);
+  ctx.nodes[id] = {
+    id,
+    role: "img",
+    level: null,
+    label,
+    unlabelledYet: label === null,
+    landmark: false,
+    source: "structural",
+    confidence: confidenceForSource("structural", ctx.config),
+    readingIndex,
+    parent: parentId,
+    children: [],
+    relations: createEmptyRelations(),
+    state: createEmptyState(),
+    attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
+    readingDepth,
+  };
+  return id;
+}
+
+// ── Handler 2: landmark element → section node ──────────────────────────────
+
+async function handleLandmark(
+  child: Element,
+  liftedAttrs: Partial<IRNodeAttributes>,
+  parentId: string,
+  landmarkParentId: string,
+  ctx: BuildContext,
+  readingDepth: number,
+): Promise<string> {
+  const roleInfo = resolveRoleFromElement(child, ctx.config);
+  const landmarkId = `${parentId}-section-${ctx.counters.section++}`;
+  const readingIndex = ctx.counters.reading++;
+  console.log(
+    "[landmark-children]",
+    landmarkId,
+    Array.from(child.children).map(
+      (c) => c.tagName + (c.getAttribute("aria-label") ?? ""),
+    ),
+  );
+
+  // Register before descending so aria-controls/labelledby can resolve here
+  ctx.elementToNodeId.set(child, landmarkId);
+
+  const nestedChildren = await buildChildrenFromSiblings(
+    Array.from(child.children).filter(
+      (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
+    ),
+    landmarkId,
+    landmarkId,
+    ctx,
+    readingDepth + 1,
+    true,
+  );
+
+  const label =
+    resolveNodeLabel(child, ctx.config, ctx.doc) ??
+    resolveSectionLabel(landmarkId, ctx.config, child, ctx.doc);
+
+  ctx.landmarkRecords.push({
+    id: landmarkId,
+    label,
+    parentId: landmarkParentId,
+  });
+  console.log("[landmark]", {
+    id: landmarkId,
+    label,
+    parentId: landmarkParentId,
+  });
+
+  ctx.nodes[landmarkId] = {
+    id: landmarkId,
+    role: roleInfo.role,
+    level: roleInfo.level,
+    label,
+    unlabelledYet: label === null,
+    landmark: true,
+    source: roleInfo.source,
+    confidence: confidenceForSource(roleInfo.source, ctx.config),
+    readingIndex,
+    parent: parentId,
+    children: nestedChildren,
+    relations: createEmptyRelations(),
+    state: readNodeState(child),
+    attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
+    readingDepth,
+  };
+
+  return landmarkId;
+}
+
+// ── Handler 3: heading + following siblings → inferred region ────────────────
+//
+// Returns { id, endIndex } if the heading has content to group, null if it
+// stands alone (falls through to leaf node handling).
+
+async function handleHeadingSection(
+  siblings: Element[],
+  index: number,
+  parentId: string,
+  landmarkParentId: string,
+  ctx: BuildContext,
+  readingDepth: number,
+): Promise<{ id: string; endIndex: number } | null> {
+  const child = peelSibling(siblings[index], ctx).element;
+  const headingLevel = resolveRoleFromElement(child, ctx.config).level ?? 0;
+
+  let endIndex = index + 1;
+  while (endIndex < siblings.length) {
+    const lookahead = peelSibling(siblings[endIndex], ctx).element;
+    const lookaheadRole = resolveRoleFromElement(lookahead, ctx.config);
+    if (
+      lookaheadRole.role === "heading" &&
+      (lookaheadRole.level ?? 0) <= headingLevel
+    )
+      break;
+
+    if (
+      lookahead.tagName.toLowerCase() === "section" ||
+      LANDMARK_ROLES.has(lookaheadRole.role)
+    )
+      break; // ← add this
+
+    endIndex += 1;
+  }
+
+  if (endIndex === index + 1) return null; // heading stands alone
+
+  const sectionId = `${parentId}-section-${ctx.counters.section++}`;
+  const readingIndex = ctx.counters.reading++;
+
+  const sectionChildren = await Promise.all(
+    siblings.slice(index, endIndex).map((sib) => {
+      const peeled = peelSibling(sib, ctx);
+      return createNode(
+        peeled.element,
+        sectionId,
+        sectionId,
+        ctx,
+        peeled.liftedAttrs,
+        readingDepth + 1,
+      );
+    }),
+  );
+
+  const label =
+    resolveNodeLabel(child, ctx.config, ctx.doc) ??
+    child.textContent?.trim() ??
+    sectionId;
+
+  ctx.landmarkRecords.push({
+    id: sectionId,
+    label,
+    parentId: landmarkParentId,
+  });
+  console.log("[heading-section]", {
+    id: sectionId,
+    label,
+    parentId: landmarkParentId,
+  });
+  ctx.nodes[sectionId] = {
+    id: sectionId,
+    role: "region",
+    level: null,
+    label,
+    unlabelledYet: label === null,
+    landmark: true,
+    source: "structural",
+    confidence: confidenceForSource("structural", ctx.config),
+    readingIndex,
+    parent: parentId,
+    children: sectionChildren,
+    relations: createEmptyRelations(),
+    state: createEmptyState(),
+    attributes: createEmptyAttributes(),
+    readingDepth,
+  };
+
+  return { id: sectionId, endIndex };
+}
+
+// ── Handler 4: homogeneous run → inferred list ───────────────────────────────
+
+async function handleListRun(
+  siblings: Element[],
+  index: number,
+  parentId: string,
+  landmarkParentId: string,
+  ctx: BuildContext,
+  readingDepth: number,
+): Promise<{ id: string; endIndex: number } | null> {
+  const first = peelSibling(siblings[index], ctx).element;
+  if (!isListCandidate(first, ctx.config)) return null;
+
+  const signature = childSignature(first);
+  const run: Element[] = [];
+  let scan = index;
+
+  while (scan < siblings.length) {
+    const candidate = peelSibling(siblings[scan], ctx).element;
+    if (!isListCandidate(candidate, ctx.config)) break;
+    if (childSignature(candidate) !== signature) break;
+    run.push(candidate);
+    scan += 1;
+  }
+
+  if (run.length < ctx.config.minListRun) return null;
+
+  const listId = `${parentId}-list-${ctx.counters.section++}`;
+  const readingIndex = ctx.counters.reading++;
+
+  const listChildren = await Promise.all(
+    run.map((item) =>
+      createNode(item, listId, landmarkParentId, ctx, {}, readingDepth + 1),
+    ),
+  );
+
+  ctx.nodes[listId] = {
+    id: listId,
+    role: "list",
+    level: null,
+    label: null,
+    unlabelledYet: true,
+    landmark: false,
+    source: "structural",
+    confidence: confidenceForSource("structural", ctx.config),
+    readingIndex,
+    parent: parentId,
+    children: listChildren,
+    relations: createEmptyRelations(),
+    state: createEmptyState(),
+    attributes: { ...createEmptyAttributes(), listType: "unordered" },
+    readingDepth,
+  };
+
+  return { id: listId, endIndex: scan };
+}
+
+// ── Handler 5: <a>-run → inferred navigation landmark ────────────────────────
+//
+// FIX: label is resolved from the already-built parent node's own label rather
+// than child.parentElement. The original used child.parentElement which is the
+// same container element every time — it never contained a meaningful title.
+
+async function handleLinkRun(
+  siblings: Element[],
+  index: number,
+  parentId: string,
+  landmarkParentId: string,
+  ctx: BuildContext,
+  readingDepth: number,
+): Promise<{ id: string; endIndex: number } | null> {
+  const run: Element[] = [];
+  let scan = index;
+
+  while (scan < siblings.length) {
+    const candidate = peelSibling(siblings[scan], ctx).element;
+    if (candidate.tagName.toLowerCase() !== "a") break;
+    run.push(candidate);
+    scan += 1;
+  }
+
+  if (run.length < ctx.config.minLinkRun) return null;
+
+  const navId = `${parentId}-nav-${ctx.counters.section++}`;
+  const readingIndex = ctx.counters.reading++;
+
+  const navChildren = await Promise.all(
+    run.map((item) =>
+      createNode(item, navId, landmarkParentId, ctx, {}, readingDepth + 1),
+    ),
+  );
+
+  const inferredLabel = ctx.nodes[parentId]?.label ?? "Navigation";
+
+  ctx.landmarkRecords.push({
+    id: navId,
+    label: inferredLabel,
+    parentId: landmarkParentId,
+  });
+  console.log("[link-run-nav]", {
+    id: navId,
+    label: inferredLabel,
+    parentId: landmarkParentId,
+  });
+  ctx.nodes[navId] = {
+    id: navId,
+    role: "navigation",
+    level: null,
+    label: inferredLabel,
+    unlabelledYet: false,
+    landmark: true,
+    source: "structural",
+    confidence: confidenceForSource("structural", ctx.config),
+    readingIndex,
+    parent: parentId,
+    children: navChildren,
+    relations: createEmptyRelations(),
+    state: createEmptyState(),
+    attributes: createEmptyAttributes(),
+    readingDepth,
+  };
+
+  return { id: navId, endIndex: scan };
+}
+
+// ── Handler 6: <p>-run → inferred article body ───────────────────────────────
+
+async function handleParagraphRun(
+  siblings: Element[],
+  index: number,
+  parentId: string,
+  landmarkParentId: string,
+  ctx: BuildContext,
+  readingDepth: number,
+): Promise<{ id: string; endIndex: number } | null> {
+  const run: Element[] = [];
+  let scan = index;
+
+  while (scan < siblings.length) {
+    const candidate = peelSibling(siblings[scan], ctx).element;
+    if (candidate.tagName.toLowerCase() !== "p") break;
+    run.push(candidate);
+    scan += 1;
+  }
+
+  if (run.length < ctx.config.minParagraphRun) return null;
+
+  const articleId = `${parentId}-article-${ctx.counters.section++}`;
+  const readingIndex = ctx.counters.reading++;
+
+  const articleChildren = await Promise.all(
+    run.map((item) =>
+      createNode(item, articleId, landmarkParentId, ctx, {}, readingDepth + 1),
+    ),
+  );
+
+  ctx.nodes[articleId] = {
+    id: articleId,
+    role: "article",
+    level: null,
+    label: null,
+    unlabelledYet: true,
+    landmark: false,
+    source: "structural",
+    confidence: confidenceForSource("structural", ctx.config),
+    readingIndex,
+    parent: parentId,
+    children: articleChildren,
+    relations: createEmptyRelations(),
+    state: createEmptyState(),
+    attributes: createEmptyAttributes(),
+    readingDepth,
+  };
+
+  return { id: articleId, endIndex: scan };
+}
+
+// ── Main dispatcher ──────────────────────────────────────────────────────────
+
 async function buildChildrenFromSiblings(
   siblings: Element[],
   parentId: string,
   landmarkParentId: string,
   ctx: BuildContext,
   readingDepth = 0,
+  parentIsLandmark = false,
 ): Promise<string[]> {
   const childIds: string[] = [];
+  let index = 0;
 
-  for (let index = 0; index < siblings.length; ) {
-    const rawChild = siblings[index];
-    const peeled = isInertWrapper(rawChild, ctx)
-      ? pierceWrapperChain(rawChild, ctx)
-      : { element: rawChild, liftedAttrs: {} as Partial<IRNodeAttributes> };
-    const child = peeled.element;
+  while (index < siblings.length) {
+    const { element: child, liftedAttrs } = peelSibling(siblings[index], ctx);
+    const tag = child.tagName.toLowerCase();
 
     if (ctx.config.excludeHiddenContent && isAccessibilityHidden(child)) {
       index += 1;
       continue;
     }
-
-    const liftedAttrs = peeled.liftedAttrs;
-    const tag = child.tagName.toLowerCase();
-
     if (ctx.skipTags.has(tag)) {
       index += 1;
       continue;
     }
 
-    // ── SVG / canvas → img short-circuit ────────────────────────────────
-    // Only reached when includeSvg / includeCanvas removed them from skipTags.
+    // Media short-circuit
     if (tag === "svg" || tag === "canvas") {
-      const id = `${parentId}-node-${ctx.counters.node++}`;
-      const readingIndex = ctx.counters.reading++;
-      const label = resolveNodeLabel(child, ctx.config, ctx.doc);
-      ctx.elementToNodeId.set(child, id);
-      ctx.nodes[id] = {
-        id,
-        role: "img",
-        level: null,
-        label,
-        unlabelledYet: label === null,
-        landmark: false,
-        source: "structural",
-        confidence: confidenceForSource("structural", ctx.config),
-        readingIndex,
-        parent: parentId,
-        children: [],
-        relations: createEmptyRelations(),
-        state: createEmptyState(),
-        attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
-        readingDepth,
-      };
-      childIds.push(id);
-      index += 1;
-      continue;
-    }
-
-    const roleInfo = resolveRoleFromElement(child, ctx.config);
-    const isLandmark = tag === "section" || LANDMARK_ROLES.has(roleInfo.role);
-
-    if (isLandmark) {
-      const landmarkId = `${parentId}-section-${ctx.counters.section++}`;
-      const readingIndex = ctx.counters.reading++;
-
-      // Register before descending so aria-controls/labelledby can resolve to this landmark
-      ctx.elementToNodeId.set(child, landmarkId);
-
-      const nestedChildren = await buildChildrenFromSiblings(
-        Array.from(child.children).filter(
-          (candidate) => !ctx.skipTags.has(candidate.tagName.toLowerCase()),
-        ),
-        landmarkId,
-        landmarkId,
-        ctx,
-        readingDepth + 1,
+      childIds.push(
+        handleMediaLeaf(child, liftedAttrs, parentId, ctx, readingDepth),
       );
-
-      const label =
-        resolveNodeLabel(child, ctx.config, ctx.doc) ??
-        resolveSectionLabel(landmarkId, ctx.config, child, ctx.doc);
-      ctx.landmarkRecords.push({
-        id: landmarkId,
-        label,
-        parentId: landmarkParentId,
-      });
-      ctx.nodes[landmarkId] = {
-        id: landmarkId,
-        role: roleInfo.role,
-        level: roleInfo.level,
-        label,
-        unlabelledYet: label === null,
-        landmark: true,
-        source: roleInfo.source,
-        confidence: confidenceForSource(roleInfo.source, ctx.config),
-        readingIndex,
-        parent: parentId,
-        children: nestedChildren,
-        relations: createEmptyRelations(),
-        state: readNodeState(child),
-        attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
-        readingDepth,
-      };
-
-      childIds.push(landmarkId);
       index += 1;
       continue;
     }
 
+    // Landmark
+    const roleInfo = resolveRoleFromElement(child, ctx.config);
+
+    if (roleInfo.role === "main") {
+      // The <main> element is owned by the synthetic root node in parsePageToIR.
+      // Descend into it transparently without creating a new landmark node.
+      const mainChildren = await buildChildrenFromSiblings(
+        Array.from(child.children).filter(
+          (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
+        ),
+        parentId, // keep current parent context
+        landmarkParentId, // keep current landmark context
+        ctx,
+        readingDepth,
+      );
+      childIds.push(...mainChildren);
+      index += 1;
+      continue;
+    }
+
+    if (tag === "section" || LANDMARK_ROLES.has(roleInfo.role)) {
+      console.log("[dispatcher-landmark]", {
+        tag,
+        role: roleInfo.role,
+        id: `would-be-${ctx.counters.section}`,
+        parentId,
+        landmarkParentId,
+      });
+      childIds.push(
+        await handleLandmark(
+          child,
+          liftedAttrs,
+          parentId,
+          landmarkParentId,
+          ctx,
+          readingDepth,
+        ),
+      );
+      index += 1;
+      continue;
+    }
+
+    // Heading-inferred section
     if (ctx.config.useStructuralInference && roleInfo.role === "heading") {
-      const headingLevel = roleInfo.level ?? 0;
-      let endIndex = index + 1;
-
-      while (endIndex < siblings.length) {
-        const lookaheadPeeled = isInertWrapper(siblings[endIndex], ctx)
-          ? pierceWrapperChain(siblings[endIndex], ctx)
-          : {
-              element: siblings[endIndex],
-              liftedAttrs: {} as Partial<IRNodeAttributes>,
-            };
-        const lookaheadRole = resolveRoleFromElement(
-          lookaheadPeeled.element,
-          ctx.config,
+      if (!parentIsLandmark) {
+        const result = await handleHeadingSection(
+          siblings,
+          index,
+          parentId,
+          landmarkParentId,
+          ctx,
+          readingDepth,
         );
-        if (
-          lookaheadRole.role === "heading" &&
-          (lookaheadRole.level ?? 0) <= headingLevel
-        ) {
-          break;
+        if (result) {
+          childIds.push(result.id);
+          index = result.endIndex;
+          continue;
         }
-        endIndex += 1;
       }
+      // else: heading stands alone — fall through to leaf
+    }
 
-      if (endIndex > index + 1) {
-        const sectionId = `${parentId}-section-${ctx.counters.section++}`;
-        const readingIndex = ctx.counters.reading++;
-        const sectionNodePromises: Promise<string>[] = [];
-        for (let childIndex = index; childIndex < endIndex; childIndex += 1) {
-          const sectionPeeled = isInertWrapper(siblings[childIndex], ctx)
-            ? pierceWrapperChain(siblings[childIndex], ctx)
-            : {
-                element: siblings[childIndex],
-                liftedAttrs: {} as Partial<IRNodeAttributes>,
-              };
-          sectionNodePromises.push(
-            createNode(
-              sectionPeeled.element,
-              sectionId,
-              sectionId,
-              ctx,
-              sectionPeeled.liftedAttrs,
-              readingDepth + 1,
-            ),
-          );
-        }
-        const sectionChildren = await Promise.all(sectionNodePromises);
-
-        // For heading-inferred sections `child` is the heading element itself,
-        // so its text content directly IS the section label.
-        const label =
-          resolveNodeLabel(child, ctx.config, ctx.doc) ??
-          child.textContent?.trim() ??
-          sectionId;
-        ctx.landmarkRecords.push({
-          id: sectionId,
-          label,
-          parentId: landmarkParentId,
-        });
-        ctx.nodes[sectionId] = {
-          id: sectionId,
-          role: "region",
-          level: null,
-          label,
-          unlabelledYet: label === null,
-          landmark: true,
-          source: "structural",
-          confidence: confidenceForSource("structural", ctx.config),
-          readingIndex,
-          parent: parentId,
-          children: sectionChildren,
-          relations: createEmptyRelations(),
-          state: createEmptyState(),
-          attributes: createEmptyAttributes(),
-          readingDepth,
-        };
-
-        childIds.push(sectionId);
-        index = endIndex;
+    // Homogeneous run → list
+    if (ctx.config.useStructuralInference) {
+      const result = await handleListRun(
+        siblings,
+        index,
+        parentId,
+        landmarkParentId,
+        ctx,
+        readingDepth,
+      );
+      if (result) {
+        childIds.push(result.id);
+        index = result.endIndex;
         continue;
       }
     }
 
-    const signature =
-      ctx.config.useStructuralInference && isListCandidate(child, ctx.config)
-        ? childSignature(child)
-        : null;
-    if (signature) {
-      const run: Element[] = [];
-      let scan = index;
-
-      while (scan < siblings.length) {
-        const candidatePeeled = isInertWrapper(siblings[scan], ctx)
-          ? pierceWrapperChain(siblings[scan], ctx)
-          : {
-              element: siblings[scan],
-              liftedAttrs: {} as Partial<IRNodeAttributes>,
-            };
-        if (!isListCandidate(candidatePeeled.element, ctx.config)) break;
-        if (childSignature(candidatePeeled.element) !== signature) break;
-        run.push(candidatePeeled.element);
-        scan += 1;
-      }
-
-      if (run.length >= ctx.config.minListRun) {
-        const listId = `${parentId}-list-${ctx.counters.section++}`;
-        const readingIndex = ctx.counters.reading++;
-        const listChildren = await Promise.all(
-          run.map((item) =>
-            createNode(
-              item,
-              listId,
-              landmarkParentId,
-              ctx,
-              {},
-              readingDepth + 1,
-            ),
-          ),
-        );
-
-        ctx.nodes[listId] = {
-          id: listId,
-          role: "list",
-          level: null,
-          label: null,
-          unlabelledYet: true,
-          landmark: false,
-          source: "structural",
-          confidence: confidenceForSource("structural", ctx.config),
-          readingIndex,
-          parent: parentId,
-          children: listChildren,
-          relations: createEmptyRelations(),
-          state: createEmptyState(),
-          attributes: {
-            ...createEmptyAttributes(),
-            listType: "unordered",
-          },
-          readingDepth,
-        };
-
-        childIds.push(listId);
-        index = scan;
+    // <a>-run → navigation
+    if (ctx.config.useStructuralInference && tag === "a") {
+      const result = await handleLinkRun(
+        siblings,
+        index,
+        parentId,
+        landmarkParentId,
+        ctx,
+        readingDepth,
+      );
+      if (result) {
+        childIds.push(result.id);
+        index = result.endIndex;
         continue;
       }
     }
 
-    // ── Layer 2: <a>-run → inferred navigation landmark ──────────────────
-    if (
-      ctx.config.useStructuralInference &&
-      child.tagName.toLowerCase() === "a"
-    ) {
-      const run: Element[] = [];
-      let scan = index;
-      while (scan < siblings.length) {
-        const candidatePeeled = isInertWrapper(siblings[scan], ctx)
-          ? pierceWrapperChain(siblings[scan], ctx)
-          : {
-              element: siblings[scan],
-              liftedAttrs: {} as Partial<IRNodeAttributes>,
-            };
-        if (candidatePeeled.element.tagName.toLowerCase() !== "a") break;
-        run.push(candidatePeeled.element);
-        scan += 1;
-      }
-      if (run.length >= ctx.config.minLinkRun) {
-        const navId = `${parentId}-nav-${ctx.counters.section++}`;
-        const readingIndex = ctx.counters.reading++;
-        const navChildren = await Promise.all(
-          run.map((item) =>
-            createNode(
-              item,
-              navId,
-              landmarkParentId,
-              ctx,
-              {},
-              readingDepth + 1,
-            ),
-          ),
-        );
-        const inferredLabel =
-          resolveNodeLabel(child.parentElement!, ctx.config, ctx.doc) ??
-          "Navigation";
-        ctx.landmarkRecords.push({
-          id: navId,
-          label: inferredLabel,
-          parentId: landmarkParentId,
-        });
-        ctx.nodes[navId] = {
-          id: navId,
-          role: "navigation",
-          level: null,
-          label: inferredLabel,
-          unlabelledYet: false,
-          landmark: true,
-          source: "structural",
-          confidence: confidenceForSource("structural", ctx.config),
-          readingIndex,
-          parent: parentId,
-          children: navChildren,
-          relations: createEmptyRelations(),
-          state: createEmptyState(),
-          attributes: createEmptyAttributes(),
-          readingDepth,
-        };
-        childIds.push(navId);
-        index = scan;
+    // <p>-run → article
+    if (ctx.config.useStructuralInference && tag === "p") {
+      const result = await handleParagraphRun(
+        siblings,
+        index,
+        parentId,
+        landmarkParentId,
+        ctx,
+        readingDepth,
+      );
+      if (result) {
+        childIds.push(result.id);
+        index = result.endIndex;
         continue;
       }
     }
 
-    // ── Layer 2: <p>-run → inferred article-body group ───────────────────
-    if (
-      ctx.config.useStructuralInference &&
-      child.tagName.toLowerCase() === "p"
-    ) {
-      const run: Element[] = [];
-      let scan = index;
-      while (scan < siblings.length) {
-        const candidatePeeled = isInertWrapper(siblings[scan], ctx)
-          ? pierceWrapperChain(siblings[scan], ctx)
-          : {
-              element: siblings[scan],
-              liftedAttrs: {} as Partial<IRNodeAttributes>,
-            };
-        if (candidatePeeled.element.tagName.toLowerCase() !== "p") break;
-        run.push(candidatePeeled.element);
-        scan += 1;
-      }
-      if (run.length >= ctx.config.minParagraphRun) {
-        const articleId = `${parentId}-article-${ctx.counters.section++}`;
-        const readingIndex = ctx.counters.reading++;
-        const articleChildren = await Promise.all(
-          run.map((item) =>
-            createNode(
-              item,
-              articleId,
-              landmarkParentId,
-              ctx,
-              {},
-              readingDepth + 1,
-            ),
-          ),
-        );
-        ctx.nodes[articleId] = {
-          id: articleId,
-          role: "article",
-          level: null,
-          label: null,
-          unlabelledYet: true,
-          landmark: false,
-          source: "structural",
-          confidence: confidenceForSource("structural", ctx.config),
-          readingIndex,
-          parent: parentId,
-          children: articleChildren,
-          relations: createEmptyRelations(),
-          state: createEmptyState(),
-          attributes: createEmptyAttributes(),
-          readingDepth,
-        };
-        childIds.push(articleId);
-        index = scan;
-        continue;
-      }
-    }
-
+    // Leaf
     childIds.push(
       await createNode(
         child,
@@ -2114,18 +1028,17 @@ export const parsePageToIR = async (
   const fallbackLog: IRFallbackEntry[] = [];
   const landmarkRecords: LandmarkRecord[] = [];
   // Reserve reading indices for the fixed structural nodes:
-  // 0 = body, 1 = toc, 2 = main, 3 = section-0
-  // Traversal-generated nodes start at 4.
+  // 0 = body, 1 = toc, 2 = main
+  // Traversal-generated nodes start at 3.
   const READING_BODY = 0;
   const READING_TOC = 1;
   const READING_MAIN = 2;
-  const READING_SECTION0 = 3;
 
   const ctx: BuildContext = {
     nodes,
     landmarkRecords,
     doc: parsedDoc,
-    counters: { node: 0, section: 0, reading: 4 },
+    counters: { node: 0, section: 0, reading: 3 },
     elementToNodeId: new WeakMap<Element, string>(),
     fallbackProvider,
     fallbackLog,
@@ -2135,59 +1048,25 @@ export const parsePageToIR = async (
   };
 
   // Register body so aria refs pointing at it can resolve
-  ctx.elementToNodeId.set(parsedDoc.body, "section-0");
+  ctx.elementToNodeId.set(parsedDoc.body, "main");
 
   const bodyChildren = Array.from(parsedDoc.body.children).filter(
     (child) => !skipTags.has(child.tagName.toLowerCase()),
   );
 
-  const sectionChildIds = await buildChildrenFromSiblings(
+  const mainChildIds = await buildChildrenFromSiblings(
     bodyChildren,
-    "section-0",
-    "section-0",
+    "main",
+    "main",
     ctx,
   );
   const parsedTitle = parsedDoc.title?.trim() || null;
-  const sectionLabel = resolveSectionLabel(
-    "section-0",
-    config,
-    parsedDoc.body,
-    parsedDoc,
-  );
 
-  landmarkRecords.push({
-    id: "section-0",
-    label: sectionLabel,
-    parentId: "main",
-  });
-  landmarkRecords.push({
-    id: "toc",
-    label: "Table of contents",
-    parentId: "main",
-  });
   landmarkRecords.push({
     id: "main",
     label: parsedTitle ?? "main",
     parentId: "landmarks",
   });
-
-  nodes["section-0"] = {
-    id: "section-0",
-    role: "region",
-    level: null,
-    label: sectionLabel,
-    unlabelledYet: false,
-    landmark: true,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
-    readingIndex: READING_SECTION0,
-    parent: "main",
-    children: sectionChildIds,
-    relations: createEmptyRelations(),
-    state: createEmptyState(),
-    attributes: createEmptyAttributes(),
-    readingDepth: 0,
-  };
 
   nodes["toc"] = {
     id: "toc",
@@ -2218,25 +1097,7 @@ export const parsePageToIR = async (
     confidence: confidenceForSource("structural", ctx.config),
     readingIndex: READING_MAIN,
     parent: "landmarks",
-    children: ["toc", "section-0"],
-    relations: createEmptyRelations(),
-    state: createEmptyState(),
-    attributes: createEmptyAttributes(),
-    readingDepth: 0,
-  };
-
-  nodes["body"] = {
-    id: "body",
-    role: "generic",
-    level: null,
-    label: parsedTitle,
-    unlabelledYet: parsedTitle === null,
-    landmark: false,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
-    readingIndex: READING_BODY,
-    parent: null,
-    children: ["main"],
+    children: ["toc", ...mainChildIds],
     relations: createEmptyRelations(),
     state: createEmptyState(),
     attributes: createEmptyAttributes(),
@@ -2316,7 +1177,10 @@ export const parsePageToIR = async (
 
   analytics.textDensity =
     orderedNodes.length > 0 ? analytics.textLength / orderedNodes.length : 0;
-
+  console.log(
+    "[all landmark records]",
+    JSON.stringify(landmarkRecords, null, 2),
+  );
   const landmarks = buildLandmarkTree(parsedTitle, landmarkRecords);
 
   return {
@@ -2328,7 +1192,7 @@ export const parsePageToIR = async (
       config,
     },
     landmarks,
-    root: "body",
+    root: "main",
     fallbackLog,
     analytics,
     readingOrder,

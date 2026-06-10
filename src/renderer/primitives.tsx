@@ -35,10 +35,33 @@
  *   nav bg      #111927  (darker than panel)
  */
 
-import React, { useRef } from "react";
+import React, { useRef, useContext, createContext } from "react";
 import { Text, RoundedBox, Html } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+
+// ─────────────────────────────────────────────────────────────
+// Panel clipping context
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Provides THREE.Plane clipping planes to all descendant mesh materials.
+ *
+ * Set by XRContentPanel (and XRSectionMesh when it acts as a viewport)
+ * to clip child geometry that would overflow the panel boundary.
+ *
+ * The planes are in WORLD space — Three.js applies them after the model
+ * matrix transform, so the panel's own world position must be factored in
+ * by the provider (see XRSceneRenderer: buildPanelClipPlanes).
+ *
+ * An empty array means "no clipping active" (default).
+ */
+export const ClipPlanesContext = createContext<THREE.Plane[]>([]);
+
+/** Convenience hook — returns the current clip planes (may be empty). */
+export function useClipPlanes(): THREE.Plane[] {
+  return useContext(ClipPlanesContext);
+}
 
 import type { LayoutEntry } from "../layout/engine";
 import type {
@@ -165,6 +188,49 @@ function useHoverScale(baseScale = 1.0, hoverScale = 1.015) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// ClippedText — troika Text with clipping plane support
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Drop-in wrapper around drei <Text> that applies the current ClipPlanesContext
+ * to the troika mesh material via onSync.
+ *
+ * Troika manages its own MeshStandardMaterial internally, so passing
+ * clippingPlanes as a JSX prop to a <meshStandardMaterial> child has no effect.
+ * The onSync callback fires after troika has built/updated the text mesh and
+ * its material, giving us a stable hook to inject clippingPlanes imperatively.
+ *
+ * All props are forwarded to <Text> transparently.
+ */
+type TextProps = React.ComponentPropsWithoutRef<typeof Text>;
+
+export function ClippedText(props: TextProps) {
+  const clips = useClipPlanes();
+
+  const handleSync = React.useCallback(
+    (mesh: THREE.Mesh) => {
+      if (!mesh) return;
+      const mat = mesh.material as THREE.Material & {
+        clippingPlanes?: THREE.Plane[] | null;
+      };
+      if (mat) {
+        mat.clippingPlanes = clips.length > 0 ? clips : null;
+        mat.needsUpdate = true;
+      }
+      // Also propagate to the onSync the caller may have passed
+      if (typeof props.onSync === "function") {
+        props.onSync(mesh);
+      }
+    },
+    // clips array reference changes when planes change; stringify for comparison
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [clips, props.onSync],
+  );
+
+  return <Text {...props} onSync={handleSync} />;
+}
+
+// ─────────────────────────────────────────────────────────────
 // 1. XRHeadingMesh
 // ─────────────────────────────────────────────────────────────
 
@@ -185,12 +251,13 @@ export interface XRHeadingMeshProps {
  */
 export function XRHeadingMesh({ primitive, entry }: XRHeadingMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const fontSize = headingFontSize(primitive.level);
   const showAccent = primitive.level >= 3;
 
   return (
     <group position={pos} rotation={rot}>
-      <Text
+      <ClippedText
         anchorX="left"
         anchorY="top"
         position={[0, 0, 0.001]}
@@ -204,13 +271,18 @@ export function XRHeadingMesh({ primitive, entry }: XRHeadingMeshProps) {
         outlineWidth={0}
       >
         {primitive.label ?? ""}
-      </Text>
+      </ClippedText>
 
       {/* Accent underline for H3+ */}
       {showAccent && (
         <mesh position={[entry.size.width * 0.5, -fontSize * 1.35, 0]}>
           <planeGeometry args={[entry.size.width, 0.002]} />
-          <meshBasicMaterial color={ACCENT_COL} transparent opacity={0.5} />
+          <meshBasicMaterial
+            color={ACCENT_COL}
+            transparent
+            opacity={0.5}
+            clippingPlanes={clips}
+          />
         </mesh>
       )}
     </group>
@@ -235,6 +307,7 @@ export interface XRParagraphMeshProps {
  */
 export function XRParagraphMesh({ primitive, entry }: XRParagraphMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const dense = primitive.densityScore > 0.6;
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
@@ -255,6 +328,7 @@ export function XRParagraphMesh({ primitive, entry }: XRParagraphMeshProps) {
             opacity={dense ? 0.82 : 0.68}
             roughness={0.9}
             metalness={0.05}
+            clippingPlanes={clips}
           />
         </RoundedBox>
       )}
@@ -263,12 +337,17 @@ export function XRParagraphMesh({ primitive, entry }: XRParagraphMeshProps) {
       {dense && (
         <mesh position={[w / 2, -0.001, 0]}>
           <planeGeometry args={[w, 0.003]} />
-          <meshBasicMaterial color={ACCENT_COL} transparent opacity={0.3} />
+          <meshBasicMaterial
+            color={ACCENT_COL}
+            transparent
+            opacity={0.3}
+            clippingPlanes={clips}
+          />
         </mesh>
       )}
 
       {/* Body text */}
-      <Text
+      <ClippedText
         anchorX="left"
         anchorY="top"
         position={[0.02, -0.018, PANEL_DEPTH * 0.6]}
@@ -279,7 +358,7 @@ export function XRParagraphMesh({ primitive, entry }: XRParagraphMeshProps) {
         letterSpacing={0.005}
       >
         {primitive.label ?? ""}
-      </Text>
+      </ClippedText>
     </group>
   );
 }
@@ -292,64 +371,75 @@ export interface XRSectionMeshProps {
   primitive: XRSection;
   entry: LayoutEntry;
   /**
-   * Resolved child entries from the LayoutPlan — keyed by primitive ID.
-   * The section renders its children using their local-space entries.
+   * Resolved child entries for the children visible on the current page.
+   * The renderer passes only entries whose pageIndex matches the current page
+   * (or all entries when the section fits on one page). Used solely to compute
+   * the correct backing panel height — the section must not be taller than
+   * its visible content.
    */
   childEntries: LayoutEntry[];
   /** Renderer for child primitives — injected by XRSceneRenderer. */
   renderChild: (primitiveId: string) => React.ReactNode;
   /**
-   * IDs of children to render on the current page.
-   * When provided, only these children are rendered (pagination support).
-   * When omitted, all children are rendered.
+   * True when this section is a mid-section continuation (its first child is
+   * on a later page index than the section itself). Drives the top-edge
+   * "continued from" accent stripe.
    */
-  visibleChildIds?: Set<string>;
-  /** Pagination metadata — when present, renders prev/next controls inside the section. */
-  pagination?: {
-    pageCount: number;
-    currentPage: number;
-    onPageChange: (p: number) => void;
-  };
+  isContinuation?: boolean;
+  /**
+   * True when this section overflows onto a subsequent page. Drives the
+   * bottom-edge "continues on" accent stripe.
+   */
+  hasMore?: boolean;
 }
 
 /**
- * Translucent bounding panel with an optional title bar.
+ * Translucent bounding panel for a section.
  *
- * The section is purely a spatial container — it renders a frosted panel
- * behind its children but does not re-layout them. Child positions are
- * already resolved by the layout engine in local space.
+ * Purely a spatial container: draws a frosted backing panel sized to the
+ * visible child content and delegates all child rendering to the injected
+ * renderChild. Child positions are resolved by the layout engine; this
+ * component does not re-layout them.
  *
- * The title bar (if present) occupies the top 0.055 m of the panel
- * with a slightly stronger opacity to visually group it as a header.
+ * Panel height is derived from childEntries (the current page's visible
+ * children) rather than entry.size.height, because entry.size.height is
+ * the full section height across all pages. The renderer passes only the
+ * entries whose pageIndex matches the current page.
+ *
+ * Continuation indicators (thin accent stripes) are shown at the top/bottom
+ * edges when the section spans multiple pages, driven by the isContinuation
+ * and hasMore props computed by the renderer.
  */
 export function XRSectionMesh({
   primitive,
   entry,
-  childEntries: _childEntries,
+  childEntries,
   renderChild,
-  visibleChildIds,
-  pagination,
+  isContinuation,
+  hasMore,
 }: XRSectionMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
-  const h = safeDim(entry.size.height);
-  const hasTitle = !!primitive.title;
-  const TITLE_H = 0.055;
 
-  // Which children to render — all unless pagination filter is active
-  const childrenToRender = primitive.children.filter(
-    (c) => !visibleChildIds || visibleChildIds.has(c.id),
-  );
+  // Panel height = sum of visible child heights + gaps + top/bottom padding.
+  // We sum rather than using position.y so this is correct regardless of how
+  // the engine positions children within the section.
+  const PAD = 0.04; // panelPaddingTop — matches DEFAULT_LAYOUT_CONFIG
+  const GAP = 0.02; // childGapY
+  const visibleHeight =
+    childEntries.length > 0
+      ? PAD +
+        childEntries.reduce((sum, ce) => sum + ce.size.height, 0) +
+        GAP * Math.max(0, childEntries.length - 1) +
+        PAD
+      : entry.size.height;
 
-  // Pagination button constants
-  const BTN_W = 0.1;
-  const BTN_H = 0.034;
-  const BTN_DEPTH = 0.012;
-  const BTN_RADIUS = Math.min(BTN_H / 2, BTN_DEPTH / 2 - 0.0001);
+  const h = safeDim(visibleHeight);
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Section body panel */}
+      {/* Section backing panel — sized to the visible slice */}
       <RoundedBox
         args={[w, h, PANEL_DEPTH]}
         radius={PANEL_RADIUS}
@@ -360,140 +450,54 @@ export function XRSectionMesh({
           transparent
           opacity={0.55}
           roughness={0.95}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
       {/* Rim border */}
       <RoundedBox
         args={[w, h, RIM_DEPTH]}
-        radius={PANEL_RADIUS}
+        radius={RIM_RADIUS}
         position={[w / 2, -h / 2, -PANEL_DEPTH - RIM_DEPTH / 2]}
       >
-        <meshBasicMaterial color={PANEL_RIM} transparent opacity={0.7} />
+        <meshBasicMaterial
+          color={PANEL_RIM}
+          transparent
+          opacity={0.7}
+          clippingPlanes={clips}
+        />
       </RoundedBox>
 
-      {/* Title bar */}
-      {hasTitle &&
-        /*(
-        <>
-          <RoundedBox
-            args={[w, TITLE_H, PANEL_DEPTH * 1.5]}
-            radius={PANEL_RADIUS}
-            position={[w / 2, -TITLE_H / 2, -PANEL_DEPTH * 0.5]}
-          >
-            <meshStandardMaterial
-              color="#131e2e"
-              transparent
-              opacity={0.9}
-              roughness={0.8}
-            />
-          </RoundedBox>
-
-          <Text
-            anchorX="left"
-            anchorY="middle"
-            position={[0.016, -TITLE_H / 2, PANEL_DEPTH]}
-            fontSize={0.024}
-            color={HEADING_COL}
-            fontWeight="600"
-            maxWidth={w - 0.032}
-          >
-            {primitive.title}
-          </Text>
-
-          <mesh position={[0.003, -TITLE_H / 2, PANEL_DEPTH * 0.8]}>
-            <planeGeometry args={[0.004, TITLE_H * 0.65]} />
-            <meshBasicMaterial color={ACCENT_COL} />
-          </mesh>
-          
-          </>
-          */
-        ""}
-
-      {/* Children (injected by parent renderer, filtered for pagination) */}
-      {childrenToRender.map((child) => renderChild(child.id))}
-
-      {/* In-section pagination controls — rendered below the panel in local space */}
-      {pagination && pagination.pageCount > 1 && (
-        <group position={[0, -(h + BTN_H / 2 + 0.02), 0.005]}>
-          {/* Prev button */}
-          <group
-            position={[BTN_W / 2, 0, 0]}
-            onClick={() =>
-              pagination.onPageChange(Math.max(0, pagination.currentPage - 1))
-            }
-          >
-            <RoundedBox args={[BTN_W, BTN_H, BTN_DEPTH]} radius={BTN_RADIUS}>
-              <meshStandardMaterial
-                color={pagination.currentPage === 0 ? "#12182a" : "#1a2840"}
-                transparent
-                opacity={pagination.currentPage === 0 ? 0.5 : 0.88}
-                roughness={0.6}
-              />
-            </RoundedBox>
-            <Text
-              anchorX="center"
-              anchorY="middle"
-              position={[0, 0, BTN_DEPTH + 0.001]}
-              fontSize={0.016}
-              color={pagination.currentPage === 0 ? "#4a5568" : "#ffffff"}
-            >
-              ← Prev
-            </Text>
-          </group>
-
-          {/* Page indicator */}
-          <Text
-            anchorX="center"
-            anchorY="middle"
-            position={[w / 2, 0, 0]}
-            fontSize={0.015}
-            color="#7aa2cc"
-          >
-            {`${pagination.currentPage + 1} / ${pagination.pageCount}`}
-          </Text>
-
-          {/* Next button */}
-          <group
-            position={[w - BTN_W / 2, 0, 0]}
-            onClick={() =>
-              pagination.onPageChange(
-                Math.min(pagination.pageCount - 1, pagination.currentPage + 1),
-              )
-            }
-          >
-            <RoundedBox args={[BTN_W, BTN_H, BTN_DEPTH]} radius={BTN_RADIUS}>
-              <meshStandardMaterial
-                color={
-                  pagination.currentPage === pagination.pageCount - 1
-                    ? "#12182a"
-                    : "#1a2840"
-                }
-                transparent
-                opacity={
-                  pagination.currentPage === pagination.pageCount - 1
-                    ? 0.5
-                    : 0.88
-                }
-                roughness={0.6}
-              />
-            </RoundedBox>
-            <Text
-              anchorX="center"
-              anchorY="middle"
-              position={[0, 0, BTN_DEPTH + 0.001]}
-              fontSize={0.016}
-              color={
-                pagination.currentPage === pagination.pageCount - 1
-                  ? "#4a5568"
-                  : "#ffffff"
-              }
-            >
-              Next →
-            </Text>
-          </group>
-        </group>
+      {/* "Continued from previous page" top edge indicator */}
+      {isContinuation && (
+        <mesh position={[w / 2, -0.001, 0.001]}>
+          <planeGeometry args={[w * 0.4, 0.003]} />
+          <meshBasicMaterial
+            color={ACCENT_COL}
+            transparent
+            opacity={0.45}
+            clippingPlanes={clips}
+          />
+        </mesh>
       )}
+
+      {/* "Continues on next page" bottom edge indicator */}
+      {hasMore && (
+        <mesh position={[w / 2, -(h - 0.001), 0.001]}>
+          <planeGeometry args={[w * 0.4, 0.003]} />
+          <meshBasicMaterial
+            color={ACCENT_COL}
+            transparent
+            opacity={0.45}
+            clippingPlanes={clips}
+          />
+        </mesh>
+      )}
+
+      {/* Children — the injected renderChild returns null for any child
+          whose pageIndex doesn't match the current page, so no filtering
+          is needed here. We call it for every child in primitive.children. */}
+      {primitive.children.map((child) => renderChild(child.id))}
     </group>
   );
 }
@@ -519,6 +523,7 @@ export interface XRNavigationMeshProps {
  */
 export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const items: XRLink[] = primitive.items ?? [];
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
@@ -545,11 +550,12 @@ export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
             transparent
             opacity={0.88}
             roughness={0.85}
+            clippingPlanes={clips}
           />
         </RoundedBox>
 
         {/* Panel label */}
-        <Text
+        <ClippedText
           anchorX="left"
           anchorY="top"
           position={[PADDING, -PADDING, PANEL_DEPTH]}
@@ -559,7 +565,7 @@ export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
           letterSpacing={0.08}
         >
           {(primitive.label ?? "Contents").toUpperCase()}
-        </Text>
+        </ClippedText>
 
         {/* TOC items — vertical stack */}
         {items.map((item, i) => {
@@ -573,7 +579,6 @@ export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
               key={item.id}
               position={[indent, itemY, PANEL_DEPTH * 0.5]}
               onClick={() => {
-                // Navigate to the anchor if in browser context
                 if (item.href && typeof window !== "undefined") {
                   try {
                     const target = document.querySelector(item.href);
@@ -585,17 +590,24 @@ export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
               {/* Hit-area plane for easier pointing */}
               <mesh position={[itemW / 2, -ITEM_H / 2, -0.001]}>
                 <planeGeometry args={[itemW, ITEM_H]} />
-                <meshBasicMaterial transparent opacity={0} />
+                <meshBasicMaterial
+                  transparent
+                  opacity={0}
+                  clippingPlanes={clips}
+                />
               </mesh>
 
               {/* Active accent bar */}
               {isCurrent && (
                 <mesh position={[-0.006, -ITEM_H / 2, 0.001]}>
                   <planeGeometry args={[0.003, ITEM_H * 0.7]} />
-                  <meshBasicMaterial color={ACCENT_COL} />
+                  <meshBasicMaterial
+                    color={ACCENT_COL}
+                    clippingPlanes={clips}
+                  />
                 </mesh>
               )}
-              <Text
+              <ClippedText
                 anchorX="left"
                 anchorY="top"
                 position={[0, 0, 0.002]}
@@ -612,7 +624,7 @@ export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
                 lineHeight={1.3}
               >
                 {item.label ?? ""}
-              </Text>
+              </ClippedText>
             </group>
           );
         })}
@@ -624,15 +636,12 @@ export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
   const CHIP_H = 0.048;
   const CHIP_GAP = 0.012;
   const chipW = Math.max(
-    0.025, // never below RoundedBox safe minimum
+    0.025,
     items.length > 0
       ? Math.min(0.28, (w - CHIP_GAP * (items.length + 1)) / items.length)
       : 0.24,
   );
 
-  // Arc angle per chip (radians). 0 if flat.
-  // Clamp the asin argument to [-1, 1] — if panel width exceeds the chord
-  // of the curve (w > 2r) the raw ratio would be >1 and produce NaN.
   const arcTotal =
     entry.curveRadius > 0
       ? 2 * Math.asin(Math.min(1, w / (2 * entry.curveRadius)))
@@ -653,12 +662,12 @@ export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
           transparent
           opacity={0.88}
           roughness={0.85}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
       {/* Nav chips */}
       {items.map((item, i) => {
-        // Horizontal position along the strip
         const chipAngle = arcStart + i * arcStep;
         const chipX =
           entry.curveRadius > 0
@@ -685,10 +694,11 @@ export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
                 transparent
                 opacity={isCurrent ? 0.92 : 0.78}
                 roughness={0.7}
+                clippingPlanes={clips}
               />
             </RoundedBox>
 
-            <Text
+            <ClippedText
               anchorX="center"
               anchorY="middle"
               position={[0, 0, 0.006]}
@@ -698,7 +708,7 @@ export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
               fontWeight={isCurrent ? "600" : "400"}
             >
               {item.label ?? item.href ?? ""}
-            </Text>
+            </ClippedText>
           </group>
         );
       })}
@@ -726,13 +736,10 @@ export interface XRMediaMeshProps {
  * For Phase 4 we render a placeholder panel with a play/audio icon and
  * the media label. Actual HTMLVideoElement → VideoTexture wiring is
  * deferred to Phase 5 (requires document.createElement in XR context).
- *
- * The panel uses Html from drei to embed a native <video> element when
- * sizingStrategy === "large-panel" and a src is available, because the
- * VideoTexture path requires additional lifecycle management.
  */
 export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const isLarge = primitive.sizingStrategy === "large-panel";
@@ -753,6 +760,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
           opacity={0.93}
           roughness={0.6}
           metalness={0.15}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
@@ -762,13 +770,17 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
         radius={PANEL_RADIUS}
         position={[w / 2, -h / 2, -PANEL_DEPTH - RIM_DEPTH / 2]}
       >
-        <meshBasicMaterial color={PANEL_RIM} transparent opacity={0.5} />
+        <meshBasicMaterial
+          color={PANEL_RIM}
+          transparent
+          opacity={0.5}
+          clippingPlanes={clips}
+        />
       </RoundedBox>
 
-      {/* Play / audio icon — simple geometric placeholder */}
+      {/* Play / audio icon */}
       <group position={[w / 2, -h / 2, PANEL_DEPTH]}>
         {isAudio ? (
-          // Audio: three vertical bars (waveform symbol)
           <>
             {[-0.012, 0, 0.012].map((xOff, i) => (
               <mesh key={i} position={[xOff, 0, 0]}>
@@ -779,22 +791,27 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
                   color={ACCENT_COL}
                   transparent
                   opacity={0.85}
+                  clippingPlanes={clips}
                 />
               </mesh>
             ))}
           </>
         ) : (
-          // Video: triangle play button
           <mesh rotation={[0, 0, 0]}>
             <coneGeometry args={[ICON_SIZE * 0.6, ICON_SIZE, 3, 1]} />
-            <meshBasicMaterial color={ACCENT_COL} transparent opacity={0.9} />
+            <meshBasicMaterial
+              color={ACCENT_COL}
+              transparent
+              opacity={0.9}
+              clippingPlanes={clips}
+            />
           </mesh>
         )}
       </group>
 
       {/* Label */}
       {primitive.label && (
-        <Text
+        <ClippedText
           anchorX="center"
           anchorY="top"
           position={[w / 2, -h + 0.03, PANEL_DEPTH * 2]}
@@ -803,7 +820,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
           maxWidth={w - 0.06}
         >
           {primitive.label}
-        </Text>
+        </ClippedText>
       )}
 
       {/* Native video embed for large-panel when src is available */}
@@ -844,22 +861,16 @@ export interface XRCodeBlockMeshProps {
   entry: LayoutEntry;
 }
 
-/**
- * Syntax-highlighted code block on a dark terminal-style panel.
- *
- * Renders the code label in a monospace-style text block with a
- * distinctive dark green accent and a subtle left-edge bar.
- */
 export function XRCodeBlockMesh({ primitive, entry }: XRCodeBlockMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const CODE_BG = "#0a0e14";
-  const CODE_COL = "#7ee787"; // GitHub green for code
+  const CODE_COL = "#7ee787";
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Dark code panel */}
       <RoundedBox
         args={[w, h, PANEL_DEPTH]}
         radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH)}
@@ -870,17 +881,21 @@ export function XRCodeBlockMesh({ primitive, entry }: XRCodeBlockMeshProps) {
           transparent
           opacity={0.95}
           roughness={0.8}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
-      {/* Left accent bar */}
       <mesh position={[0.004, -h / 2, 0.002]}>
         <planeGeometry args={[0.006, h * 0.85]} />
-        <meshBasicMaterial color={CODE_COL} transparent opacity={0.7} />
+        <meshBasicMaterial
+          color={CODE_COL}
+          transparent
+          opacity={0.7}
+          clippingPlanes={clips}
+        />
       </mesh>
 
-      {/* Code label */}
-      <Text
+      <ClippedText
         anchorX="left"
         anchorY="top"
         position={[0.018, -0.014, PANEL_DEPTH * 0.6]}
@@ -891,7 +906,7 @@ export function XRCodeBlockMesh({ primitive, entry }: XRCodeBlockMeshProps) {
         letterSpacing={0.02}
       >
         {primitive.label ?? ""}
-      </Text>
+      </ClippedText>
     </group>
   );
 }
@@ -905,18 +920,15 @@ export interface XRBlockQuoteMeshProps {
   entry: LayoutEntry;
 }
 
-/**
- * Pull-quote panel with a prominent left accent stripe and italic text.
- */
 export function XRBlockQuoteMesh({ primitive, entry }: XRBlockQuoteMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
-  const QUOTE_ACCENT = "#d2a679"; // warm amber
+  const QUOTE_ACCENT = "#d2a679";
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Panel */}
       <RoundedBox
         args={[w, h, PANEL_DEPTH]}
         radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH)}
@@ -927,17 +939,21 @@ export function XRBlockQuoteMesh({ primitive, entry }: XRBlockQuoteMeshProps) {
           transparent
           opacity={0.7}
           roughness={0.9}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
-      {/* Thick left quote bar */}
       <mesh position={[0.006, -h / 2, 0.003]}>
         <planeGeometry args={[0.01, h * 0.8]} />
-        <meshBasicMaterial color={QUOTE_ACCENT} transparent opacity={0.85} />
+        <meshBasicMaterial
+          color={QUOTE_ACCENT}
+          transparent
+          opacity={0.85}
+          clippingPlanes={clips}
+        />
       </mesh>
 
-      {/* Quote text */}
-      <Text
+      <ClippedText
         anchorX="left"
         anchorY="top"
         position={[0.026, -0.018, PANEL_DEPTH * 0.6]}
@@ -948,7 +964,7 @@ export function XRBlockQuoteMesh({ primitive, entry }: XRBlockQuoteMeshProps) {
         letterSpacing={0.003}
       >
         {primitive.label ?? ""}
-      </Text>
+      </ClippedText>
     </group>
   );
 }
@@ -962,11 +978,9 @@ export interface XRSeparatorMeshProps {
   entry: LayoutEntry;
 }
 
-/**
- * Horizontal or vertical thematic separator line.
- */
 export function XRSeparatorMesh({ primitive, entry }: XRSeparatorMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const isHoriz = primitive.orientation !== "vertical";
@@ -975,7 +989,12 @@ export function XRSeparatorMesh({ primitive, entry }: XRSeparatorMeshProps) {
     <group position={pos} rotation={rot}>
       <mesh position={[w / 2, -h / 2, 0]}>
         <planeGeometry args={[isHoriz ? w : 0.002, isHoriz ? 0.002 : h]} />
-        <meshBasicMaterial color={PANEL_RIM} transparent opacity={0.6} />
+        <meshBasicMaterial
+          color={PANEL_RIM}
+          transparent
+          opacity={0.6}
+          clippingPlanes={clips}
+        />
       </mesh>
     </group>
   );
@@ -990,14 +1009,12 @@ export interface XRProgressBarMeshProps {
   entry: LayoutEntry;
 }
 
-/**
- * Progress bar / meter — filled track with accent fill.
- */
 export function XRProgressBarMesh({
   primitive,
   entry,
 }: XRProgressBarMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const fraction = Math.max(0, Math.min(1, primitive.valueFraction ?? 0));
@@ -1006,21 +1023,28 @@ export function XRProgressBarMesh({
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Track */}
       <mesh position={[w / 2, -h / 2, 0]}>
         <planeGeometry args={[w, TRACK_H]} />
-        <meshBasicMaterial color={PANEL_RIM} transparent opacity={0.5} />
+        <meshBasicMaterial
+          color={PANEL_RIM}
+          transparent
+          opacity={0.5}
+          clippingPlanes={clips}
+        />
       </mesh>
 
-      {/* Fill */}
       <mesh position={[fillW / 2, -h / 2, 0.001]}>
         <planeGeometry args={[fillW, TRACK_H]} />
-        <meshBasicMaterial color={ACCENT_COL} transparent opacity={0.85} />
+        <meshBasicMaterial
+          color={ACCENT_COL}
+          transparent
+          opacity={0.85}
+          clippingPlanes={clips}
+        />
       </mesh>
 
-      {/* Label */}
       {primitive.label && (
-        <Text
+        <ClippedText
           anchorX="left"
           anchorY="bottom"
           position={[0, -h / 2 + TRACK_H / 2 + 0.006, 0.002]}
@@ -1029,7 +1053,7 @@ export function XRProgressBarMesh({
           maxWidth={w}
         >
           {primitive.label}
-        </Text>
+        </ClippedText>
       )}
     </group>
   );
@@ -1044,21 +1068,15 @@ export interface XRImageMeshProps {
   entry: LayoutEntry;
 }
 
-/**
- * Image placeholder panel.
- *
- * In Phase 5 this will load the actual src as a texture.
- * For now it renders a framed placeholder with the alt text.
- */
 export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const IMG_BG = "#111622";
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Frame */}
       <RoundedBox
         args={[w, h, PANEL_DEPTH]}
         radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH)}
@@ -1070,22 +1088,31 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
           opacity={0.9}
           roughness={0.6}
           metalness={0.1}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
-      {/* Image icon — simple cross-lines placeholder */}
       <mesh position={[w / 2, -h / 2, 0.002]}>
         <planeGeometry args={[w * 0.4, 0.002]} />
-        <meshBasicMaterial color={PANEL_RIM} transparent opacity={0.5} />
+        <meshBasicMaterial
+          color={PANEL_RIM}
+          transparent
+          opacity={0.5}
+          clippingPlanes={clips}
+        />
       </mesh>
       <mesh position={[w / 2, -h / 2, 0.002]} rotation={[0, 0, Math.PI / 2]}>
         <planeGeometry args={[h * 0.4, 0.002]} />
-        <meshBasicMaterial color={PANEL_RIM} transparent opacity={0.5} />
+        <meshBasicMaterial
+          color={PANEL_RIM}
+          transparent
+          opacity={0.5}
+          clippingPlanes={clips}
+        />
       </mesh>
 
-      {/* Alt text */}
       {(primitive.alt ?? primitive.label) && (
-        <Text
+        <ClippedText
           anchorX="center"
           anchorY="bottom"
           position={[w / 2, -h + 0.02, PANEL_DEPTH]}
@@ -1094,7 +1121,7 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
           maxWidth={w - 0.04}
         >
           {primitive.alt ?? primitive.label ?? ""}
-        </Text>
+        </ClippedText>
       )}
     </group>
   );
@@ -1110,19 +1137,15 @@ export interface XRCardMeshProps {
   renderChild: (primitiveId: string) => React.ReactNode;
 }
 
-/**
- * Individual card in a card grid.
- * Renders a raised frosted panel with a subtle top accent stripe.
- */
 export function XRCardMesh({ primitive, entry, renderChild }: XRCardMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const ACCENT_H = 0.005;
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Card panel */}
       <RoundedBox
         args={[w, h, PANEL_DEPTH * 1.5]}
         radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH * 1.5)}
@@ -1134,18 +1157,22 @@ export function XRCardMesh({ primitive, entry, renderChild }: XRCardMeshProps) {
           opacity={0.85}
           roughness={0.85}
           metalness={0.05}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
-      {/* Top accent stripe */}
       <mesh position={[w / 2, -ACCENT_H / 2, 0.001]}>
         <planeGeometry args={[w, ACCENT_H]} />
-        <meshBasicMaterial color={ACCENT_COL} transparent opacity={0.6} />
+        <meshBasicMaterial
+          color={ACCENT_COL}
+          transparent
+          opacity={0.6}
+          clippingPlanes={clips}
+        />
       </mesh>
 
-      {/* Title */}
       {primitive.label && (
-        <Text
+        <ClippedText
           anchorX="left"
           anchorY="top"
           position={[0.014, -0.018, PANEL_DEPTH]}
@@ -1155,7 +1182,7 @@ export function XRCardMesh({ primitive, entry, renderChild }: XRCardMeshProps) {
           maxWidth={w - 0.028}
         >
           {primitive.label}
-        </Text>
+        </ClippedText>
       )}
 
       {primitive.children.map((child) => renderChild(child.id))}
@@ -1172,12 +1199,10 @@ export interface XRButtonMeshProps {
   entry: LayoutEntry;
 }
 
-/**
- * Pressable button rendered as a pill-shaped XR affordance.
- */
 export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
   const { ref, handlers } = useHoverScale(1.0, 1.04);
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const BTN_DEPTH = 0.016;
@@ -1196,10 +1221,11 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
           opacity={isDisabled ? 0.4 : 0.9}
           roughness={0.55}
           metalness={0.1}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
-      <Text
+      <ClippedText
         anchorX="center"
         anchorY="middle"
         position={[w / 2, -h / 2, BTN_DEPTH + 0.001]}
@@ -1209,7 +1235,7 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
         maxWidth={w - 0.02}
       >
         {primitive.label ?? ""}
-      </Text>
+      </ClippedText>
     </group>
   );
 }
@@ -1223,14 +1249,9 @@ export interface XRAlertMeshProps {
   entry: LayoutEntry;
 }
 
-/**
- * Alert / status notification panel.
- *
- * assertive alerts → red-tinted urgent panel
- * polite status   → muted blue-tinted panel
- */
 export function XRAlertMesh({ primitive, entry }: XRAlertMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const isAssertive = primitive.liveRegion === "assertive";
@@ -1249,16 +1270,21 @@ export function XRAlertMesh({ primitive, entry }: XRAlertMeshProps) {
           transparent
           opacity={0.9}
           roughness={0.8}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
-      {/* Left alert stripe */}
       <mesh position={[0.004, -h / 2, 0.002]}>
         <planeGeometry args={[0.007, h * 0.8]} />
-        <meshBasicMaterial color={alertColor} transparent opacity={0.9} />
+        <meshBasicMaterial
+          color={alertColor}
+          transparent
+          opacity={0.9}
+          clippingPlanes={clips}
+        />
       </mesh>
 
-      <Text
+      <ClippedText
         anchorX="left"
         anchorY="top"
         position={[0.02, -0.014, PANEL_DEPTH * 0.6]}
@@ -1268,7 +1294,7 @@ export function XRAlertMesh({ primitive, entry }: XRAlertMeshProps) {
         lineHeight={1.4}
       >
         {primitive.label ?? ""}
-      </Text>
+      </ClippedText>
     </group>
   );
 }
@@ -1283,25 +1309,19 @@ export interface XRTableMeshProps {
   renderChild: (primitiveId: string) => React.ReactNode;
 }
 
-/**
- * Data table rendered as a frosted grid panel.
- *
- * For Phase 4 we render the table label and a grid placeholder with
- * column/row count metadata. Row-level rendering is delegated to children.
- */
 export function XRTableMesh({
   primitive,
   entry,
   renderChild,
 }: XRTableMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const HEADER_H = 0.04;
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Table panel */}
       <RoundedBox
         args={[w, h, PANEL_DEPTH]}
         radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH)}
@@ -1312,10 +1332,10 @@ export function XRTableMesh({
           transparent
           opacity={0.75}
           roughness={0.9}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
-      {/* Header bar */}
       <RoundedBox
         args={[w, HEADER_H, PANEL_DEPTH * 1.2]}
         radius={safeRadius(PANEL_RADIUS, w, HEADER_H, PANEL_DEPTH * 1.2)}
@@ -1326,10 +1346,11 @@ export function XRTableMesh({
           transparent
           opacity={0.9}
           roughness={0.8}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
-      <Text
+      <ClippedText
         anchorX="left"
         anchorY="middle"
         position={[0.014, -HEADER_H / 2, PANEL_DEPTH]}
@@ -1339,10 +1360,9 @@ export function XRTableMesh({
         maxWidth={w - 0.12}
       >
         {primitive.label ?? "Table"}
-      </Text>
+      </ClippedText>
 
-      {/* Column/row metadata */}
-      <Text
+      <ClippedText
         anchorX="right"
         anchorY="middle"
         position={[w - 0.01, -HEADER_H / 2, PANEL_DEPTH]}
@@ -1351,9 +1371,8 @@ export function XRTableMesh({
         maxWidth={0.1}
       >
         {`${primitive.columnCount}×${primitive.rowCount}`}
-      </Text>
+      </ClippedText>
 
-      {/* Children (rows) */}
       {primitive.children.map((child) => renderChild(child.id))}
     </group>
   );
@@ -1368,14 +1387,9 @@ export interface XRFormFieldMeshProps {
   entry: LayoutEntry;
 }
 
-/**
- * Individual form field — label + control placeholder.
- *
- * Renders a frosted input field with a label above and a
- * control-type indicator icon. Actual interaction is Phase 5.
- */
 export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const INPUT_H = Math.min(0.038, h * 0.6);
@@ -1384,9 +1398,8 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Label text */}
       {label && (
-        <Text
+        <ClippedText
           anchorX="left"
           anchorY="bottom"
           position={[0, -(h - INPUT_H) + 0.002, 0.002]}
@@ -1395,10 +1408,9 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
           maxWidth={w}
         >
           {label}
-        </Text>
+        </ClippedText>
       )}
 
-      {/* Input field backing */}
       <RoundedBox
         args={[w, INPUT_H, PANEL_DEPTH]}
         radius={safeRadius(0.008, w, INPUT_H, PANEL_DEPTH)}
@@ -1409,12 +1421,12 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
           transparent
           opacity={primitive.state?.disabled ? 0.3 : 0.85}
           roughness={0.7}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
-      {/* Placeholder text */}
       {primitive.placeholder && (
-        <Text
+        <ClippedText
           anchorX="left"
           anchorY="middle"
           position={[0.01, -h + INPUT_H / 2, PANEL_DEPTH + 0.001]}
@@ -1423,7 +1435,7 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
           maxWidth={w - 0.02}
         >
           {primitive.placeholder}
-        </Text>
+        </ClippedText>
       )}
     </group>
   );
@@ -1439,23 +1451,19 @@ export interface XRTabGroupMeshProps {
   renderChild: (primitiveId: string) => React.ReactNode;
 }
 
-/**
- * Tab group — renders a tab strip above the active panel.
- */
 export function XRTabGroupMesh({
   primitive,
   entry,
   renderChild,
 }: XRTabGroupMeshProps) {
   const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const TAB_H = 0.042;
-  const isHoriz = primitive.orientation !== "vertical";
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Tab strip backing */}
       <RoundedBox
         args={[w, TAB_H, PANEL_DEPTH]}
         radius={safeRadius(PANEL_RADIUS, w, TAB_H, PANEL_DEPTH)}
@@ -1466,10 +1474,10 @@ export function XRTabGroupMesh({
           transparent
           opacity={0.9}
           roughness={0.85}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 
-      {/* Content area */}
       <RoundedBox
         args={[w, h - TAB_H, PANEL_DEPTH]}
         radius={safeRadius(PANEL_RADIUS, w, h - TAB_H, PANEL_DEPTH)}
@@ -1480,6 +1488,7 @@ export function XRTabGroupMesh({
           transparent
           opacity={0.7}
           roughness={0.9}
+          clippingPlanes={clips}
         />
       </RoundedBox>
 

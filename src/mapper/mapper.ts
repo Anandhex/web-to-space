@@ -24,13 +24,7 @@
  *    XRGenericPanel so content always appears, even if unoptimised.
  */
 
-import type {
-  PageIR,
-  IRNode,
-  IRRole,
-  IRAnalytics,
-  LandmarkTOCNode,
-} from "../ir/parser";
+import type { IRRole, IRNode, PageIR, IRAnalytics } from "../ir/types";
 
 // ============================================================
 // XR Primitive vocabulary
@@ -1416,7 +1410,10 @@ function mapNavigation(
       ctx.ir,
     ),
     type: "XRNavigationBar",
-    items: linkChildren,
+    // items is a reference list for the nav-bar widget; children drives
+    // scene-graph traversal. Keep them as separate arrays so renderers
+    // that iterate both do not double-process every link.
+    items: [...linkChildren],
     children: linkChildren,
   };
   registerPrimitive(ctx, primitive, "landmark:navigation→XRNavigationBar");
@@ -1497,15 +1494,20 @@ function mapFormPanel(
  * A section is a bounded region within a content panel. When the first
  * child is a heading, its text is used as the section title.
  *
- * Uses inferSectionGroups so that flat heading+sibling sequences inside
- * section-0 (the parser's root content container) are grouped into nested
- * XRSections. This is the correct site for the pre-pass because section-0's
- * children are the raw content nodes (headings, paragraphs, etc.).
+ * `runSectionInference` (default false) controls whether inferSectionGroups
+ * is applied to children:
+ *   - false: children are resolved directly via resolveChildren. Used for
+ *     structured nodes (landmarks, groups, nested regions) whose children are
+ *     already typed primitives — avoids deep synthetic __section__ wrapping.
+ *   - true: inferSectionGroups pre-pass groups flat heading+sibling sequences
+ *     into nested XRSections. Only pass true from mapArticle when the node's
+ *     children are known to be raw content (headings + paragraphs).
  */
 function mapSection(
   node: IRNode,
   ctx: MappingContext,
   rule: MappingRule = "landmark:region→XRSection",
+  runSectionInference: boolean = false,
 ): XRSection {
   // Extract heading title from first child if it is a heading.
   // Do NOT use node.label as a title if it looks like an auto-generated ID
@@ -1523,7 +1525,10 @@ function mapSection(
     }
   }
 
-  const children = inferSectionGroups(node, ctx);
+  const children = runSectionInference
+    ? inferSectionGroups(node, ctx)
+    : resolveChildren(node, ctx);
+
   warnPanelOverflow(node.id, children, ctx);
   const primitive: XRSection = {
     ...baseFrom(node, "XRSection", inlinePlacement(), ctx.ir),
@@ -1539,13 +1544,16 @@ function mapSection(
 
 /**
  * Rule: article / paragraph-run group → XRArticle
+ *
+ * Articles contain raw content (headings + paragraphs), so we run
+ * inferSectionGroups via mapSection to group them correctly.
  */
 function mapArticle(node: IRNode, ctx: MappingContext): XRArticle {
   const primitive: XRArticle = {
     ...baseFrom(node, "XRArticle", inlinePlacement(), ctx.ir),
     type: "XRArticle",
     flowDirection: "column",
-    children: resolveChildren(node, ctx),
+    children: inferSectionGroups(node, ctx),
   };
   registerPrimitive(ctx, primitive, "article→XRArticle");
   return primitive;
@@ -2624,6 +2632,8 @@ function synthesiseTOC(
     confidence: deriveConfidence(headingNodes),
     depth: 0,
     placement: navigationArcPlacement(ctx.config),
+    // children drives scene-graph traversal; items is the nav-bar widget's
+    // reference list. Separate arrays prevent double-iteration by renderers.
     children: items,
     relations: {
       controls: [],
@@ -2632,7 +2642,7 @@ function synthesiseTOC(
       details: [],
       errorMessage: [],
     },
-    items,
+    items: [...items],
   };
   registerPrimitive(ctx, tocNode, "toc:inferred→XRNavigationBar", {
     sourceNodeIds: headingNodes.map((n) => n.id),
@@ -2759,7 +2769,7 @@ function mapNode(node: IRNode, ctx: MappingContext): XRPrimitive | null {
       // content, rather than wrapping them in another XRContentPanel.
       return node.id === "main"
         ? mapMain(node, ctx)
-        : mapSection(node, ctx, "landmark:region→XRSection");
+        : mapSection(node, ctx, "landmark:region→XRSection", true);
     case "navigation":
       return mapNavigation(node, ctx);
     case "banner":
@@ -2773,7 +2783,7 @@ function mapNode(node: IRNode, ctx: MappingContext): XRPrimitive | null {
     case "search":
       return mapFormPanel(node, ctx, "landmark:search→XRFormPanel");
     case "region":
-      return mapSection(node, ctx, "landmark:region→XRSection");
+      return mapSection(node, ctx, "landmark:region→XRSection", true);
 
     // ── Content structure ─────────────────────────────────────
     case "heading":

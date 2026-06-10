@@ -19,16 +19,31 @@
  *      the parent's world transform. Their local-space entry.position
  *      then resolves correctly via Three.js group composition.
  *
- * NO manual parentPosition subtraction is needed or correct — the engine
- * already expresses child positions as local offsets.
+ * Pagination contract
+ * ───────────────────
+ * The layout engine stamps entry.pageIndex on every primitive that lives
+ * under a paginating XRContentPanel. The renderer gates on this value:
  *
- * renderChild passes NO parentPosition. Children rendered through
- * renderChild (inside mesh components) are rendered relative to the mesh's
- * own group, which is already at origin thanks to zeroedEntry — so their
- * local entry.position is used directly and resolves correctly.
+ *   • XRContentPanel sets CurrentPageContext to the user's current page.
+ *   • Every PrimitiveDispatcher reads CurrentPageContext and returns null
+ *     if entry.pageIndex is defined and !== currentPage.
+ *   • No ID lists, no slice maps, no position re-basing needed — the
+ *     engine assigns correct page-relative positions to every primitive.
+ *
+ * Clipping
+ * ────────
+ * XRContentPanel builds world-space THREE.Plane clip planes and provides
+ * them via ClipPlanesContext so descendant materials can clip geometry
+ * that would bleed outside the panel viewport.
  */
 
-import React, { useState, useCallback, Suspense, useEffect } from "react";
+import React, {
+  useState,
+  useCallback,
+  Suspense,
+  useEffect,
+  useMemo,
+} from "react";
 import { Canvas } from "@react-three/fiber";
 import {
   OrbitControls,
@@ -82,7 +97,23 @@ import {
   XRTableMesh,
   XRFormFieldMesh,
   XRTabGroupMesh,
+  ClipPlanesContext,
+  ClippedText,
 } from "./primitives";
+import * as THREE from "three";
+
+// ─────────────────────────────────────────────────────────────
+// Current-page context
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Provides the current page index to all descendants of a paginating
+ * XRContentPanel. PrimitiveDispatcher reads this to gate rendering on
+ * entry.pageIndex — no prop drilling needed.
+ *
+ * Default -1 means "no pagination active" — all primitives render.
+ */
+const CurrentPageContext = React.createContext<number>(-1);
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -99,6 +130,7 @@ export interface XRSceneRendererProps {
   onPlanReady?: (plan: LayoutPlan) => void;
 }
 
+// PageState maps paginating panel IDs to the user's current page index.
 type PageState = Record<string, number>;
 
 // ─────────────────────────────────────────────────────────────
@@ -183,6 +215,72 @@ function usePipeline(
 // Primitive dispatcher
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * Dedicated component for XRContentPanel so hooks (useMemo) are called
+ * unconditionally at the top of the function — not inside a switch case.
+ *
+ * This component owns pagination state for the panel. It:
+ *   1. Sets CurrentPageContext so every descendant PrimitiveDispatcher
+ *      can gate itself against entry.pageIndex.
+ *   2. Renders ALL direct children — the pageIndex gate in PrimitiveDispatcher
+ *      handles visibility; no filtering happens here.
+ *   3. Shows pagination controls when pageCount > 1.
+ */
+function XRContentPanelRenderer({
+  primitive,
+  plan,
+  pageState,
+  setPage,
+  primitiveMap,
+  entry,
+}: DispatcherProps & { entry: LayoutEntry }) {
+  const currentPage = pageState[primitive.id] ?? 0;
+  const pagination = entry.pagination;
+
+  const ex = entry.position.x;
+  const ey = entry.position.y;
+  const ez = entry.position.z;
+  const rot: [number, number, number] = [
+    entry.rotation.x,
+    entry.rotation.y,
+    entry.rotation.z,
+  ];
+
+  const panelClipPlanes = useMemo(
+    () => buildPanelClipPlanes(ey, entry.size.height),
+    [ey, entry.size.height],
+  );
+
+  return (
+    <CurrentPageContext.Provider value={currentPage}>
+      <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <PanelBacking entry={zeroedEntry(entry)} opacity={0.35} />
+        <ClipPlanesContext.Provider value={panelClipPlanes}>
+          {primitive.children.map((child) => (
+            <PrimitiveDispatcher
+              key={child.id}
+              primitive={child}
+              plan={plan}
+              pageState={pageState}
+              setPage={setPage}
+              primitiveMap={primitiveMap}
+            />
+          ))}
+        </ClipPlanesContext.Provider>
+        {pagination && pagination.pageCount > 1 && (
+          <PaginationControls
+            primitiveId={primitive.id}
+            pagination={pagination}
+            currentPage={currentPage}
+            entry={zeroedEntry(entry)}
+            onPageChange={(p) => setPage(primitive.id, p)}
+          />
+        )}
+      </group>
+    </CurrentPageContext.Provider>
+  );
+}
+
 interface DispatcherProps {
   primitive: XRPrimitive;
   plan: LayoutPlan;
@@ -211,10 +309,8 @@ function PrimitiveDispatcher({
   primitiveMap,
 }: DispatcherProps) {
   const entry = plan.entries[primitive.id];
+  const currentPage = React.useContext(CurrentPageContext);
 
-  // renderChild: dispatches a child primitive. Because it is called from
-  // INSIDE a container's <group>, the child's entry.position (local space)
-  // resolves correctly via Three.js group composition — no extra arithmetic.
   const renderChild = useCallback(
     (childId: string) => {
       const childPrim = primitiveMap.get(childId);
@@ -234,6 +330,17 @@ function PrimitiveDispatcher({
   );
 
   if (!entry) return null;
+
+  // Gate on pageIndex: if the engine assigned this primitive to a specific
+  // page and it doesn't match the panel's current page, skip rendering.
+  // currentPage === -1 means no pagination is active (render everything).
+  if (
+    entry.pageIndex !== undefined &&
+    currentPage !== -1 &&
+    entry.pageIndex !== currentPage
+  ) {
+    return null;
+  }
 
   const ex = entry.position.x;
   const ey = entry.position.y;
@@ -371,101 +478,77 @@ function PrimitiveDispatcher({
       );
 
     // ── XRSection ─────────────────────────────────────────────────────────
-    // Non-paginated: group at entry.position, XRSectionMesh at origin,
-    // children dispatched inside via renderChild (inherits group transform).
+    // Renders all children — the pageIndex gate in PrimitiveDispatcher already
+    // hides children that don't belong to the current page.
     //
-    // Paginated (root section-0 acting as content panel): show only current
-    // page's children with pagination controls.
+    // Passes childEntries (filtered to current page) to XRSectionMesh so it
+    // can size its backing panel correctly. Also computes isContinuation /
+    // hasMore for the edge-indicator stripes.
 
     case "XRSection": {
-      // if (entry.pagination && entry.pagination.pageCount > 1) {
-      //   const paginatedChildren = getPaginatedChildren(
-      //     primitive,
-      //     entry,
-      //     pageState,
-      //   );
-      //   const currentPage = pageState[primitive.id] ?? 0;
-      //   return (
-      //     <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
-      //       <PanelBacking entry={zeroedEntry(entry)} opacity={0.35} />
-      //       {paginatedChildren.map((child) => (
-      //         <PrimitiveDispatcher
-      //           key={child.id}
-      //           primitive={child}
-      //           plan={plan}
-      //           pageState={pageState}
-      //           setPage={setPage}
-      //           primitiveMap={primitiveMap}
-      //         />
-      //       ))}
-      //       <PaginationControls
-      //         primitiveId={primitive.id}
-      //         pagination={entry.pagination}
-      //         currentPage={currentPage}
-      //         entry={zeroedEntry(entry)}
-      //         onPageChange={(p) => setPage(primitive.id, p)}
-      //       />
-      //     </group>
-      //   );
-      // }
+      // Children whose pageIndex matches the current page (or all if no pagination).
+      const visibleChildren = primitive.children.filter((child) => {
+        const ce = plan.entries[child.id];
+        if (!ce) return false;
+        if (ce.pageIndex === undefined || currentPage === -1) return true;
+        return ce.pageIndex === currentPage;
+      });
+
+      const visibleChildEntries = visibleChildren
+        .map((c) => plan.entries[c.id])
+        .filter((ce): ce is LayoutEntry => ce !== undefined);
+
+      // Continuation indicators: compare the section's own pageIndex to its
+      // first / last child's pageIndex.
+      const sectionPage = entry.pageIndex;
+      const firstChildPage = plan.entries[primitive.children[0]?.id]?.pageIndex;
+      const lastChildPage =
+        plan.entries[primitive.children[primitive.children.length - 1]?.id]
+          ?.pageIndex;
+
+      const isContinuation =
+        sectionPage !== undefined &&
+        firstChildPage !== undefined &&
+        firstChildPage !== sectionPage &&
+        currentPage !== sectionPage;
+
+      const hasMore =
+        lastChildPage !== undefined &&
+        currentPage !== -1 &&
+        lastChildPage > currentPage;
 
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
           <XRSectionMesh
             primitive={primitive as XRSection}
             entry={zeroedEntry(entry)}
-            childEntries={
-              primitive.children
-                .map((c) => plan.entries[c.id])
-                .filter(Boolean) as LayoutEntry[]
-            }
+            childEntries={visibleChildEntries}
             renderChild={renderChild}
-            visibleChildIds={undefined}
-            pagination={undefined}
+            isContinuation={isContinuation}
+            hasMore={hasMore}
           />
         </group>
       );
     }
 
     // ── XRContentPanel ────────────────────────────────────────────────────
-    // Top-level main panel. Paginates its direct section children.
-    // Children dispatched inside the group — local positions resolve correctly.
+    // Delegated to XRContentPanelRenderer (dedicated component for hooks).
+    // Sets CurrentPageContext so all descendants can gate on entry.pageIndex.
 
-    case "XRContentPanel": {
-      const paginatedChildren = getPaginatedChildren(
-        primitive,
-        entry,
-        pageState,
-      );
-      const currentPage = pageState[primitive.id] ?? 0;
-      console.log("ContentPanel pagination", entry.pagination);
-      console.log("currentPage", currentPage);
-      console.log("children", primitive.children.length);
+    case "XRContentPanel":
+      // Delegated to a dedicated component so useMemo is called unconditionally
+      // at the top of that function (React hooks rules).
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
-          <PanelBacking entry={zeroedEntry(entry)} opacity={0.35} />
-          {paginatedChildren.map((child) => (
-            <PrimitiveDispatcher
-              key={child.id}
-              primitive={child}
-              plan={plan}
-              pageState={pageState}
-              setPage={setPage}
-              primitiveMap={primitiveMap}
-            />
-          ))}
-          {entry.pagination && entry.pagination.pageCount > 1 && (
-            <PaginationControls
-              primitiveId={primitive.id}
-              pagination={entry.pagination}
-              currentPage={currentPage}
-              entry={zeroedEntry(entry)}
-              onPageChange={(p) => setPage(primitive.id, p)}
-            />
-          )}
-        </group>
+        <XRContentPanelRenderer
+          key={primitive.id}
+          primitive={primitive}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+          entry={entry}
+        />
       );
-    }
 
     // ── Non-paginating containers ─────────────────────────────────────────
     // Group at entry.position; children dispatched inside, inheriting transform.
@@ -594,7 +677,7 @@ function PrimitiveDispatcher({
       const w = Math.max(entry.size.width, 0.025);
       return (
         <group key={primitive.id} position={[ex, ey, ez]}>
-          <Text
+          <ClippedText
             anchorX="left"
             anchorY="top"
             position={[0.008, -0.008, 0.004]}
@@ -603,7 +686,7 @@ function PrimitiveDispatcher({
             maxWidth={w - 0.016}
           >
             {primitive.label ?? primitive.type}
-          </Text>
+          </ClippedText>
         </group>
       );
     }
@@ -697,7 +780,7 @@ function PaginationControls({
   onPageChange,
 }: {
   primitiveId: string;
-  pagination: { pageCount: number; pages: string[][] };
+  pagination: { pageCount: number };
   currentPage: number;
   entry: LayoutEntry;
   onPageChange: (page: number) => void;
@@ -781,6 +864,37 @@ function PaginationControls({
 // Helpers
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * Build world-space THREE.Plane clipping planes for an XRContentPanel.
+ *
+ * The panel occupies [worldY, worldY - panelHeight] in world Y.
+ * We clip anything above the top edge and below the bottom edge.
+ *
+ * Two planes are returned:
+ *   • top    — clips geometry above the panel top       (normal: 0, -1, 0)
+ *   • bottom — clips geometry below the panel bottom    (normal: 0, +1, 0)
+ *
+ * Because Three.js clipping planes are in WORLD space and `localClippingEnabled`
+ * is true, these planes correctly clip all descendant geometry regardless of
+ * nesting depth or local transforms.
+ *
+ * @param worldY      Y coordinate of the panel's top-left origin (metres).
+ * @param panelHeight Height of the panel viewport (metres).
+ */
+function buildPanelClipPlanes(
+  worldY: number,
+  panelHeight: number,
+): THREE.Plane[] {
+  // Top clip: discard points where y > worldY  → normal (0,-1,0), constant = worldY
+  const topPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), worldY);
+  // Bottom clip: discard points where y < worldY - panelHeight → normal (0,1,0), constant = -(worldY - panelHeight)
+  const bottomPlane = new THREE.Plane(
+    new THREE.Vector3(0, 1, 0),
+    -(worldY - panelHeight),
+  );
+  return [topPlane, bottomPlane];
+}
+
 function buildPrimitiveMap(
   root: XRPrimitive,
   out: Map<string, XRPrimitive> = new Map(),
@@ -788,18 +902,6 @@ function buildPrimitiveMap(
   out.set(root.id, root);
   for (const child of root.children) buildPrimitiveMap(child, out);
   return out;
-}
-
-function getPaginatedChildren(
-  primitive: XRPrimitive,
-  entry: LayoutEntry,
-  pageState: PageState,
-): XRPrimitive[] {
-  if (!entry.pagination) return primitive.children;
-  const currentPage = pageState[primitive.id] ?? 0;
-  const pageIds = entry.pagination.pages[currentPage] ?? [];
-  const idSet = new Set(pageIds);
-  return primitive.children.filter((c) => idSet.has(c.id));
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -821,6 +923,8 @@ function XRSceneGraph({
     () => buildPrimitiveMap(scene.root),
     [scene.root],
   );
+
+  console.log("Rendering XRSceneGraph with scene", scene, "and plan", plan);
 
   return (
     <>
@@ -963,6 +1067,8 @@ export function XRSceneRenderer({
             ...(session ? { xr: { enabled: true } } : {}),
           }}
           onCreated={({ gl }) => {
+            // Required for THREE.Plane clipping planes on child materials
+            gl.localClippingEnabled = true;
             if (session) {
               gl.xr.enabled = true;
               gl.xr.setSession(session as unknown as any);

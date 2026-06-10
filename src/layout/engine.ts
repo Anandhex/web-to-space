@@ -95,27 +95,65 @@ export interface LayoutEntry {
    * Absent for leaf nodes and panels whose children fit in a single page.
    */
   pagination?: PaginationMeta;
+
+  /**
+   * Page index this primitive belongs to within its parent paginating panel.
+   *
+   * Set by the layout engine on every descendant of a paginated XRContentPanel.
+   * The renderer compares this value to the panel's current page to decide
+   * whether to render the primitive.
+   *
+   * Absent (undefined) for primitives that are not under a paginated panel,
+   * or for the XRContentPanel itself.
+   *
+   * For section children that overflow across page boundaries, each child
+   * receives the specific page index it should appear on.
+   */
+  pageIndex?: number;
 }
 
 /**
- * Pagination split for a panel whose children exceed its viewport height.
- * Each page contains an ordered list of child primitive IDs.
- * The renderer shows one page at a time and provides a swipe/scroll affordance.
+ * Pagination metadata attached to a panel (e.g. XRContentPanel) whose
+ * children were split across pages by the layout engine.
+ *
+ * The engine stamps a `pageIndex` on every LayoutEntry that belongs to a
+ * paginated panel, including deeply nested children of sections that overflow.
+ *
+ * Child positions are stored as absolute local-space Y values (accumulated
+ * downward from the panel top across all pages). To render a given page
+ * without overflow, the renderer translates its content group by
+ * `+pageYOffsets[currentPage]` along the local Y axis, which shifts that
+ * page's content back to the top of the panel viewport.
  */
 export interface PaginationMeta {
   /** Total number of pages. */
   pageCount: number;
-  /**
-   * Ordered list of pages. Each page is an ordered list of child IDs
-   * that fit within one viewport height of the panel.
-   */
-  pages: string[][];
   /**
    * Z-offset (metres) applied to each successive page panel.
    * The renderer stacks pages behind each other along the z-axis;
    * the active page is brought forward.
    */
   pageZStep: number;
+  /**
+   * Y scroll offset (metres) for each page, indexed by page number.
+   * Length === pageCount.
+   *
+   * Child positions are accumulated downward across all pages in a single
+   * continuous local-space coordinate system. To show page N without
+   * content from other pages overflowing the panel viewport, the renderer
+   * must translate its content group by `+pageYOffsets[N]` on the local
+   * Y axis (positive = shift content upward into view).
+   *
+   * Page 0 is always 0 (no offset needed — content starts at panel top).
+   * Subsequent pages have increasing positive values equal to the absolute
+   * Y depth at which that page began.
+   *
+   * Example with maxPanelViewportHeight = 0.9 m:
+   *   page 0 → yOffset = 0.0   (content at y = -0.04 … -0.94 fits in view)
+   *   page 1 → yOffset = 0.94  (content at y = -0.98 … -1.88 shifted up by 0.94)
+   *   page 2 → yOffset = 1.88  (and so on)
+   */
+  pageYOffsets: number[];
 }
 
 /**
@@ -313,11 +351,50 @@ function estimateHeight(
     return level === 1 ? 0.07 : level === 2 ? 0.062 : 0.052;
   }
 
-  // ── Paragraph: density-aware ─────────────────────────────
+  // ── Paragraph: word-count-aware ──────────────────────────
+  //
+  // densityScore alone caps at 0.28 m regardless of word count, which means
+  // a 500-word paragraph and a 20-word paragraph get nearly the same budget.
+  // Long paragraphs then massively overflow the viewport, preventing correct
+  // pagination because the engine thinks they fit.
+  //
+  // Instead: estimate line count from wordCount and the panel's usable width,
+  // then derive height from the rendered font metrics.
+  //
+  //   Renderer font size : 0.026 m  (XRParagraphMesh)
+  //   Line height ratio  : 1.55     (XRParagraphMesh)
+  //   Line height (m)    : 0.026 × 1.55 = 0.0403 m
+  //   Panel usable width : config.maxPanelViewportHeight × 1.4/0.9 ≈ not right;
+  //                        use a fixed approximation: 1.32 m (1.4 m panel - 2×0.04 padding)
+  //   Avg chars/word     : 5.5 chars including trailing space
+  //   Char width (m)     : fontSize × 0.55 ≈ 0.0143 m (proportional font estimate)
+  //   Words per line     : floor(panelUsableWidth / (fontSize × 0.55 × avgCharsPerWord))
+  //                        = floor(1.32 / (0.026 × 0.55 × 5.5)) = floor(1.32 / 0.0787) ≈ 16
+  //
+  // Add vertical padding (top + bottom) = 2 × 0.018 m.
+  // Floor at 0.052 m (1 line + padding) for single-sentence paragraphs.
   if (primitive.type === "XRParagraph") {
+    const wordCount = (primitive as { wordCount?: number }).wordCount ?? 0;
     const density =
       (primitive as { densityScore?: number }).densityScore ?? 0.2;
-    // Low density (short) → 0.07 m; high density (long) → 0.28 m
+
+    if (wordCount > 0) {
+      const FONT_SIZE = 0.026; // metres — matches XRParagraphMesh
+      const LINE_HEIGHT = FONT_SIZE * 1.55; // = 0.0403 m
+      const PANEL_USABLE_W = 1.32; // metres (1.4 m slot - 2×panelPaddingX)
+      const CHAR_WIDTH = FONT_SIZE * 0.55; // average proportional char width
+      const AVG_CHARS_PER_WORD = 5.5; // chars + space
+      const wordsPerLine = Math.max(
+        1,
+        Math.floor(PANEL_USABLE_W / (CHAR_WIDTH * AVG_CHARS_PER_WORD)),
+      );
+      const lineCount = Math.ceil(wordCount / wordsPerLine);
+      const textHeight = lineCount * LINE_HEIGHT;
+      const vertPadding = 0.036; // 0.018 m top + 0.018 m bottom
+      return Math.max(0.052, textHeight + vertPadding);
+    }
+
+    // Fallback when wordCount is absent: density-based estimate (original formula)
     return 0.07 + density * 0.21;
   }
 
@@ -426,19 +503,48 @@ interface StackResult {
   pagination: PaginationMeta | null;
   /** Total stacked height (metres), including top padding. */
   totalHeight: number;
+  /**
+   * Flat map of primitive ID → page index. Populated by the section-aware
+   * paginating path (depth === 0) for every direct child of the panel AND
+   * every grandchild that lives inside a section that overflows.
+   *
+   * The recursive layoutPrimitive walker stamps these values onto the
+   * corresponding LayoutEntries so the renderer can filter by pageIndex alone.
+   *
+   * Empty map when no pagination occurred.
+   */
+  pageIndexMap: Record<string, number>;
 }
 
 /**
  * Stack `children` vertically within a panel of `panelWidth` metres wide.
- * Each child gets a local-space position: x = panelPaddingX, y decreasing
- * downward from panelPaddingTop, z = 0.
  *
- * Pagination only fires for top-level landmark panels (depth === 0).
- * Nested panels always render their full content — inner pagination breaks
- * the layout by duplicating controls and overflowing the parent container.
+ * NON-PAGINATING PATH (depth > 0 — any container other than XRContentPanel):
+ *   Simple vertical stack. All children placed in sequence. No pageIndexMap.
+ *   pageIndex is propagated via inheritedPageIndex in layoutPrimitive.
  *
- * Returns StackResult with child entries in local space and optional
- * PaginationMeta (only when depth === 0 and content overflows).
+ * PAGINATING PATH (depth === 0 — called exclusively from XRContentPanel):
+ *   Section-aware pagination with pageIndex stamping.
+ *
+ *   XRContentPanel is the universal container: it holds all page content
+ *   (XRSection, XRArticle, XRFormPanel, XRFormField, loose headings, etc.)
+ *   and is the sole owner of pagination across all templates.
+ *
+ *   Rules:
+ *   1. Every section-like child (XRSection, XRArticle, XRFormPanel, XRFormField)
+ *      always starts on a new page.
+ *   2. If a section's children exceed one page height they spill across
+ *      consecutive pages — each section child receives its own pageIndex.
+ *      The section itself receives the pageIndex of its first child's page.
+ *   3. Non-section direct children fill pages with standard overflow splitting.
+ *
+ *   Output — pageIndexMap: flat { primitiveId → pageIndex } for every direct
+ *   child AND every section grandchild. layoutPrimitive stamps these onto
+ *   LayoutEntries so the renderer can filter by pageIndex alone.
+ *
+ * IMPORTANT: the inner section-child overflow loop must NOT call nextPage()
+ * because that resets the outer panel-level cursors. It advances pageIdx
+ * directly and resets only its own scoped budget variables.
  */
 function stackChildren(
   children: XRPrimitive[],
@@ -448,7 +554,12 @@ function stackChildren(
   depth: number = 0,
 ): StackResult {
   if (children.length === 0) {
-    return { childEntries: [], pagination: null, totalHeight: 0 };
+    return {
+      childEntries: [],
+      pagination: null,
+      totalHeight: 0,
+      pageIndexMap: {},
+    };
   }
 
   const childWidth = Math.max(0.025, panelWidth - config.panelPaddingX * 2);
@@ -457,48 +568,213 @@ function stackChildren(
   );
 
   const childEntries: LayoutEntry[] = [];
-  const pages: string[][] = [];
-  let currentPage: string[] = [];
-  let currentPageHeight = 0;
+
+  // ── Non-paginating path ──────────────────────────────────────────────────
+  if (depth > 0) {
+    let cursorY = -config.panelPaddingTop;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const h = heights[i];
+      const gap = i === 0 ? 0 : config.childGapY;
+      childEntries.push({
+        id: child.id,
+        position: { x: config.panelPaddingX, y: cursorY - gap, z: 0 },
+        rotation: zeroRotation(),
+        size: { width: childWidth, height: h },
+        curveRadius: 0,
+        worldLocked: true,
+      });
+      cursorY -= gap + h;
+    }
+
+    const totalHeight =
+      config.panelPaddingTop +
+      heights.reduce((s, h) => s + h, 0) +
+      config.childGapY * Math.max(0, children.length - 1) +
+      config.panelPaddingTop;
+
+    return { childEntries, pagination: null, totalHeight, pageIndexMap: {} };
+  }
+
+  // ── Section-aware paginating path (depth === 0) ──────────────────────────
+
+  const VIEWPORT = config.maxPanelViewportHeight;
+
+  function isSectionLike(p: XRPrimitive): boolean {
+    // Container types that group children and always start a fresh page.
+    // XRBanner / XRComplementary / XRFooter are top-level landmarks and are
+    // never children of XRContentPanel, so they are intentionally excluded.
+    return (
+      p.type === "XRSection" ||
+      p.type === "XRArticle" ||
+      p.type === "XRFormPanel" ||
+      p.type === "XRFormField"
+    );
+  }
+
+  /**
+   * Recursively stamp every node in a subtree with the given pageIndex.
+   * Used so that all descendants of a section — at any depth — are registered
+   * in pageIndexMap. layoutPrimitive uses the map for XRContentPanel's direct
+   * children and then propagates via inheritedPageIndex; having the full subtree
+   * in the map means no node is ever missed regardless of tree depth.
+   */
+  function stampSubtree(node: XRPrimitive, page: number): void {
+    pageIndexMap[node.id] = page;
+    for (const child of node.children) {
+      stampSubtree(child, page);
+    }
+  }
+
+  // Flat map of primitive ID → page index.
+  // Covers XRContentPanel's direct children and every descendant at any depth.
+  const pageIndexMap: Record<string, number> = {};
+
+  // y-position for each direct child (index-aligned with children[])
+  const childPositions: Array<{ x: number; y: number; z: number }> = [];
+
+  let pageIdx = 0;
+  let pageHeight = config.panelPaddingTop;
+  let itemsOnPage = 0;
   let cursorY = -config.panelPaddingTop;
+
+  // pageYOffsets[i] = the positive Y amount the renderer must translate the
+  // content group by to bring page i's content to the top of the viewport.
+  // Page 0 is always 0. Each page break records Math.abs(cursorY) at that moment
+  // as the offset for the new page.
+  const pageYOffsets: number[] = [0];
+
+  function nextPage() {
+    // Capture the absolute Y depth at the bottom of the current page —
+    // this becomes the scroll offset the renderer applies to show the next page.
+    pageStartAbsY = Math.abs(cursorY);
+    pageYOffsets.push(pageStartAbsY);
+    pageIdx += 1;
+    pageHeight = config.panelPaddingTop;
+    itemsOnPage = 0;
+    cursorY = -config.panelPaddingTop;
+  }
+
+  // Track the absolute Y depth (positive, in metres) at the start of each page.
+  // Updated whenever a page break happens, before cursorY is reset.
+  let pageStartAbsY = 0; // page 0 starts at depth 0
 
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
     const h = heights[i];
-    const entryGap = currentPage.length === 0 ? 0 : config.childGapY;
 
-    // Enforcement: ONLY paginate if we are at the top-level landmark panel (depth === 0).
-    // Nested panels just stack naturally so their total intrinsic height is computed.
-    const wouldOverflow =
-      depth === 0 &&
-      currentPageHeight + entryGap + h > config.maxPanelViewportHeight &&
-      currentPage.length > 0;
+    if (isSectionLike(child)) {
+      // Sections always start a fresh page
+      if (itemsOnPage > 0) nextPage();
 
-    if (wouldOverflow) {
-      pages.push(currentPage);
-      currentPage = [];
-      currentPageHeight = 0;
-      cursorY = -config.panelPaddingTop;
+      pageIndexMap[child.id] = pageIdx;
+
+      if (child.children.length === 0) {
+        childPositions[i] = { x: config.panelPaddingX, y: cursorY, z: 0 };
+        pageHeight += h;
+        itemsOnPage += 1;
+        cursorY -= h;
+        continue;
+      }
+
+      // Assign pageIndex to every node in each section child's subtree,
+      // splitting on overflow.
+      // IMPORTANT: do NOT call nextPage() here — that resets the outer
+      // panel-level cursors (pageHeight, itemsOnPage, cursorY) which would
+      // corrupt overflow detection for siblings that come after this section.
+      // We only advance the shared pageIdx counter and reset the inner
+      // section-scoped budget trackers.
+      const scHeights = child.children.map((sc) =>
+        estimateHeight(sc, scene, config, 1, new Set()),
+      );
+
+      // The section always starts at the top of a fresh page. pageStartAbsY
+      // holds the absolute Y depth at which this page began (set by nextPage()
+      // or 0 for page 0). Use it as the base for sub-page offset calculations
+      // within this section — not Math.abs(cursorY), which is always just
+      // panelPaddingTop immediately after a nextPage() reset.
+      const sectionStartAbsY = pageStartAbsY;
+
+      let scPageHeight = config.panelPaddingTop;
+      let scItemsOnPage = 0;
+
+      for (let j = 0; j < child.children.length; j++) {
+        const sc = child.children[j];
+        const sch = scHeights[j];
+        const scGap = scItemsOnPage > 0 ? config.childGapY : 0;
+
+        if (scPageHeight + scGap + sch > VIEWPORT && scItemsOnPage > 0) {
+          // Section child overflows — advance page index only; outer cursors
+          // are NOT touched here to avoid corrupting sibling placement.
+          // Capture the Y offset for this new page: section start depth plus
+          // however far into the section we've consumed.
+          const sectionSubPageAbsY = sectionStartAbsY + scPageHeight;
+          pageYOffsets.push(sectionSubPageAbsY);
+          pageStartAbsY = sectionSubPageAbsY;
+          pageIdx += 1;
+          scPageHeight = config.panelPaddingTop;
+          scItemsOnPage = 0;
+        }
+
+        const g = scItemsOnPage > 0 ? config.childGapY : 0;
+        // Stamp sc AND all of sc's descendants with the current page so that
+        // inheritedPageIndex propagation in layoutPrimitive reaches every node
+        // regardless of how deep the tree goes.
+        stampSubtree(sc, pageIdx);
+        scPageHeight += g + sch;
+        scItemsOnPage += 1;
+      }
+
+      // Section's direct entry: always placed at the top of the page it opened.
+      // Since sections always force a fresh page, cursorY was reset to
+      // -panelPaddingTop at that point.
+      childPositions[i] = {
+        x: config.panelPaddingX,
+        y: -config.panelPaddingTop,
+        z: 0,
+      };
+
+      // Sync outer page state to the page this section ended on, so the next
+      // top-level sibling (if any) starts its overflow check from the right page.
+      pageHeight = scPageHeight;
+      itemsOnPage = scItemsOnPage;
+      cursorY = -(config.panelPaddingTop + scPageHeight);
+    } else {
+      // Non-section: standard overflow binning.
+      // Use stampSubtree so any children of this node (e.g. a loose XRCardGrid
+      // or XRTabGroup directly in the panel) also get registered in pageIndexMap.
+      const gap = itemsOnPage === 0 ? 0 : config.childGapY;
+      if (pageHeight + gap + h > VIEWPORT && itemsOnPage > 0) {
+        nextPage();
+      }
+      const g = itemsOnPage === 0 ? 0 : config.childGapY;
+      stampSubtree(child, pageIdx);
+      childPositions[i] = { x: config.panelPaddingX, y: cursorY - g, z: 0 };
+      pageHeight += g + h;
+      itemsOnPage += 1;
+      cursorY -= g + h;
     }
+  }
 
-    const gap = currentPage.length === 0 ? 0 : config.childGapY;
+  const totalPages = pageIdx + 1;
 
-    const entry: LayoutEntry = {
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i];
+    const h = heights[i];
+    const pos = childPositions[i] ?? {
+      x: config.panelPaddingX,
+      y: -config.panelPaddingTop,
+      z: 0,
+    };
+    childEntries.push({
       id: child.id,
-      position: { x: config.panelPaddingX, y: cursorY - gap, z: 0 },
+      position: pos,
       rotation: zeroRotation(),
       size: { width: childWidth, height: h },
       curveRadius: 0,
       worldLocked: true,
-    };
-
-    childEntries.push(entry);
-    currentPage.push(child.id);
-    currentPageHeight += gap + h;
-    cursorY -= gap + h;
+    });
   }
-
-  if (currentPage.length > 0) pages.push(currentPage);
 
   const totalHeight =
     config.panelPaddingTop +
@@ -507,11 +783,11 @@ function stackChildren(
     config.panelPaddingTop;
 
   const pagination: PaginationMeta | null =
-    pages.length > 1
-      ? { pageCount: pages.length, pages, pageZStep: config.pageZStep }
+    totalPages > 1
+      ? { pageCount: totalPages, pageZStep: config.pageZStep, pageYOffsets }
       : null;
 
-  return { childEntries, pagination, totalHeight };
+  return { childEntries, pagination, totalHeight, pageIndexMap };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -520,8 +796,19 @@ function stackChildren(
 
 /**
  * Walk a primitive and all its descendants, producing a LayoutEntry for each.
- * Top-level entries use `worldPlacement`; all children are stacked in local space.
- * `depth` tracks nesting level — pagination is only allowed at depth 0.
+ * Top-level entries use the world-space slot placement; all children are
+ * stacked in local space by stackChildren.
+ *
+ * Pagination fires ONLY when the current primitive is an XRContentPanel —
+ * it is the universal container and the sole owner of pagination regardless
+ * of where it appears in the scene tree. All other container types (XRSection,
+ * XRFormPanel, XRFormField, …) are laid out with the non-paginating path and
+ * receive their pageIndex via inheritedPageIndex propagation.
+ *
+ * `inheritedPageIndex` carries a pageIndex value down the recursion tree.
+ * When XRContentPanel assigns pageIndex values via pageIndexMap, those values
+ * are propagated into every descendant subtree so the renderer can filter
+ * visible children by pageIndex alone.
  */
 function layoutPrimitive(
   primitive: XRPrimitive,
@@ -535,8 +822,8 @@ function layoutPrimitive(
   entries: Record<string, LayoutEntry>,
   diag: LayoutDiagnostics,
   depth: number = 0,
+  inheritedPageIndex?: number,
 ): void {
-  // Create the entry for this primitive
   const entry: LayoutEntry = {
     id: primitive.id,
     position: worldPosition,
@@ -546,18 +833,23 @@ function layoutPrimitive(
     worldLocked,
   };
 
-  // Stack children in local space
+  // Stamp the inherited pageIndex if one was passed down
+  if (inheritedPageIndex !== undefined) {
+    entry.pageIndex = inheritedPageIndex;
+  }
+
   if (primitive.children.length > 0) {
-    const {
-      childEntries,
-      pagination,
-      totalHeight: _totalHeight,
-    } = stackChildren(
+    // Pagination only fires on XRContentPanel — the universal container.
+    // Everything else uses the non-paginating stacking path (stackDepth > 0).
+    const isContentPanel = primitive.type === "XRContentPanel";
+    const stackDepth = isContentPanel ? 0 : 1;
+
+    const { childEntries, pagination, pageIndexMap } = stackChildren(
       primitive.children,
       worldSize.width,
       scene,
       config,
-      depth,
+      stackDepth,
     );
 
     if (pagination) {
@@ -569,24 +861,34 @@ function layoutPrimitive(
       });
     }
 
-    // Register child entries and recurse
     for (let i = 0; i < primitive.children.length; i++) {
       const child = primitive.children[i];
       const childLayoutEntry = childEntries[i];
       if (!childLayoutEntry) continue;
+
+      // pageIndexMap is populated by XRContentPanel's stackChildren call and
+      // covers every descendant at every depth via stampSubtree.
+      // For XRContentPanel's direct children look up the map (which also covers
+      // their subtrees, so inheritedPageIndex will carry the right value all the
+      // way down). For every other node, inheritedPageIndex was already set by an
+      // ancestor XRContentPanel lookup — propagate it unchanged.
+      const childPageIndex = isContentPanel
+        ? pageIndexMap[child.id] // direct child of XRContentPanel: use map
+        : inheritedPageIndex; // all other nodes: propagate ancestor value
 
       layoutPrimitive(
         child,
         childLayoutEntry.position,
         childLayoutEntry.rotation,
         childLayoutEntry.size,
-        0, // children are flat within their parent
+        0,
         worldLocked,
         scene,
         config,
         entries,
         diag,
-        depth + 1, // increment depth so nested panels never paginate
+        depth + 1,
+        childPageIndex,
       );
     }
   }
@@ -622,7 +924,6 @@ type SlotName =
   | "complementary"
   | "banner"
   | "footer"
-  | "form"
   | "toc"
   | "dialog"
   | "alert";
@@ -836,18 +1137,12 @@ function formSlots(cfg: LayoutConfig): SlotMap {
       worldLocked: true,
     },
     main: {
-      // Forms are flat (curveRadius: 0) — curved panels make input targets harder to hit
+      // XRContentPanel is the universal container — it holds the XRFormPanel
+      // (and all other typed children) and owns pagination.
+      // Flat panel (curveRadius: 0) — curved panels make input targets harder to hit.
       position: { x: 0, y: eyeY, z: -d },
       rotation: zeroRotation(),
-      size: { width: 1.1, height: 1.1 },
-      curveRadius: 0,
-      worldLocked: true,
-    },
-    form: {
-      // Explicit form slot — same position as main (form landmark inside main)
-      position: { x: 0, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: { width: 1.0, height: 1.0 },
+      size: { width: 1.1, height: cfg.maxPanelViewportHeight },
       curveRadius: 0,
       worldLocked: true,
     },
@@ -1064,7 +1359,10 @@ function classifyLandmark(primitive: XRPrimitive): SlotName {
     case "XRComplementary":
       return "complementary";
     case "XRFormPanel":
-      return "form";
+      // XRFormPanel is a typed child of XRContentPanel, not a sibling landmark.
+      // Route to "main" so it is placed inside the universal container and
+      // participates in XRContentPanel's pagination rather than owning its own.
+      return "main";
     case "XRDialog":
       return "dialog";
     case "XRAlert":

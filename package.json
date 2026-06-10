@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "devDependencies": {
+    "@types/aria-query": "^5.0.4",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@types/three": "^0.184.1",
@@ -20,6 +21,8 @@
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "aria-query": "^5.3.2",
+    "dom-accessibility-api": "^0.7.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "three": "^0.184.0",
