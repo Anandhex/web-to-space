@@ -63,7 +63,6 @@ export function useClipPlanes(): THREE.Plane[] {
   return useContext(ClipPlanesContext);
 }
 
-import type { LayoutEntry } from "../layout/engine";
 import type {
   XRHeading,
   XRParagraph,
@@ -71,7 +70,9 @@ import type {
   XRNavigationBar,
   XRMediaPlayer,
   XRLink,
-} from "../mapper/mapper";
+} from "../mapper/types";
+import type { LayoutEntry } from "../layout/types";
+import { CurrentPageContext, FontContext } from "./XRSceneRenderer";
 
 // ─────────────────────────────────────────────────────────────
 // Shared constants
@@ -207,6 +208,8 @@ type TextProps = React.ComponentPropsWithoutRef<typeof Text>;
 export function ClippedText(props: TextProps) {
   const clips = useClipPlanes();
 
+  const fontType = useContext(FontContext);
+
   const handleSync = React.useCallback(
     (mesh: THREE.Mesh) => {
       if (!mesh) return;
@@ -227,7 +230,7 @@ export function ClippedText(props: TextProps) {
     [clips, props.onSync],
   );
 
-  return <Text {...props} onSync={handleSync} />;
+  return <Text {...props} font={fontType} onSync={handleSync} />;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -742,9 +745,9 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
   const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
-  const isLarge = primitive.sizingStrategy === "large-panel";
+  // const isLarge = primitive.sizingStrategy === "large-panel";
   const isAudio = primitive.mediaType === "audio";
-  const ICON_SIZE = isLarge ? 0.08 : 0.04;
+  // const ICON_SIZE = isLarge ? 0.08 : 0.04;
 
   return (
     <group position={pos} rotation={rot}>
@@ -784,9 +787,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
           <>
             {[-0.012, 0, 0.012].map((xOff, i) => (
               <mesh key={i} position={[xOff, 0, 0]}>
-                <boxGeometry
-                  args={[0.006, ICON_SIZE * (0.5 + i * 0.3), 0.002]}
-                />
+                <boxGeometry args={[0.006, 1 * (0.5 + i * 0.3), 0.002]} />
                 <meshBasicMaterial
                   color={ACCENT_COL}
                   transparent
@@ -798,7 +799,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
           </>
         ) : (
           <mesh rotation={[0, 0, 0]}>
-            <coneGeometry args={[ICON_SIZE * 0.6, ICON_SIZE, 3, 1]} />
+            <coneGeometry args={[1 * 0.6, 1, 3, 1]} />
             <meshBasicMaterial
               color={ACCENT_COL}
               transparent
@@ -824,7 +825,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
       )}
 
       {/* Native video embed for large-panel when src is available */}
-      {isLarge && primitive.src && (
+      {/* {isLarge && primitive.src && (
         <Html
           transform
           position={[w / 2, -h / 2, PANEL_DEPTH * 2]}
@@ -847,7 +848,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
             }}
           />
         </Html>
-      )}
+      )} */}
     </group>
   );
 }
@@ -857,7 +858,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
 // ─────────────────────────────────────────────────────────────
 
 export interface XRCodeBlockMeshProps {
-  primitive: import("../mapper/mapper").XRCodeBlock;
+  primitive: import("../mapper/types").XRCodeBlock;
   entry: LayoutEntry;
 }
 
@@ -916,7 +917,7 @@ export function XRCodeBlockMesh({ primitive, entry }: XRCodeBlockMeshProps) {
 // ─────────────────────────────────────────────────────────────
 
 export interface XRBlockQuoteMeshProps {
-  primitive: import("../mapper/mapper").XRBlockQuote;
+  primitive: import("../mapper/types").XRBlockQuote;
   entry: LayoutEntry;
 }
 
@@ -974,7 +975,7 @@ export function XRBlockQuoteMesh({ primitive, entry }: XRBlockQuoteMeshProps) {
 // ─────────────────────────────────────────────────────────────
 
 export interface XRSeparatorMeshProps {
-  primitive: import("../mapper/mapper").XRSeparator;
+  primitive: import("../mapper/types").XRSeparator;
   entry: LayoutEntry;
 }
 
@@ -1005,7 +1006,7 @@ export function XRSeparatorMesh({ primitive, entry }: XRSeparatorMeshProps) {
 // ─────────────────────────────────────────────────────────────
 
 export interface XRProgressBarMeshProps {
-  primitive: import("../mapper/mapper").XRProgressBar;
+  primitive: import("../mapper/types").XRProgressBar;
   entry: LayoutEntry;
 }
 
@@ -1064,7 +1065,7 @@ export function XRProgressBarMesh({
 // ─────────────────────────────────────────────────────────────
 
 export interface XRImageMeshProps {
-  primitive: import("../mapper/mapper").XRImage;
+  primitive: import("../mapper/types").XRImage;
   entry: LayoutEntry;
 }
 
@@ -1128,16 +1129,20 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 11. XRCardMesh
+// 11. XRListItemMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRCardMeshProps {
-  primitive: import("../mapper/mapper").XRCard;
+export interface XRListItemMeshProps {
+  primitive: import("../mapper/types").XRListItem;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;
 }
 
-export function XRCardMesh({ primitive, entry, renderChild }: XRCardMeshProps) {
+export function XRListItemMesh({
+  primitive,
+  entry,
+  renderChild,
+}: XRListItemMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
@@ -1195,7 +1200,7 @@ export function XRCardMesh({ primitive, entry, renderChild }: XRCardMeshProps) {
 // ─────────────────────────────────────────────────────────────
 
 export interface XRButtonMeshProps {
-  primitive: import("../mapper/mapper").XRButton;
+  primitive: import("../mapper/types").XRButton;
   entry: LayoutEntry;
 }
 
@@ -1245,7 +1250,7 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
 // ─────────────────────────────────────────────────────────────
 
 export interface XRAlertMeshProps {
-  primitive: import("../mapper/mapper").XRAlert;
+  primitive: import("../mapper/types").XRAlert;
   entry: LayoutEntry;
 }
 
@@ -1304,7 +1309,7 @@ export function XRAlertMesh({ primitive, entry }: XRAlertMeshProps) {
 // ─────────────────────────────────────────────────────────────
 
 export interface XRTableMeshProps {
-  primitive: import("../mapper/mapper").XRTable;
+  primitive: import("../mapper/types").XRTable;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;
 }
@@ -1383,7 +1388,7 @@ export function XRTableMesh({
 // ─────────────────────────────────────────────────────────────
 
 export interface XRFormFieldMeshProps {
-  primitive: import("../mapper/mapper").XRFormField;
+  primitive: import("../mapper/types").XRFormField;
   entry: LayoutEntry;
 }
 
@@ -1446,7 +1451,7 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
 // ─────────────────────────────────────────────────────────────
 
 export interface XRTabGroupMeshProps {
-  primitive: import("../mapper/mapper").XRTabGroup;
+  primitive: import("../mapper/types").XRTabGroup;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;
 }

@@ -449,6 +449,7 @@
       import {
         computeLayoutPlan,
         mergeLayoutPlan,
+        QUEST_PRO_PROFILE,
       } from "/src/layout/engine.ts";
 
       // ── state ─────────────────────────────────────────────────────────────
@@ -865,7 +866,7 @@
           });
           console.log("Parsed IR:", ir);
           console.log("Mapped Scene:", mappedScene);
-          const layoutPlan = computeLayoutPlan(mappedScene);
+          const layoutPlan = computeLayoutPlan(mappedScene, QUEST_PRO_PROFILE);
           console.log("Layout Plan:", layoutPlan);
           const mergedPlan = mergeLayoutPlan(mappedScene, layoutPlan);
           console.log("Merged Layout Plan:", mergedPlan);

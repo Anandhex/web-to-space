@@ -550,6 +550,7 @@ async function handleHeadingSection(
   landmarkParentId: string,
   ctx: BuildContext,
   readingDepth: number,
+  parentIsLandmark: boolean,
 ): Promise<{ id: string; endIndex: number } | null> {
   const child = peelSibling(siblings[index], ctx).element;
   const headingLevel = resolveRoleFromElement(child, ctx.config).level ?? 0;
@@ -574,6 +575,19 @@ async function handleHeadingSection(
   }
 
   if (endIndex === index + 1) return null; // heading stands alone
+
+  const headingCount = siblings.reduce((count, sib) => {
+    const role = resolveRoleFromElement(
+      peelSibling(sib, ctx).element,
+      ctx.config,
+    );
+
+    return count + (role.role === "heading" ? 1 : 0);
+  }, 0);
+
+  if (parentIsLandmark && headingCount <= 1) {
+    return null;
+  }
 
   const sectionId = `${parentId}-section-${ctx.counters.section++}`;
   const readingIndex = ctx.counters.reading++;
@@ -884,21 +898,22 @@ async function buildChildrenFromSiblings(
 
     // Heading-inferred section
     if (ctx.config.useStructuralInference && roleInfo.role === "heading") {
-      if (!parentIsLandmark) {
-        const result = await handleHeadingSection(
-          siblings,
-          index,
-          parentId,
-          landmarkParentId,
-          ctx,
-          readingDepth,
-        );
-        if (result) {
-          childIds.push(result.id);
-          index = result.endIndex;
-          continue;
-        }
+      // if (!parentIsLandmark) {
+      const result = await handleHeadingSection(
+        siblings,
+        index,
+        parentId,
+        landmarkParentId,
+        ctx,
+        readingDepth,
+        parentIsLandmark,
+      );
+      if (result) {
+        childIds.push(result.id);
+        index = result.endIndex;
+        continue;
       }
+      // }
       // else: heading stands alone — fall through to leaf
     }
 

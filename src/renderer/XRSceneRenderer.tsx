@@ -5,30 +5,30 @@
  * ────────────────────
  * The layout engine outputs entry.position in two coordinate spaces:
  *
- *   Top-level landmark panels  → world space (e.g. x=0, y=1.4, z=-1.2)
- *   All children               → LOCAL space relative to their parent panel's
- *                                top-left origin (e.g. x=0.04, y=-0.04, z=0)
+ * Top-level landmark panels  → world space (e.g. x=0, y=1.4, z=-1.2)
+ * All children               → LOCAL space relative to their parent panel's
+ * top-left origin (e.g. x=0.04, y=-0.04, z=0)
  *
  * Because Three.js group transforms compose automatically, the correct
  * rendering strategy is simply:
  *
- *   1. Every primitive gets a <group position={entry.position}> wrapper.
- *   2. Every mesh component receives zeroedEntry() so its internal
- *      entryTransform() group is at [0,0,0] — not double-applying position.
- *   3. Children are dispatched INSIDE the parent's <group>, inheriting
- *      the parent's world transform. Their local-space entry.position
- *      then resolves correctly via Three.js group composition.
+ * 1. Every primitive gets a <group position={entry.position}> wrapper.
+ * 2. Every mesh component receives zeroedEntry() so its internal
+ * entryTransform() group is at [0,0,0] — not double-applying position.
+ * 3. Children are dispatched INSIDE the parent's <group>, inheriting
+ * the parent's world transform. Their local-space entry.position
+ * then resolves correctly via Three.js group composition.
  *
  * Pagination contract
  * ───────────────────
  * The layout engine stamps entry.pageIndex on every primitive that lives
  * under a paginating XRContentPanel. The renderer gates on this value:
  *
- *   • XRContentPanel sets CurrentPageContext to the user's current page.
- *   • Every PrimitiveDispatcher reads CurrentPageContext and returns null
- *     if entry.pageIndex is defined and !== currentPage.
- *   • No ID lists, no slice maps, no position re-basing needed — the
- *     engine assigns correct page-relative positions to every primitive.
+ * • XRContentPanel sets CurrentPageContext to the user's current page.
+ * • Every PrimitiveDispatcher reads CurrentPageContext and returns null
+ * if entry.pageIndex is defined and !== currentPage.
+ * • No ID lists, no slice maps, no position re-basing needed — the
+ * engine assigns correct page-relative positions to every primitive.
  *
  * Clipping
  * ────────
@@ -36,6 +36,11 @@
  * them via ClipPlanesContext so descendant materials can clip geometry
  * that would bleed outside the panel viewport.
  */
+
+const DEFAULT_ROBOTO_FONT =
+  "https://fonts.gstatic.com/s/roboto/v18/KFOmCnqEu92Fr1Mu4mxKKTU1Kg.woff";
+
+const EMPTY_CONFIG: Partial<LayoutConfig> = {};
 
 import React, {
   useState,
@@ -56,28 +61,14 @@ import {
 
 import { parsePageToIR } from "../ir/parser";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../mapper/mapper";
-import { computeLayoutPlan, DEFAULT_LAYOUT_CONFIG } from "../layout/engine";
-import type {
-  SpatialScene,
-  XRPrimitive,
-  XRHeading,
-  XRParagraph,
-  XRSection,
-  XRNavigationBar,
-  XRMediaPlayer,
-  XRCodeBlock,
-  XRBlockQuote,
-  XRSeparator,
-  XRProgressBar,
-  XRImage,
-  XRCard,
-  XRButton,
-  XRAlert,
-  XRTable,
-  XRFormField,
-  XRTabGroup,
-} from "../mapper/mapper";
-import type { LayoutPlan, LayoutEntry, LayoutConfig } from "../layout/engine";
+import {
+  computeLayoutPlan,
+  QUEST_3_PROFILE,
+  QUEST_PRO_PROFILE,
+  RAY_BAN_META_PROFILE,
+} from "../layout/engine";
+
+import type { LayoutConfig } from "../layout/engine";
 
 import { useXRSession } from "./useXRSession";
 import {
@@ -91,7 +82,7 @@ import {
   XRSeparatorMesh,
   XRProgressBarMesh,
   XRImageMesh,
-  XRCardMesh,
+  XRListItemMesh,
   XRButtonMesh,
   XRAlertMesh,
   XRTableMesh,
@@ -101,50 +92,56 @@ import {
   ClippedText,
 } from "./primitives";
 import * as THREE from "three";
+import type {
+  SemanticScene,
+  XRPrimitive,
+  XRHeading,
+  XRParagraph,
+  XRNavigationBar,
+  XRMediaPlayer,
+  XRCodeBlock,
+  XRBlockQuote,
+  XRSeparator,
+  XRProgressBar,
+  XRImage,
+  XRButton,
+  XRAlert,
+  XRFormField,
+  XRSection,
+  XRListItem,
+  XRTable,
+  XRTabGroup,
+} from "../mapper/types";
+import type { LayoutPlan, LayoutEntry, DeviceProfile } from "../layout/types";
 
 // ─────────────────────────────────────────────────────────────
-// Current-page context
+// Contexts
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Provides the current page index to all descendants of a paginating
- * XRContentPanel. PrimitiveDispatcher reads this to gate rendering on
- * entry.pageIndex — no prop drilling needed.
- *
- * Default -1 means "no pagination active" — all primitives render.
- */
-const CurrentPageContext = React.createContext<number>(-1);
+export const CurrentPageContext = React.createContext<number>(-1);
+export const FontContext = React.createContext<string | undefined>(undefined);
 
 // ─────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────
 
+export type XRDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
+
 export interface XRSceneRendererProps {
   html?: string;
   url?: string;
-  scene?: SpatialScene;
+  scene?: SemanticScene;
   layoutConfig?: Partial<LayoutConfig>;
   width?: string | number;
   height?: string | number;
   background?: string;
+  deviceType?: XRDeviceType;
+  fontType?: string;
   onPlanReady?: (plan: LayoutPlan) => void;
 }
 
-// PageState maps paginating panel IDs to the user's current page index.
 type PageState = Record<string, number>;
 
-// ─────────────────────────────────────────────────────────────
-// zeroedEntry
-// ─────────────────────────────────────────────────────────────
-
-/**
- * Strip position and rotation from an entry before passing to a mesh component.
- *
- * Every mesh component calls entryTransform(entry) internally and renders
- * <group position={pos} rotation={rot}>. The dispatcher's outer <group>
- * already owns the translation, so we zero the entry to prevent a
- * second application.
- */
 function zeroedEntry(entry: LayoutEntry): LayoutEntry {
   return {
     ...entry,
@@ -159,22 +156,26 @@ function zeroedEntry(entry: LayoutEntry): LayoutEntry {
 
 function usePipeline(
   html: string | undefined,
-  sceneIn: SpatialScene | undefined,
+  sceneIn: SemanticScene | undefined,
   url: string | undefined,
+  deviceProfile: DeviceProfile,
   layoutConfig: Partial<LayoutConfig>,
 ) {
   const [result, setResult] = useState({
-    scene: null as SpatialScene | null,
+    scene: null as SemanticScene | null,
     plan: null as LayoutPlan | null,
     error: null as string | null,
   });
+
+  const configHash = JSON.stringify(layoutConfig);
+  const stableConfig = useMemo(() => layoutConfig, [configHash]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function run() {
       try {
-        let scene: SpatialScene;
+        let scene: SemanticScene;
         if (sceneIn) {
           scene = sceneIn;
         } else if (html) {
@@ -189,8 +190,14 @@ function usePipeline(
             });
           return;
         }
-        const config = { ...DEFAULT_LAYOUT_CONFIG, ...layoutConfig };
-        const plan = computeLayoutPlan(scene, scene.template, config);
+
+        const plan = computeLayoutPlan(
+          scene,
+          deviceProfile,
+          undefined,
+          stableConfig, // <-- Use the stableConfig here
+        );
+
         if (!cancelled) setResult({ scene, plan, error: null });
       } catch (err) {
         if (!cancelled)
@@ -206,7 +213,7 @@ function usePipeline(
     return () => {
       cancelled = true;
     };
-  }, [html, sceneIn, url]);
+  }, [html, sceneIn, url, deviceProfile, stableConfig]); // <-- Depend on stableConfig
 
   return result;
 }
@@ -215,17 +222,6 @@ function usePipeline(
 // Primitive dispatcher
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Dedicated component for XRContentPanel so hooks (useMemo) are called
- * unconditionally at the top of the function — not inside a switch case.
- *
- * This component owns pagination state for the panel. It:
- *   1. Sets CurrentPageContext so every descendant PrimitiveDispatcher
- *      can gate itself against entry.pageIndex.
- *   2. Renders ALL direct children — the pageIndex gate in PrimitiveDispatcher
- *      handles visibility; no filtering happens here.
- *   3. Shows pagination controls when pageCount > 1.
- */
 function XRContentPanelRenderer({
   primitive,
   plan,
@@ -289,18 +285,6 @@ interface DispatcherProps {
   primitiveMap: Map<string, XRPrimitive>;
 }
 
-/**
- * Renders a primitive and recursively its children.
- *
- * Pattern for every case:
- *   <group position={[ex, ey, ez]}>   ← entry.position, used as-is (local or world)
- *     <XRFooMesh entry={zeroedEntry(entry)} .../>   ← mesh at origin of group
- *   </group>
- *
- * For containers, children are dispatched INSIDE the group so they inherit
- * the parent's transform. Each child's entry.position is already a local
- * offset from the engine, so Three.js group composition handles the rest.
- */
 function PrimitiveDispatcher({
   primitive,
   plan,
@@ -310,6 +294,7 @@ function PrimitiveDispatcher({
 }: DispatcherProps) {
   const entry = plan.entries[primitive.id];
   const currentPage = React.useContext(CurrentPageContext);
+  const fontType = React.useContext(FontContext);
 
   const renderChild = useCallback(
     (childId: string) => {
@@ -331,9 +316,6 @@ function PrimitiveDispatcher({
 
   if (!entry) return null;
 
-  // Gate on pageIndex: if the engine assigned this primitive to a specific
-  // page and it doesn't match the panel's current page, skip rendering.
-  // currentPage === -1 means no pagination is active (render everything).
   if (
     entry.pageIndex !== undefined &&
     currentPage !== -1 &&
@@ -352,10 +334,6 @@ function PrimitiveDispatcher({
   ];
 
   switch (primitive.type) {
-    // ── Leaf primitives ───────────────────────────────────────────────────
-    // Group positions the primitive; zeroedEntry prevents double-application
-    // inside the mesh's own entryTransform() call.
-
     case "XRHeading":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -365,7 +343,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRParagraph":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -375,7 +352,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRNavigationBar":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -385,7 +361,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRMediaPlayer":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -395,7 +370,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRCodeBlock":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -405,7 +379,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRBlockQuote":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -415,7 +388,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRSeparator":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -425,7 +397,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRProgressBar":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -435,7 +406,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRImage":
     case "XRFigure":
       return (
@@ -446,7 +416,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRButton":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -456,7 +425,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRAlert":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -466,7 +434,6 @@ function PrimitiveDispatcher({
           />
         </group>
       );
-
     case "XRFormField":
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
@@ -477,16 +444,7 @@ function PrimitiveDispatcher({
         </group>
       );
 
-    // ── XRSection ─────────────────────────────────────────────────────────
-    // Renders all children — the pageIndex gate in PrimitiveDispatcher already
-    // hides children that don't belong to the current page.
-    //
-    // Passes childEntries (filtered to current page) to XRSectionMesh so it
-    // can size its backing panel correctly. Also computes isContinuation /
-    // hasMore for the edge-indicator stripes.
-
     case "XRSection": {
-      // Children whose pageIndex matches the current page (or all if no pagination).
       const visibleChildren = primitive.children.filter((child) => {
         const ce = plan.entries[child.id];
         if (!ce) return false;
@@ -498,8 +456,6 @@ function PrimitiveDispatcher({
         .map((c) => plan.entries[c.id])
         .filter((ce): ce is LayoutEntry => ce !== undefined);
 
-      // Continuation indicators: compare the section's own pageIndex to its
-      // first / last child's pageIndex.
       const sectionPage = entry.pageIndex;
       const firstChildPage = plan.entries[primitive.children[0]?.id]?.pageIndex;
       const lastChildPage =
@@ -511,7 +467,6 @@ function PrimitiveDispatcher({
         firstChildPage !== undefined &&
         firstChildPage !== sectionPage &&
         currentPage !== sectionPage;
-
       const hasMore =
         lastChildPage !== undefined &&
         currentPage !== -1 &&
@@ -531,13 +486,7 @@ function PrimitiveDispatcher({
       );
     }
 
-    // ── XRContentPanel ────────────────────────────────────────────────────
-    // Delegated to XRContentPanelRenderer (dedicated component for hooks).
-    // Sets CurrentPageContext so all descendants can gate on entry.pageIndex.
-
     case "XRContentPanel":
-      // Delegated to a dedicated component so useMemo is called unconditionally
-      // at the top of that function (React hooks rules).
       return (
         <XRContentPanelRenderer
           key={primitive.id}
@@ -549,9 +498,6 @@ function PrimitiveDispatcher({
           entry={entry}
         />
       );
-
-    // ── Non-paginating containers ─────────────────────────────────────────
-    // Group at entry.position; children dispatched inside, inheriting transform.
 
     case "XRArticle":
     case "XRFormPanel":
@@ -575,16 +521,11 @@ function PrimitiveDispatcher({
       );
     }
 
-    // ── XRCard ────────────────────────────────────────────────────────────
-    // Card mesh renders its own chrome; children via renderChild.
-    // renderChild is called from inside XRCardMesh's own group (zeroed),
-    // so child local positions resolve correctly.
-
-    case "XRCard": {
+    case "XRListItem": {
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
-          <XRCardMesh
-            primitive={primitive as XRCard}
+          <XRListItemMesh
+            primitive={primitive as XRListItem}
             entry={zeroedEntry(entry)}
             renderChild={renderChild}
           />
@@ -592,41 +533,7 @@ function PrimitiveDispatcher({
       );
     }
 
-    // ── XRCardGrid ────────────────────────────────────────────────────────
-
-    case "XRCardGrid": {
-      return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
-          {primitive.children.map((child) => (
-            <PrimitiveDispatcher
-              key={child.id}
-              primitive={child}
-              plan={plan}
-              pageState={pageState}
-              setPage={setPage}
-              primitiveMap={primitiveMap}
-            />
-          ))}
-        </group>
-      );
-    }
-
-    // ── XRTable ───────────────────────────────────────────────────────────
-
-    case "XRTable": {
-      return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
-          <XRTableMesh
-            primitive={primitive as XRTable}
-            entry={zeroedEntry(entry)}
-            renderChild={renderChild}
-          />
-        </group>
-      );
-    }
-
-    // ── XRTableRow / XRTableCell ──────────────────────────────────────────
-
+    case "XRList":
     case "XRTableRow":
     case "XRTableCell": {
       return (
@@ -645,7 +552,17 @@ function PrimitiveDispatcher({
       );
     }
 
-    // ── XRTabGroup ────────────────────────────────────────────────────────
+    case "XRTable": {
+      return (
+        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+          <XRTableMesh
+            primitive={primitive as XRTable}
+            entry={zeroedEntry(entry)}
+            renderChild={renderChild}
+          />
+        </group>
+      );
+    }
 
     case "XRTabGroup": {
       return (
@@ -658,8 +575,6 @@ function PrimitiveDispatcher({
         </group>
       );
     }
-
-    // ── Inline interactive elements ───────────────────────────────────────
 
     case "XRTab":
     case "XRTabPanel":
@@ -678,6 +593,7 @@ function PrimitiveDispatcher({
       return (
         <group key={primitive.id} position={[ex, ey, ez]}>
           <ClippedText
+            font={fontType}
             anchorX="left"
             anchorY="top"
             position={[0.008, -0.008, 0.004]}
@@ -690,8 +606,6 @@ function PrimitiveDispatcher({
         </group>
       );
     }
-
-    // ── Generic fallback ──────────────────────────────────────────────────
 
     default: {
       return (
@@ -717,10 +631,6 @@ function PrimitiveDispatcher({
 // Sub-components
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Translucent backing plane for container panels.
- * Always rendered at group origin (entry.position must be zeroed by caller).
- */
 function PanelBacking({
   entry,
   opacity,
@@ -738,10 +648,6 @@ function PanelBacking({
   );
 }
 
-/**
- * Debug overlay for unrecognised primitive types.
- * Rendered at origin — outer group handles placement.
- */
 function GenericPanelMesh({
   primitive,
   entry,
@@ -751,6 +657,7 @@ function GenericPanelMesh({
 }) {
   const w = Math.max(entry.size.width, 0.025);
   const h = Math.max(entry.size.height, 0.032);
+  const fontType = React.useContext(FontContext);
   return (
     <>
       <mesh position={[w / 2, -h / 2, -0.003]}>
@@ -758,6 +665,7 @@ function GenericPanelMesh({
         <meshStandardMaterial color="#0d1117" transparent opacity={0.28} />
       </mesh>
       <Text
+        font={fontType}
         anchorX="left"
         anchorY="top"
         position={[0.006, -0.005, 0.001]}
@@ -771,7 +679,6 @@ function GenericPanelMesh({
   );
 }
 
-/** XR-native prev/next page buttons. entry must be zeroed by caller. */
 function PaginationControls({
   primitiveId: _id,
   pagination,
@@ -790,6 +697,7 @@ function PaginationControls({
   const BTN_W = 0.1;
   const BTN_H = 0.038;
   const barY = -(h + BTN_H / 2 + 0.016);
+  const fontType = React.useContext(FontContext);
 
   return (
     <group position={[0, barY, 0.005]}>
@@ -808,6 +716,7 @@ function PaginationControls({
           />
         </RoundedBox>
         <Text
+          font={fontType}
           anchorX="center"
           anchorY="middle"
           position={[0, 0, 0.005]}
@@ -819,6 +728,7 @@ function PaginationControls({
       </group>
 
       <Text
+        font={fontType}
         anchorX="center"
         anchorY="middle"
         position={[w / 2, 0, 0]}
@@ -847,6 +757,7 @@ function PaginationControls({
           />
         </RoundedBox>
         <Text
+          font={fontType}
           anchorX="center"
           anchorY="middle"
           position={[0, 0, 0.005]}
@@ -864,30 +775,11 @@ function PaginationControls({
 // Helpers
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Build world-space THREE.Plane clipping planes for an XRContentPanel.
- *
- * The panel occupies [worldY, worldY - panelHeight] in world Y.
- * We clip anything above the top edge and below the bottom edge.
- *
- * Two planes are returned:
- *   • top    — clips geometry above the panel top       (normal: 0, -1, 0)
- *   • bottom — clips geometry below the panel bottom    (normal: 0, +1, 0)
- *
- * Because Three.js clipping planes are in WORLD space and `localClippingEnabled`
- * is true, these planes correctly clip all descendant geometry regardless of
- * nesting depth or local transforms.
- *
- * @param worldY      Y coordinate of the panel's top-left origin (metres).
- * @param panelHeight Height of the panel viewport (metres).
- */
 function buildPanelClipPlanes(
   worldY: number,
   panelHeight: number,
 ): THREE.Plane[] {
-  // Top clip: discard points where y > worldY  → normal (0,-1,0), constant = worldY
   const topPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), worldY);
-  // Bottom clip: discard points where y < worldY - panelHeight → normal (0,1,0), constant = -(worldY - panelHeight)
   const bottomPlane = new THREE.Plane(
     new THREE.Vector3(0, 1, 0),
     -(worldY - panelHeight),
@@ -914,7 +806,7 @@ function XRSceneGraph({
   pageState,
   setPage,
 }: {
-  scene: SpatialScene;
+  scene: SemanticScene;
   plan: LayoutPlan;
   pageState: PageState;
   setPage: (id: string, page: number) => void;
@@ -923,8 +815,6 @@ function XRSceneGraph({
     () => buildPrimitiveMap(scene.root),
     [scene.root],
   );
-
-  console.log("Rendering XRSceneGraph with scene", scene, "and plan", plan);
 
   return (
     <>
@@ -992,17 +882,33 @@ export function XRSceneRenderer({
   html,
   url,
   scene: sceneIn,
-  layoutConfig = {},
+  layoutConfig = EMPTY_CONFIG,
   width = "100%",
   height = "600px",
   background = "#050a10",
+  deviceType = "QUEST_3",
+  fontType = undefined,
   onPlanReady,
 }: XRSceneRendererProps) {
+  // 1. Resolve Device Profile locally
+  const deviceProfile = useMemo(() => {
+    switch (deviceType) {
+      case "QUEST_PRO":
+        return QUEST_PRO_PROFILE;
+      case "RAY_BAN_META":
+        return RAY_BAN_META_PROFILE;
+      case "QUEST_3":
+      default:
+        return QUEST_3_PROFILE;
+    }
+  }, [deviceType]);
+
   const {
     scene,
     plan,
     error: pipelineError,
-  } = usePipeline(html, sceneIn, url, layoutConfig);
+  } = usePipeline(html, sceneIn, url, deviceProfile, layoutConfig);
+
   const {
     sessionState,
     capabilities,
@@ -1011,6 +917,7 @@ export function XRSceneRenderer({
     exitVR,
     error: xrError,
   } = useXRSession();
+
   const [pageState, setPageStateMap] = useState<PageState>({});
 
   const setPage = useCallback((id: string, page: number) => {
@@ -1067,7 +974,6 @@ export function XRSceneRenderer({
             ...(session ? { xr: { enabled: true } } : {}),
           }}
           onCreated={({ gl }) => {
-            // Required for THREE.Plane clipping planes on child materials
             gl.localClippingEnabled = true;
             if (session) {
               gl.xr.enabled = true;
@@ -1090,43 +996,46 @@ export function XRSceneRenderer({
             />
             <Environment preset="city" />
 
-            {scene && plan && (
-              <XRSceneGraph
-                scene={scene}
-                plan={plan}
-                pageState={pageState}
-                setPage={setPage}
-              />
-            )}
+            {/* Provide the Font Context to the entire rendered tree */}
+            <FontContext.Provider value={fontType}>
+              {scene && plan && (
+                <XRSceneGraph
+                  scene={scene}
+                  plan={plan}
+                  pageState={pageState}
+                  setPage={setPage}
+                />
+              )}
 
-            {sessionState !== "immersive" && (
-              <>
-                <OrbitControls
-                  target={[0, 1.4, -1.2]}
-                  enablePan
-                  enableDamping
-                  dampingFactor={0.08}
-                />
-                <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
-                  <GizmoViewport
-                    axisColors={["#ff4444", "#44ff44", "#4488ff"]}
-                    labelColor="white"
+              {sessionState !== "immersive" && (
+                <>
+                  <OrbitControls
+                    target={[0, 1.4, -1.2]}
+                    enablePan
+                    enableDamping
+                    dampingFactor={0.08}
                   />
-                </GizmoHelper>
-                <gridHelper
-                  args={[10, 40, "#1e2d3d", "#111927"]}
-                  position={[0, 0, 0]}
-                />
-                <mesh position={[0, 1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
-                  <planeGeometry args={[0.05, 0.05]} />
-                  <meshBasicMaterial
-                    color="#58a6ff"
-                    transparent
-                    opacity={0.6}
+                  <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
+                    <GizmoViewport
+                      axisColors={["#ff4444", "#44ff44", "#4488ff"]}
+                      labelColor="white"
+                    />
+                  </GizmoHelper>
+                  <gridHelper
+                    args={[10, 40, "#1e2d3d", "#111927"]}
+                    position={[0, 0, 0]}
                   />
-                </mesh>
-              </>
-            )}
+                  <mesh position={[0, 1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
+                    <planeGeometry args={[0.05, 0.05]} />
+                    <meshBasicMaterial
+                      color="#58a6ff"
+                      transparent
+                      opacity={0.6}
+                    />
+                  </mesh>
+                </>
+              )}
+            </FontContext.Provider>
           </Suspense>
         </Canvas>
       </div>
