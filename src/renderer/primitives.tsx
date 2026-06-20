@@ -537,22 +537,6 @@ export function XRSectionMesh({
         </mesh>
       )}
 
-      {/* "Continues on next page" bottom edge indicator */}
-      {hasMore && (
-        <mesh position={[w / 2, -(h - 0.001), 0.001]}>
-          <planeGeometry args={[w * 0.4, 0.003]} />
-          <meshBasicMaterial
-            color={ACCENT_COL}
-            transparent
-            opacity={0.45}
-            clippingPlanes={clips}
-          />
-        </mesh>
-      )}
-
-      {/* Children — the injected renderChild returns null for any child
-          whose pageIndex doesn't match the current page, so no filtering
-          is needed here. We call it for every child in primitive.children. */}
       {primitive.children.map((child) => renderChild(child.id))}
     </group>
   );

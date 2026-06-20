@@ -456,7 +456,7 @@ function estimateHeight(
           branchAncestors,
           scene,
         );
-        childrenHeight + config.panelPaddingTop * 2;
+        childrenHeight = childrenHeight + config.panelPaddingTop * 2;
         return Math.max(labelHeight, childrenHeight);
       }
 
@@ -1179,10 +1179,6 @@ function layoutPrimitive(
   if (primitive.children.length > 0) {
     if (primitive.type === "XRContentPanel") {
       // ── Paginating path ──────────────────────────────────────────────────
-      // Run pagination once. After this call, placedPositionMap,
-      // pageIndexMap, and placedHeightMap contain authoritative positions,
-      // page indices, and sizes for every descendant. We never recompute
-      // any of these anywhere below.
       const {
         pagination,
         pageIndexMap: newPageIndexMap,
@@ -1206,8 +1202,6 @@ function layoutPrimitive(
         });
       }
 
-      // Recurse using only the maps — no childEntries, no position or
-      // height recomputation.
       const usableWidth = Math.max(
         0.025,
         worldSize.width - config.panelPaddingX * 2,
@@ -1220,11 +1214,6 @@ function layoutPrimitive(
         };
         const childPageIndex = newPageIndexMap[child.id] ?? 0;
 
-        // Authoritative height as actually used by the paginator (handles
-        // split-fragment truncation correctly). Falling back to
-        // estimateHeight() should never be needed in a correctly-paginated
-        // tree — surface it in diagnostics if it ever is, rather than
-        // silently masking a missing-entry bug.
         let childHeight = newPlacedHeightMap.get(child.id);
         if (childHeight === undefined) {
           diag.missingHeightMapEntries =
@@ -1258,33 +1247,57 @@ function layoutPrimitive(
         );
       }
     } else if (placedPositionMap && placedHeightMap) {
-      // ── Inside a paginated panel — maps are the only source of truth ─────
-      // Look up each child's position, page index, and height directly from
-      // the maps that paginateContentPanel produced. No stackChildrenSimple,
-      // no estimateHeight() recomputation.
-      //
-      // Exception: XRList. paginateContentPanel positions the XRList node
-      // itself as a leaf (one opaque block), but never walks into its
-      // XRListItem children — so those children are always absent from
-      // placedPositionMap and fall back to the same {panelPaddingX,
-      // -panelPaddingTop} for every item, stacking them at the same point.
-      // Treat XRList children like the outside-panel path: run
-      // stackChildrenSimple for list-local positions, then recurse without
-      // the paginator maps.
-      if (primitive.type === "XRList") {
-        const resolvedListColumns = entry.listColumns ?? 1;
+      // ── Inside a paginated panel ──────────────────────────────────────────
+      // Check if this primitive's children were positioned by the paginator
+      // (paginateContentPanel only positions direct children of XRContentPanel,
+      // not grandchildren. So for most primitives, children won't be in the map.)
+      const firstChild = primitive.children[0];
+      const childrenHavePositions = firstChild
+        ? placedPositionMap.has(firstChild.id)
+        : true;
+
+      if (!childrenHavePositions) {
+        // ── Children were NOT positioned by paginator ──────────────────────
+        // This is the common case for any container with children that isn't
+        // a direct child of XRContentPanel (e.g. XRParagraph, XRHeading,
+        // XRSection, XRGenericPanel nested more than one level deep).
+        //
+        // stackChildrenSimple produces positions LOCAL to this container.
+        // The container itself is already world-positioned from its own
+        // placedPositionMap entry; children's positions are relative to it.
+        //
+        // IMPORTANT: we must still forward placedPositionMap, placedHeightMap,
+        // and pageIndexMap into the recursive call. A child at this level may
+        // itself be a container with children that DO have map entries (e.g.
+        // a nested XRSection whose sub-children were stamped by splitSection).
+        // Dropping the maps here would leave those grandchildren unable to
+        // find their page index, producing y=0 / page=0 placements for
+        // everything below this node.
+        //
+        // The child's own pageIndex is inherited from this container — the
+        // paginator's stampSubtree() already wrote the correct page for every
+        // descendant into pageIndexMap, so prefer that over inheritedPageIndex.
+        const resolvedListColumns =
+          primitive.type === "XRList" ? (entry.listColumns ?? 1) : undefined;
+
         const { childEntries } = stackChildrenSimple(
           primitive.children,
           worldSize.width,
           config,
           metrics,
-          "XRList",
+          primitive.type,
           resolvedListColumns,
         );
+
         for (let i = 0; i < primitive.children.length; i++) {
           const child = primitive.children[i];
           const childLayoutEntry = childEntries[i];
           if (!childLayoutEntry) continue;
+
+          // Prefer the page index that stampSubtree wrote for this child;
+          // fall back to what this container inherited.
+          const childPageIndex = pageIndexMap?.[child.id] ?? inheritedPageIndex;
+
           layoutPrimitive(
             child,
             childLayoutEntry.position,
@@ -1297,12 +1310,18 @@ function layoutPrimitive(
             metrics,
             entries,
             diag,
-            inheritedPageIndex,
-            // Do NOT forward placedPositionMap: XRListItem sub-children
-            // (images, paragraphs) must also use stackChildrenSimple.
+            childPageIndex,
+            // Forward maps so deeper descendants can still resolve their
+            // page indices and placed heights from paginateContentPanel.
+            pageIndexMap,
+            placedPositionMap,
+            placedHeightMap,
           );
         }
       } else {
+        // ── Children WERE positioned by paginator ──────────────────────────
+        // This only happens for direct children of XRContentPanel.
+        // Look up each child's position from the maps.
         for (const child of primitive.children) {
           const childPos = placedPositionMap.get(child.id) ?? {
             x: config.panelPaddingX,
@@ -1355,8 +1374,6 @@ function layoutPrimitive(
       }
     } else {
       // ── Outside any XRContentPanel — stackChildrenSimple ─────────────────
-      // For XRList, pass the resolved column count so children are placed in
-      // a grid rather than as full-width vertical blocks.
       const resolvedListColumns =
         primitive.type === "XRList" ? (entry.listColumns ?? 1) : undefined;
 
@@ -1369,17 +1386,6 @@ function layoutPrimitive(
         resolvedListColumns,
       );
 
-      // OVERFLOW DETECTION: unlike XRContentPanel, this primitive's slot has
-      // a FIXED height (worldSize.height — typically a device-profile
-      // constant like metrics.footer.height, not derived from content).
-      // stackChildrenSimple has no pagination, so if the real content is
-      // taller than the slot it was placed in, it will silently render
-      // past the slot's intended bounds — likely overlapping a neighboring
-      // slot — with no error anywhere. Surface that here rather than let it
-      // manifest only as a visual glitch in the headset.
-      //
-      // Tolerance avoids flagging trivial sub-millimetre floating-point
-      // slack from accumulated gap/padding arithmetic.
       const OVERFLOW_TOLERANCE_M = 0.001;
       if (totalHeight > worldSize.height + OVERFLOW_TOLERANCE_M) {
         diag.slotOverflows = diag.slotOverflows ?? [];

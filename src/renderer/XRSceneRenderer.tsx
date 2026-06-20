@@ -1016,7 +1016,7 @@ export function XRSceneRenderer({
     error: pipelineError,
   } = usePipeline(html, sceneIn, url, deviceProfile, {
     ...layoutConfig,
-    sectionStartsOnNewPage: false,
+    // sectionStartsOnNewPage: false,
   });
 
   const {
