@@ -205,7 +205,18 @@ function estimateHeight(
       | 5
       | 6;
     const m = metrics.heading[level] ?? metrics.heading[2] ?? metrics.paragraph;
+    const lineH = m.fontSize * m.lineHeightRatio;
+    // One heading line is the minimum height regardless of child content.
+    const minHeight = lineH + m.verticalPadding;
+
     if (primitive.children.length > 0) {
+      // The renderer's hasTextChildren path delegates ALL inline children
+      // (XRText, XRLink, XRButton) to renderChild → their own mesh components,
+      // which render at their own metrics (XRTextMesh = 0.026, XRLinkMesh uses
+      // link metrics, etc.). sumChildrenHeights matches that correctly.
+      // The only missing piece was the heading-line floor: without it, a heading
+      // whose XRText children total less than one heading line would be
+      // underestimated. Apply the floor here.
       const childrenHeight = sumChildrenHeights(
         primitive.children,
         panelUsableWidth,
@@ -214,24 +225,14 @@ function estimateHeight(
         branchAncestors,
         scene,
       );
-
-      const minHeight = m.fontSize * m.lineHeightRatio + m.verticalPadding;
       return Math.max(minHeight, childrenHeight);
     }
 
-    const lineH = m.fontSize * m.lineHeightRatio;
+    // No children — measure label/content directly with heading metrics.
     const wordCount = countWords(primitive.content ?? primitive.label ?? "");
-    const textHeight =
-      wordCount <= 1
-        ? lineH + m.verticalPadding
-        : (() => {
-            const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
-            return (
-              Math.ceil(wordCount / wordsPerLine) * lineH + m.verticalPadding
-            );
-          })();
-
-    return textHeight;
+    if (wordCount <= 1) return minHeight;
+    const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
+    return Math.ceil(wordCount / wordsPerLine) * lineH + m.verticalPadding;
   }
   if (primitive.type === "XRText") {
     const text = (primitive as XRText).text || "";
@@ -659,12 +660,11 @@ function classifyLandmark(primitive: XRPrimitive): SlotName {
  */
 // In engine.ts, update stackChildrenSimple:
 
-// Panel-like containers that own their own horizontal padding.
-// All other types (XRListItem, XRParagraph, XRHeading, XRLink, …) receive
-// a worldSize.width that is already the usable content width — the parent
-// stackChildrenSimple call already subtracted panelPaddingX when it
-// produced their LayoutEntry. Subtracting again would double-narrow them.
-const PANEL_LIKE_TYPES = new Set([
+// Containers that own horizontal padding — their worldSize.width is the full
+// slot/panel width and children must be inset by panelPaddingX on each side.
+// All other types receive a worldSize.width that is already the usable content
+// width, so no further x-padding should be subtracted.
+const OWNS_X_PADDING = new Set([
   "XRContentPanel",
   "XRSection",
   "XRArticle",
@@ -683,6 +683,12 @@ const PANEL_LIKE_TYPES = new Set([
   "XRMenu",
 ]);
 
+// Containers that reserve vertical space at the top for their own label/header.
+// Children must start at y = -panelPaddingTop, not y = 0.
+// XRListItem renders its own label text at ~y=-0.018; children must start
+// below that, which panelPaddingTop (0.04m) covers.
+const OWNS_TOP_PADDING = new Set([...Array.from(OWNS_X_PADDING), "XRListItem"]);
+
 function stackChildrenSimple(
   children: XRPrimitive[],
   panelWidth: number,
@@ -695,12 +701,12 @@ function stackChildrenSimple(
     return { childEntries: [], totalHeight: 0 };
   }
 
-  // Only panel-like containers own padding. Content nodes (XRListItem,
-  // XRParagraph, XRHeading, XRLink, etc.) are already given a
-  // content-width by their parent's stackChildrenSimple call; subtracting
-  // padding again would over-narrow them and cause text overflow/overlap.
-  const ownsPadding = !parentType || PANEL_LIKE_TYPES.has(parentType);
-  const childWidth = ownsPadding
+  // X-padding: only containers that own their full slot width subtract panelPaddingX.
+  // Y-padding: containers that render their own label/header at the top need
+  // children to start at y = -panelPaddingTop, not y = 0.
+  const ownsXPadding = !parentType || OWNS_X_PADDING.has(parentType);
+  const ownsTopPadding = !parentType || OWNS_TOP_PADDING.has(parentType);
+  const childWidth = ownsXPadding
     ? Math.max(0.025, panelWidth - config.panelPaddingX * 2)
     : Math.max(0.025, panelWidth);
   const panelUsableWidth = childWidth;
@@ -775,8 +781,8 @@ function stackChildrenSimple(
   // XRHeading, …) have no internal padding — children start at y=0 and x=0
   // relative to the container, since the container itself is already inset
   // correctly by its parent.
-  const startY = ownsPadding ? -config.panelPaddingTop : 0;
-  const childX = ownsPadding ? config.panelPaddingX : 0;
+  const startY = ownsTopPadding ? -config.panelPaddingTop : 0;
+  const childX = ownsXPadding ? config.panelPaddingX : 0;
   let cursorY = startY;
   const childEntries: LayoutEntry[] = [];
 
@@ -803,7 +809,7 @@ function stackChildrenSimple(
     cursorY -= gap + h;
   }
 
-  const paddingContrib = ownsPadding ? config.panelPaddingTop * 2 : 0;
+  const paddingContrib = ownsTopPadding ? config.panelPaddingTop * 2 : 0;
   const totalHeight =
     paddingContrib +
     childEntries.reduce((s, e) => s + e.size.height, 0) +

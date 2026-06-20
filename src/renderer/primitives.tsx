@@ -73,6 +73,78 @@ import type {
   XRLink,
 } from "../mapper/types";
 import type { LayoutEntry } from "../layout/types";
+import type { RenderMetrics } from "../layout/types";
+
+// ─────────────────────────────────────────────────────────────
+// Render metrics context
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Provides the SAME RenderMetrics object the layout engine used to compute
+ * estimateHeight() for this scene.
+ *
+ * Why this exists: components in this file used to keep their own hardcoded
+ * font-size/line-height constants (e.g. a local `headingFontSize()` lookup)
+ * that were meant to "match" RenderMetrics but lived as a separate, hand
+ * maintained table. The two tables drifted (e.g. H1 was 0.048 in
+ * RenderMetrics.heading but 0.068 in the local table), so the layout engine
+ * would reserve space for a 1-line heading while the renderer actually drew
+ * text ~40% larger — causing the heading to wrap to extra lines that were
+ * never budgeted for, overlapping whatever was stacked below it.
+ *
+ * Mounted once near the Canvas root in XRSceneRenderer (see
+ * RenderMetricsContext.Provider there) using the resolved deviceProfile's
+ * renderMetrics — the exact object passed into computeLayoutPlan. Components
+ * MUST read fontSize/lineHeightRatio from here rather than redeclaring their
+ * own constants, or this class of bug will reappear.
+ */
+export const RenderMetricsContext = createContext<RenderMetrics | null>(null);
+
+/**
+ * Convenience hook — returns the active RenderMetrics.
+ *
+ * Throws if no provider is mounted rather than silently falling back to a
+ * guessed default, since a silent fallback is exactly the kind of drift
+ * this context exists to prevent.
+ */
+export function useRenderMetrics(): RenderMetrics {
+  const metrics = useContext(RenderMetricsContext);
+  if (!metrics) {
+    throw new Error(
+      "useRenderMetrics() called with no RenderMetricsContext.Provider mounted. " +
+        "Wrap the scene tree in <RenderMetricsContext.Provider value={deviceProfile.renderMetrics}>.",
+    );
+  }
+  return metrics;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Text style context (parent-font-metric propagation)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Lets a text-bearing container (currently: XRHeadingMesh) tell its inline
+ * descendants (XRTextMesh, XRLinkMesh, XRButtonMesh when used inline) which
+ * PrimitiveFontMetrics to render with.
+ *
+ * Without this, XRText always rendered at metrics.paragraph regardless of
+ * its parent — so a heading with mixed inline content (e.g. "<h1>Explore
+ * the <strong>web</strong></h1>", which the mapper decomposes into XRText
+ * children) would render its text children at small body-text size while
+ * estimateHeight() measured those same children using the heading's larger
+ * metric. That mismatch is the inline-content counterpart to the
+ * headingFontSize() drift fixed via RenderMetricsContext above.
+ *
+ * `null` means "no override — use the type's own default metric" (e.g.
+ * metrics.paragraph for a standalone XRText, metrics.link for a standalone
+ * XRLink). Set by a container right before rendering its children; do not
+ * set it for containers whose children should keep their own default sizing
+ * (e.g. XRParagraph's XRText children correctly want metrics.paragraph).
+ */
+export const TextStyleContext = createContext<
+  RenderMetrics["paragraph"] | null
+>(null);
+
 import { CurrentPageContext, FontContext } from "./XRSceneRenderer";
 
 // ─────────────────────────────────────────────────────────────
@@ -143,18 +215,30 @@ function entryTransform(entry: LayoutEntry) {
 }
 
 /**
- * Heading-level to font size (metres).
- * Chosen so that each level is clearly distinguishable at 1.2 m.
- */
-function headingFontSize(level: number): number {
-  return [0, 0.068, 0.056, 0.046, 0.038, 0.032, 0.028][level] ?? 0.038;
-}
-
-/**
  * Heading-level to font weight string for troika-three-text.
+ *
+ * Weight is purely cosmetic (not part of RenderMetrics, doesn't affect
+ * word-wrap or height) so it's fine to keep as a local lookup, unlike
+ * font size which MUST come from RenderMetrics (see useRenderMetrics).
  */
 function headingWeight(level: number): string {
   return level <= 2 ? "700" : level <= 4 ? "600" : "500";
+}
+
+/**
+ * Resolve a heading level's font metrics from the active RenderMetrics,
+ * with the same fallback chain estimateHeight() uses in engine.ts
+ * (level → heading[2] → paragraph), so a heading that falls back in the
+ * layout engine falls back identically here.
+ */
+function resolveHeadingMetric(
+  level: number,
+  metrics: RenderMetrics,
+): RenderMetrics["paragraph"] {
+  const headingMap = metrics.heading as Partial<
+    Record<number, RenderMetrics["paragraph"]>
+  >;
+  return headingMap[level] ?? headingMap[2] ?? metrics.paragraph;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -263,7 +347,9 @@ export function XRHeadingMesh({
 }: XRHeadingMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
-  const fontSize = headingFontSize(primitive.level);
+  const metrics = useRenderMetrics();
+  const headingMetric = resolveHeadingMetric(primitive.level, metrics);
+  const fontSize = headingMetric.fontSize;
   const showAccent = primitive.level >= 3;
 
   const hasTextChildren = primitive.children.some(
@@ -276,7 +362,9 @@ export function XRHeadingMesh({
     return (
       <group position={pos} rotation={rot}>
         <group position={[0, 0, 0]}>
-          {primitive.children.map((child) => renderChild(child.id))}
+          <TextStyleContext.Provider value={headingMetric}>
+            {primitive.children.map((child) => renderChild(child.id))}
+          </TextStyleContext.Provider>
         </group>
       </group>
     );
@@ -289,10 +377,10 @@ export function XRHeadingMesh({
         position={[0, 0, 0.001]}
         fontSize={fontSize}
         color={HEADING_COL}
-        font={undefined} // uses troika default (Roboto) — swap in Phase 5
+        font={undefined}
         fontWeight={headingWeight(primitive.level)}
         maxWidth={entry.size.width}
-        lineHeight={1.2}
+        lineHeight={headingMetric.lineHeightRatio}
         letterSpacing={-0.01}
         outlineWidth={0}
       >
@@ -1583,6 +1671,12 @@ export function XRTextMesh({ primitive, entry }: XRTextMeshProps) {
   const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
+  const metrics = useRenderMetrics();
+  // An ancestor (e.g. XRHeadingMesh) may override the metric this text run
+  // renders with — see TextStyleContext. Falls back to paragraph metrics,
+  // matching estimateHeight()'s default for a standalone XRText.
+  const styleOverride = useContext(TextStyleContext);
+  const textMetric = styleOverride ?? metrics.paragraph;
 
   // Determine styling based on component type
   const componentType = primitive.componentType || "text";
@@ -1621,12 +1715,12 @@ export function XRTextMesh({ primitive, entry }: XRTextMeshProps) {
         anchorX="left"
         anchorY="top"
         position={[0, 0, 0.002]}
-        fontSize={0.026}
+        fontSize={textMetric.fontSize}
         color={color}
         fontWeight={fontWeight}
         fontStyle={fontStyle}
         maxWidth={w}
-        lineHeight={1.55}
+        lineHeight={textMetric.lineHeightRatio}
         letterSpacing={0.005}
       >
         {primitive.text}
@@ -1654,6 +1748,12 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
   const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
+  const metrics = useRenderMetrics();
+  // Inherit the ancestor heading's metric if this link sits inside one
+  // (e.g. a heading wrapping an <a>), otherwise fall back to metrics.link —
+  // matches estimateHeight()'s XRLink branch in engine.ts.
+  const styleOverride = useContext(TextStyleContext);
+  const linkMetric = styleOverride ?? metrics.link.font;
 
   // Check if link has text children (rich link)
   const hasTextChildren = primitive.children.some(
@@ -1676,11 +1776,11 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
           anchorX="left"
           anchorY="top"
           position={[0, 0, 0.002]}
-          fontSize={0.026}
+          fontSize={linkMetric.fontSize}
           color={primitive.isCurrent ? "#ffffff" : ACCENT_COL}
           fontWeight={primitive.isCurrent ? "700" : "500"}
           maxWidth={w}
-          lineHeight={1.55}
+          lineHeight={linkMetric.lineHeightRatio}
         >
           {primitive.label ?? primitive.href ?? ""}
         </ClippedText>

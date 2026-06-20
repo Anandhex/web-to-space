@@ -3,9 +3,7 @@ import { useState } from "react";
 import { XRSceneRenderer, type XRSceneRendererProps } from "../renderer";
 
 export default function App() {
-  const [url, setUrl] = useState(
-    "https://developer.mozilla.org/en-US/blog/mdn-turns-20/",
-  );
+  const [url, setUrl] = useState("https://web.dev/");
 
   const [html, setHtml] = useState("");
 

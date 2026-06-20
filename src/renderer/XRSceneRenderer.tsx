@@ -85,6 +85,7 @@ import {
   XRTabGroupMesh,
   ClipPlanesContext,
   ClippedText,
+  RenderMetricsContext,
 } from "./primitives";
 import * as THREE from "three";
 import type {
@@ -1106,46 +1107,51 @@ export function XRSceneRenderer({
             />
             <Environment preset="city" />
 
-            {/* Provide the Font Context to the entire rendered tree */}
-            <FontContext.Provider value={fontType}>
-              {scene && plan && (
-                <XRSceneGraph
-                  scene={scene}
-                  plan={plan}
-                  pageState={pageState}
-                  setPage={setPage}
-                />
-              )}
+            {/* Provide the same RenderMetrics the layout engine used, so
+                renderer components (XRHeadingMesh, XRTextMesh, etc.) can
+                never drift from estimateHeight()'s assumptions. */}
+            <RenderMetricsContext.Provider value={deviceProfile.renderMetrics}>
+              {/* Provide the Font Context to the entire rendered tree */}
+              <FontContext.Provider value={fontType}>
+                {scene && plan && (
+                  <XRSceneGraph
+                    scene={scene}
+                    plan={plan}
+                    pageState={pageState}
+                    setPage={setPage}
+                  />
+                )}
 
-              {sessionState !== "immersive" && (
-                <>
-                  <OrbitControls
-                    target={[0, 1.4, -1.2]}
-                    enablePan
-                    enableDamping
-                    dampingFactor={0.08}
-                  />
-                  <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
-                    <GizmoViewport
-                      axisColors={["#ff4444", "#44ff44", "#4488ff"]}
-                      labelColor="white"
+                {sessionState !== "immersive" && (
+                  <>
+                    <OrbitControls
+                      target={[0, 1.4, -1.2]}
+                      enablePan
+                      enableDamping
+                      dampingFactor={0.08}
                     />
-                  </GizmoHelper>
-                  <gridHelper
-                    args={[10, 40, "#1e2d3d", "#111927"]}
-                    position={[0, 0, 0]}
-                  />
-                  <mesh position={[0, 1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
-                    <planeGeometry args={[0.05, 0.05]} />
-                    <meshBasicMaterial
-                      color="#58a6ff"
-                      transparent
-                      opacity={0.6}
+                    <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
+                      <GizmoViewport
+                        axisColors={["#ff4444", "#44ff44", "#4488ff"]}
+                        labelColor="white"
+                      />
+                    </GizmoHelper>
+                    <gridHelper
+                      args={[10, 40, "#1e2d3d", "#111927"]}
+                      position={[0, 0, 0]}
                     />
-                  </mesh>
-                </>
-              )}
-            </FontContext.Provider>
+                    <mesh position={[0, 1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
+                      <planeGeometry args={[0.05, 0.05]} />
+                      <meshBasicMaterial
+                        color="#58a6ff"
+                        transparent
+                        opacity={0.6}
+                      />
+                    </mesh>
+                  </>
+                )}
+              </FontContext.Provider>
+            </RenderMetricsContext.Provider>
           </Suspense>
         </Canvas>
       </div>
