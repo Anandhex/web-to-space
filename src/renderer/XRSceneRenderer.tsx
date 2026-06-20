@@ -61,14 +61,7 @@ import {
 
 import { parsePageToIR } from "../ir/parser";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../mapper/mapper";
-import {
-  computeLayoutPlan,
-  QUEST_3_PROFILE,
-  QUEST_PRO_PROFILE,
-  RAY_BAN_META_PROFILE,
-} from "../layout/engine";
-
-import type { LayoutConfig } from "../layout/engine";
+import { computeLayoutPlan } from "../layout/engine";
 
 import { useXRSession } from "./useXRSession";
 import {
@@ -112,7 +105,17 @@ import type {
   XRTable,
   XRTabGroup,
 } from "../mapper/types";
-import type { LayoutPlan, LayoutEntry, DeviceProfile } from "../layout/types";
+import type {
+  LayoutPlan,
+  LayoutEntry,
+  DeviceProfile,
+  LayoutConfig,
+} from "../layout/types";
+import {
+  QUEST_PRO_PROFILE,
+  RAY_BAN_META_PROFILE,
+  QUEST_3_PROFILE,
+} from "../layout/profiles";
 
 // ─────────────────────────────────────────────────────────────
 // Contexts
@@ -252,6 +255,7 @@ function XRContentPanelRenderer({
       <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
         <PanelBacking entry={zeroedEntry(entry)} opacity={0.35} />
         <ClipPlanesContext.Provider value={panelClipPlanes}>
+          {/* ✅ Just render children normally - they'll filter themselves via pageIndex */}
           {primitive.children.map((child) => (
             <PrimitiveDispatcher
               key={child.id}
@@ -296,10 +300,66 @@ function PrimitiveDispatcher({
   const currentPage = React.useContext(CurrentPageContext);
   const fontType = React.useContext(FontContext);
 
+  if (!entry) return null;
+
+  // ✅ Define hasVisibleDescendant FIRST before using it
+  const hasVisibleDescendant = (node: XRPrimitive): boolean => {
+    // FIRST: Check all children recursively (any depth)
+    for (const child of node.children) {
+      if (hasVisibleDescendant(child)) return true;
+    }
+
+    // SECOND: If no children are visible, check if this node itself is visible
+    const nodeEntry = plan.entries[node.id];
+    if (nodeEntry?.pageIndex !== undefined && currentPage !== -1) {
+      return nodeEntry.pageIndex === currentPage;
+    }
+
+    // Node has no pageIndex (not in paginated panel) and no visible children
+    return false;
+  };
+
+  // ✅ If entry has NO pageIndex, it's not in a paginated panel
+  // Render it (it's a top-level landmark or the content panel itself)
+  if (entry.pageIndex === undefined) {
+    // We still need to render children, but they'll filter themselves
+    // Fall through to the switch statement
+  } else {
+    // ✅ Entry HAS a pageIndex - it's in a paginated panel
+    const isContainer = primitive.children.length > 0;
+
+    if (isContainer) {
+      // For containers: check if they have visible descendants
+      const hasVisible = hasVisibleDescendant(primitive);
+      if (!hasVisible) {
+        return null;
+      }
+    } else {
+      // For leaf nodes: filter by page
+      if (entry.pageIndex !== currentPage && currentPage !== -1) {
+        return null;
+      }
+    }
+  }
+  // // In PrimitiveDispatcher, after getting entry:
+  // console.log(
+  //   `[POS] ${primitive.id} (${primitive.type}) position:`,
+  //   entry.position,
+  // );
+
+  // ✅ If we get here, render this node
+  // console.log(primitive.type, primitive, "on page", entry.pageIndex ?? "N/A");
+
   const renderChild = useCallback(
     (childId: string) => {
       const childPrim = primitiveMap.get(childId);
-      if (!childPrim || !plan.entries[childId]) return null;
+      if (!childPrim || !plan.entries[childId]) {
+        console.warn(`[RENDER] Child ${childId} not found in map or entries`);
+        return null;
+      }
+      // console.log(
+      //   `[RENDER] Rendering child ${childId} from parent ${primitive.id}`,
+      // );
       return (
         <PrimitiveDispatcher
           key={childId}
@@ -313,16 +373,6 @@ function PrimitiveDispatcher({
     },
     [primitiveMap, plan, pageState, setPage],
   );
-
-  if (!entry) return null;
-
-  if (
-    entry.pageIndex !== undefined &&
-    currentPage !== -1 &&
-    entry.pageIndex !== currentPage
-  ) {
-    return null;
-  }
 
   const ex = entry.position.x;
   const ey = entry.position.y;
@@ -340,6 +390,7 @@ function PrimitiveDispatcher({
           <XRHeadingMesh
             primitive={primitive as XRHeading}
             entry={zeroedEntry(entry)}
+            renderChild={renderChild}
           />
         </group>
       );
@@ -349,6 +400,7 @@ function PrimitiveDispatcher({
           <XRParagraphMesh
             primitive={primitive as XRParagraph}
             entry={zeroedEntry(entry)}
+            renderChild={renderChild}
           />
         </group>
       );
@@ -445,42 +497,15 @@ function PrimitiveDispatcher({
       );
 
     case "XRSection": {
-      const visibleChildren = primitive.children.filter((child) => {
-        const ce = plan.entries[child.id];
-        if (!ce) return false;
-        if (ce.pageIndex === undefined || currentPage === -1) return true;
-        return ce.pageIndex === currentPage;
-      });
-
-      const visibleChildEntries = visibleChildren
-        .map((c) => plan.entries[c.id])
-        .filter((ce): ce is LayoutEntry => ce !== undefined);
-
-      const sectionPage = entry.pageIndex;
-      const firstChildPage = plan.entries[primitive.children[0]?.id]?.pageIndex;
-      const lastChildPage =
-        plan.entries[primitive.children[primitive.children.length - 1]?.id]
-          ?.pageIndex;
-
-      const isContinuation =
-        sectionPage !== undefined &&
-        firstChildPage !== undefined &&
-        firstChildPage !== sectionPage &&
-        currentPage !== sectionPage;
-      const hasMore =
-        lastChildPage !== undefined &&
-        currentPage !== -1 &&
-        lastChildPage > currentPage;
-
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <group key={primitive.id} position={[0, 0, 0]}>
           <XRSectionMesh
             primitive={primitive as XRSection}
             entry={zeroedEntry(entry)}
-            childEntries={visibleChildEntries}
+            childEntries={[]} // Pass empty array - children render themselves
             renderChild={renderChild}
-            isContinuation={isContinuation}
-            hasMore={hasMore}
+            isContinuation={false}
+            hasMore={false}
           />
         </group>
       );
@@ -504,8 +529,23 @@ function PrimitiveDispatcher({
     case "XRBanner":
     case "XRFooter":
     case "XRComplementary": {
+      // XRArticle and XRFormPanel are spanning wrappers — their children carry
+      // panel-local positions, so this group must be at [0,0,0].
+      // XRBanner/XRFooter/XRComplementary are top-level landmarks placed in
+      // world space by the engine, so they use their own entry position.
+      const isLandmark =
+        primitive.type === "XRBanner" ||
+        primitive.type === "XRFooter" ||
+        primitive.type === "XRComplementary";
+      const wrapperPos: [number, number, number] = isLandmark
+        ? [ex, ey, ez]
+        : [0, 0, 0];
+      const wrapperRot: [number, number, number] = isLandmark ? rot : [0, 0, 0];
+      if (isLandmark) {
+        return null;
+      }
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <group key={primitive.id} position={wrapperPos} rotation={wrapperRot}>
           <PanelBacking entry={zeroedEntry(entry)} opacity={0.2} />
           {primitive.children.map((child) => (
             <PrimitiveDispatcher
@@ -536,6 +576,9 @@ function PrimitiveDispatcher({
     case "XRList":
     case "XRTableRow":
     case "XRTableCell": {
+      // XRList children have list-local positions from stackChildrenSimple.
+      // The list group is at [ex,ey,ez]; each XRListItem is offset from the
+      // list's own origin. Three.js group composition resolves this correctly.
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
           {primitive.children.map((child) => (
@@ -608,8 +651,10 @@ function PrimitiveDispatcher({
     }
 
     default: {
+      // XRGenericPanel and any other unrecognised wrapper: children carry
+      // panel-local positions, so render at [0,0,0] not at [ex,ey,ez].
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <group key={primitive.id} position={[0, 0, 0]}>
           <GenericPanelMesh primitive={primitive} entry={zeroedEntry(entry)} />
           {primitive.children.map((child) => (
             <PrimitiveDispatcher
@@ -811,10 +856,50 @@ function XRSceneGraph({
   pageState: PageState;
   setPage: (id: string, page: number) => void;
 }) {
-  const primitiveMap = React.useMemo(
-    () => buildPrimitiveMap(scene.root),
-    [scene.root],
-  );
+  const primitiveMap = React.useMemo(() => {
+    // Start with the tree walk so ordering is preserved for normal nodes,
+    // then overlay scene.primitives which includes synthetic continuation
+    // primitives injected by the engine after pagination.
+    const map = buildPrimitiveMap(scene.root);
+    for (const [id, prim] of Object.entries(scene.primitives)) {
+      if (!map.has(id)) map.set(id, prim);
+    }
+    return map;
+  }, [scene.root, scene.primitives]);
+
+  React.useEffect(() => {
+    const withPage = Object.values(plan.entries).filter(
+      (e) => e.pageIndex !== undefined,
+    );
+    const withoutPage = Object.values(plan.entries).filter(
+      (e) => e.pageIndex === undefined,
+    );
+
+    // console.log(`[SCENE] Total entries: ${Object.keys(plan.entries).length}`);
+    // console.log(
+    //   `[SCENE] With page index: ${withPage.length}`,
+    //   withPage.map((e) => `${e.id} (page ${e.pageIndex})`),
+    // );
+    // console.log(
+    //   `[SCENE] Without page index: ${withoutPage.length}`,
+    //   withoutPage.map((e) => e.id),
+    // );
+
+    // Check which primitives in the scene have no entry
+    const allPrimitiveIds = new Set<string>();
+    const collectIds = (node: XRPrimitive) => {
+      allPrimitiveIds.add(node.id);
+      node.children.forEach(collectIds);
+    };
+    collectIds(scene.root);
+
+    const missingEntries = Array.from(allPrimitiveIds).filter(
+      (id) => !plan.entries[id],
+    );
+    if (missingEntries.length > 0) {
+      console.warn(`[SCENE] Primitives missing from plan:`, missingEntries);
+    }
+  }, [plan, scene]);
 
   return (
     <>
@@ -907,7 +992,10 @@ export function XRSceneRenderer({
     scene,
     plan,
     error: pipelineError,
-  } = usePipeline(html, sceneIn, url, deviceProfile, layoutConfig);
+  } = usePipeline(html, sceneIn, url, deviceProfile, {
+    ...layoutConfig,
+    // sectionStartsOnNewPage: false,
+  });
 
   const {
     sessionState,

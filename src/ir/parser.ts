@@ -188,7 +188,7 @@ function pierceWrapperChain(
     }
 
     // Lift any ARIA attributes from this wrapper before piercing it
-    const snap = readNodeAttributes(current);
+    const snap = readNodeAttributes(current, { sourceUrl: ctx.pageUrl });
     for (const key of Object.keys(snap) as (keyof IRNodeAttributes)[]) {
       assignIfDefined(liftedAttrs, key, snap[key]);
     }
@@ -374,9 +374,7 @@ async function createNode(
     resolvedRole === "list";
 
   const childDepth = isSemanticContainer ? readingDepth + 1 : readingDepth;
-  if (LANDMARK_ROLES.has(resolvedRole)) {
-    console.log("[createNode-is-landmark]", id, resolvedRole);
-  }
+
   const children = await buildChildrenFromSiblings(
     normaliseChildContent(element, ctx.skipTags),
     id,
@@ -399,7 +397,20 @@ async function createNode(
     children,
     relations: createEmptyRelations(),
     state: readNodeState(element),
-    attributes: mergeAttributes(readNodeAttributes(element), liftedAttrs),
+    attributes: mergeAttributes(
+      readNodeAttributes(element, { sourceUrl: ctx.pageUrl }),
+      liftedAttrs,
+    ),
+    content: (() => {
+      const hasBlockChild = Array.from(element.childNodes).some((n) => {
+        if (n.nodeType !== Node.ELEMENT_NODE) return false;
+        const t = (n as Element).tagName.toLowerCase();
+        return !SKIP_TAGS.has(t) && !INLINE_TAGS.has(t);
+      });
+      // When block children exist, text is decomposed into child IR nodes.
+      // Keep content null so the parent primitive doesn't re-render it.
+      return hasBlockChild ? null : (element.textContent?.trim() ?? null);
+    })(),
     readingDepth,
   };
 
@@ -452,6 +463,7 @@ function handleMediaLeaf(
     role: "img",
     level: null,
     label,
+    content: null,
     unlabelledYet: label === null,
     landmark: false,
     source: "structural",
@@ -461,7 +473,10 @@ function handleMediaLeaf(
     children: [],
     relations: createEmptyRelations(),
     state: createEmptyState(),
-    attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
+    attributes: mergeAttributes(
+      readNodeAttributes(child, { sourceUrl: ctx.pageUrl }),
+      liftedAttrs,
+    ),
     readingDepth,
   };
   return id;
@@ -480,13 +495,6 @@ async function handleLandmark(
   const roleInfo = resolveRoleFromElement(child, ctx.config);
   const landmarkId = `${parentId}-section-${ctx.counters.section++}`;
   const readingIndex = ctx.counters.reading++;
-  console.log(
-    "[landmark-children]",
-    landmarkId,
-    Array.from(child.children).map(
-      (c) => c.tagName + (c.getAttribute("aria-label") ?? ""),
-    ),
-  );
 
   // Register before descending so aria-controls/labelledby can resolve here
   ctx.elementToNodeId.set(child, landmarkId);
@@ -511,17 +519,13 @@ async function handleLandmark(
     label,
     parentId: landmarkParentId,
   });
-  console.log("[landmark]", {
-    id: landmarkId,
-    label,
-    parentId: landmarkParentId,
-  });
 
   ctx.nodes[landmarkId] = {
     id: landmarkId,
     role: roleInfo.role,
     level: roleInfo.level,
     label,
+    content: child.textContent?.trim() ?? null,
     unlabelledYet: label === null,
     landmark: true,
     source: roleInfo.source,
@@ -531,7 +535,10 @@ async function handleLandmark(
     children: nestedChildren,
     relations: createEmptyRelations(),
     state: readNodeState(child),
-    attributes: mergeAttributes(readNodeAttributes(child), liftedAttrs),
+    attributes: mergeAttributes(
+      readNodeAttributes(child, { sourceUrl: ctx.pageUrl }),
+      liftedAttrs,
+    ),
     readingDepth,
   };
 
@@ -616,16 +623,13 @@ async function handleHeadingSection(
     label,
     parentId: landmarkParentId,
   });
-  console.log("[heading-section]", {
-    id: sectionId,
-    label,
-    parentId: landmarkParentId,
-  });
+
   ctx.nodes[sectionId] = {
     id: sectionId,
     role: "region",
     level: null,
     label,
+    content: null,
     unlabelledYet: label === null,
     landmark: true,
     source: "structural",
@@ -684,6 +688,7 @@ async function handleListRun(
     level: null,
     label: null,
     unlabelledYet: true,
+    content: null,
     landmark: false,
     source: "structural",
     confidence: confidenceForSource("structural", ctx.config),
@@ -741,11 +746,7 @@ async function handleLinkRun(
     label: inferredLabel,
     parentId: landmarkParentId,
   });
-  console.log("[link-run-nav]", {
-    id: navId,
-    label: inferredLabel,
-    parentId: landmarkParentId,
-  });
+
   ctx.nodes[navId] = {
     id: navId,
     role: "navigation",
@@ -753,6 +754,7 @@ async function handleLinkRun(
     label: inferredLabel,
     unlabelledYet: false,
     landmark: true,
+    content: null,
     source: "structural",
     confidence: confidenceForSource("structural", ctx.config),
     readingIndex,
@@ -803,6 +805,7 @@ async function handleParagraphRun(
     role: "article",
     level: null,
     label: null,
+    content: null,
     unlabelledYet: true,
     landmark: false,
     source: "structural",
@@ -875,13 +878,6 @@ async function buildChildrenFromSiblings(
     }
 
     if (tag === "section" || LANDMARK_ROLES.has(roleInfo.role)) {
-      console.log("[dispatcher-landmark]", {
-        tag,
-        role: roleInfo.role,
-        id: `would-be-${ctx.counters.section}`,
-        parentId,
-        landmarkParentId,
-      });
       childIds.push(
         await handleLandmark(
           child,
@@ -1060,6 +1056,7 @@ export const parsePageToIR = async (
     config,
     skipTags,
     wrapperTags,
+    pageUrl: url,
   };
 
   // Register body so aria refs pointing at it can resolve
@@ -1088,6 +1085,7 @@ export const parsePageToIR = async (
     role: "navigation",
     level: null,
     label: "Table of contents",
+    content: null,
     unlabelledYet: false,
     landmark: true,
     source: "structural",
@@ -1106,6 +1104,7 @@ export const parsePageToIR = async (
     role: "main",
     level: null,
     label: parsedTitle ?? "main",
+    content: null,
     unlabelledYet: parsedTitle === null,
     landmark: true,
     source: "structural",
@@ -1192,10 +1191,7 @@ export const parsePageToIR = async (
 
   analytics.textDensity =
     orderedNodes.length > 0 ? analytics.textLength / orderedNodes.length : 0;
-  console.log(
-    "[all landmark records]",
-    JSON.stringify(landmarkRecords, null, 2),
-  );
+
   const landmarks = buildLandmarkTree(parsedTitle, landmarkRecords);
 
   return {

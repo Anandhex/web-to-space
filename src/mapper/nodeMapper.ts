@@ -311,26 +311,32 @@ function mapListItem(node: IRNode, ctx: MappingContext): XRListItem {
 // ─────────────────────────────────────────────────────────────
 
 function mapHeading(node: IRNode, ctx: MappingContext): XRHeading {
+  const resolvedChildren = resolveChildren(node, ctx);
   const primitive: XRHeading = {
     ...baseFrom(node, "XRHeading"),
     type: "XRHeading",
     level: node.level ?? 2,
-    children: [],
+    // Only carry block children — inline text is already in node.content.
+    // If the heading has no block children, this is [] as before.
+    children: resolvedChildren,
   };
   registerPrimitive(ctx, primitive, "heading→XRHeading");
   return primitive;
 }
 
 function mapParagraph(node: IRNode, ctx: MappingContext): XRParagraph {
-  const { wordCount, estimatedReadingTimeSec, densityScore } =
-    computeDensity(node);
+  const resolvedChildren = resolveChildren(node, ctx);
+  const { wordCount, estimatedReadingTimeSec, densityScore } = computeDensity(
+    node,
+    ctx.ir,
+  );
   const primitive: XRParagraph = {
     ...baseFrom(node, "XRParagraph"),
     type: "XRParagraph",
     wordCount,
     estimatedReadingTimeSec,
     densityScore,
-    children: [],
+    children: resolvedChildren,
   };
   registerPrimitive(ctx, primitive, "paragraph→XRParagraph");
   return primitive;

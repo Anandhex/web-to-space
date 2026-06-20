@@ -1,5 +1,4 @@
-import type { Vec3, Rotation3, Size2 } from "../mapper/types";
-import type { LayoutConfig } from "./engine";
+import type { Vec3, Rotation3, Size2, XRPrimitiveType } from "../mapper/types";
 
 // ─────────────────────────────────────────────────────────────
 // Re-exported template type (was previously in mapper.ts)
@@ -115,6 +114,14 @@ export interface LayoutDiagnostics {
     originalId: string;
     pageIndex: number;
     wordOffset: number;
+  }>;
+  missingHeightMapEntries?: number;
+  slotOverflows?: Array<{
+    id: string;
+    type: XRPrimitiveType;
+    declaredHeight: number;
+    actualHeight: number;
+    overflowBy: number;
   }>;
 }
 
@@ -297,4 +304,89 @@ export interface DeviceProfile {
   layoutConfig: LayoutConfig;
   /** Render metrics that match this device's renderer settings. */
   renderMetrics: RenderMetrics;
+}
+
+/**
+ * Spatial layout parameters for the engine.
+ *
+ * These control where panels are placed in world space and how children
+ * are stacked within panels. They are independent of render metrics and
+ * can be overridden at runtime (e.g. seated vs standing, room-scale vs
+ * stationary).
+ */
+export interface LayoutConfig {
+  /** Distance from user head to primary content panel (m). */
+  viewingDistance: number;
+  /** Half-angle of horizontal comfort envelope (degrees). */
+  comfortHalfAngleDeg: number;
+  /** Vertical position of the centre of the comfort envelope (m). Eye level. */
+  eyeLevel: number;
+  /** Downward tilt offset from eye level for the primary panel (m). */
+  eyeLevelOffset: number;
+  /** Default curve radius for primary content panels (m). */
+  panelCurveRadius: number;
+  /** Vertical gap between stacked child primitives (m). */
+  childGapY: number;
+  /** Top padding inside a panel before the first child (m). */
+  panelPaddingTop: number;
+  /** Left/right padding inside a panel (m). */
+  panelPaddingX: number;
+  /** Maximum panel viewport height before pagination fires (m). */
+  maxPanelViewportHeight: number;
+  /** Z-offset between successive pages of a paginated panel (m). */
+  pageZStep: number;
+  /**
+   * When false (default), each isSectionLike child (XRSection, XRArticle,
+   * XRFormPanel, XRFormField) starts on a fresh page.
+   * When true, sections flow inline — they still go through splitSection()
+   * for their children, but no forced page break is injected before them.
+   */
+  sectionStartsOnNewPage?: boolean; // default: true
+}
+
+export interface LandmarkSlot {
+  position: Vec3;
+  rotation: Rotation3;
+  size: Size2;
+  curveRadius: number;
+  worldLocked: boolean;
+}
+
+export type SlotName =
+  | "main"
+  | "navigation"
+  | "complementary"
+  | "banner"
+  | "footer"
+  | "toc"
+  | "dialog"
+  | "alert";
+
+export type SlotMap = Partial<Record<SlotName, LandmarkSlot>>;
+
+export interface SimpleStackResult {
+  /** One entry per child, with page-relative y-positions. */
+  childEntries: LayoutEntry[];
+  /** Sum of all child heights + gaps + padding (used by estimateHeight callers). */
+  totalHeight: number;
+}
+
+export interface PaginateResult {
+  pagination: PaginationMeta | null;
+  /** primitiveId → pageIndex, covers every descendant of the panel. */
+  pageIndexMap: Record<string, number>;
+  /**
+   * primitiveId → page-relative Vec3, covers every descendant placed by
+   * splitSection. layoutPrimitive uses these directly — no position
+   * recomputation anywhere in the subtree.
+   */
+  placedPositionMap: Map<string, Vec3>;
+  /**
+   * Synthetic continuation entries for paragraphs split across page boundaries.
+   */
+  continuationEntries: LayoutEntry[];
+  /**
+   * primitiveId → final placed height after pagination, covers every descendant.
+   */
+  placedHeightMap: Map<string, number>;
 }

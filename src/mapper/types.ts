@@ -128,6 +128,7 @@ export interface XRPrimitiveBase {
   type: XRPrimitiveType;
   /** Accessible label for XR UI (speech, laser pointer hover). */
   label: string | null;
+  content: string | null;
   /** Source IR node ID(s). One-to-many when the mapper merges nodes. */
   sourceIds: string[];
   /** Semantic confidence inherited from the highest-confidence source node. */
@@ -236,6 +237,15 @@ export interface XRListItem extends XRPrimitiveBase {
   type: "XRListItem";
 }
 
+export interface XRInlineRun {
+  text: string; // the visible text of this run
+  tag: string; // "text" | "a" | "strong" | "em" | "code" | "span" | etc.
+  href?: string | null; // for <a>
+  role?: string | null; // ARIA role if present
+  bold?: boolean;
+  italic?: boolean;
+  code?: boolean;
+}
 /** Heading text element. */
 export interface XRHeading extends XRPrimitiveBase {
   type: "XRHeading";

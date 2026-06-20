@@ -58,7 +58,12 @@ export default function App() {
         <button onClick={handleLoad}>Load</button>
       </div>
 
-      <XRSceneRenderer html={html} height="700px" onPlanReady={onPlanReady} />
+      <XRSceneRenderer
+        html={html}
+        url={url}
+        height="700px"
+        onPlanReady={onPlanReady}
+      />
     </>
   );
 }

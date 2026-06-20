@@ -1,3 +1,5 @@
+import type { XRInlineRun } from "../mapper/types";
+
 export type IRRole =
   | "main"
   | "navigation"
@@ -110,6 +112,7 @@ export interface IRNodeAttributes {
   captions: string[];
   componentType: string | null;
   autoplay: string | null;
+  content: string | null;
 }
 
 export interface IRNodeState {
@@ -158,6 +161,7 @@ export interface IRNode {
   role: IRRole;
   level: number | null;
   label: string | null;
+  content: string | null;
   unlabelledYet: boolean;
   landmark: boolean;
   source: IRSource;
@@ -176,6 +180,7 @@ export interface IRNode {
   relations: IRNodeRelations;
   state: IRNodeState;
   attributes: IRNodeAttributes;
+  inlineRuns?: XRInlineRun[]; // for text-bearing nodes, the decomposed inline content with metadata
 }
 
 export interface IRMeta {
@@ -424,4 +429,9 @@ export interface BuildContext {
   config: ParserConfig;
   skipTags: Set<string>;
   wrapperTags: Set<string>;
+  pageUrl: string;
+}
+
+export interface ParseContext {
+  sourceUrl: string;
 }

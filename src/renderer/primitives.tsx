@@ -39,6 +39,7 @@ import React, { useRef, useContext, createContext } from "react";
 import { Text, RoundedBox, Html } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+import { useTexture } from "@react-three/drei";
 
 // ─────────────────────────────────────────────────────────────
 // Panel clipping context
@@ -206,7 +207,7 @@ function useHoverScale(baseScale = 1.0, hoverScale = 1.015) {
 type TextProps = React.ComponentPropsWithoutRef<typeof Text>;
 
 export function ClippedText(props: TextProps) {
-  const clips = useClipPlanes();
+  // const clips = useClipPlanes();
 
   const fontType = useContext(FontContext);
 
@@ -217,7 +218,8 @@ export function ClippedText(props: TextProps) {
         clippingPlanes?: THREE.Plane[] | null;
       };
       if (mat) {
-        mat.clippingPlanes = clips.length > 0 ? clips : null;
+        // mat.clippingPlanes = clips.length > 0 ? clips : null;
+        mat.clippingPlanes = null;
         mat.needsUpdate = true;
       }
       // Also propagate to the onSync the caller may have passed
@@ -227,7 +229,8 @@ export function ClippedText(props: TextProps) {
     },
     // clips array reference changes when planes change; stringify for comparison
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [clips, props.onSync],
+    // [clips, props.onSync],
+    [props.onSync],
   );
 
   return <Text {...props} font={fontType} onSync={handleSync} />;
@@ -240,6 +243,7 @@ export function ClippedText(props: TextProps) {
 export interface XRHeadingMeshProps {
   primitive: XRHeading;
   entry: LayoutEntry;
+  renderChild: (primitiveId: string) => React.ReactNode;
 }
 
 /**
@@ -252,7 +256,11 @@ export interface XRHeadingMeshProps {
  * The text is anchored top-left so vertical stacking from the layout engine
  * is consistent: position.y is the top edge of the text.
  */
-export function XRHeadingMesh({ primitive, entry }: XRHeadingMeshProps) {
+export function XRHeadingMesh({
+  primitive,
+  entry,
+  renderChild,
+}: XRHeadingMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const fontSize = headingFontSize(primitive.level);
@@ -273,7 +281,7 @@ export function XRHeadingMesh({ primitive, entry }: XRHeadingMeshProps) {
         letterSpacing={-0.01}
         outlineWidth={0}
       >
-        {primitive.label ?? ""}
+        {primitive.content ?? primitive.label ?? ""}
       </ClippedText>
 
       {/* Accent underline for H3+ */}
@@ -288,6 +296,7 @@ export function XRHeadingMesh({ primitive, entry }: XRHeadingMeshProps) {
           />
         </mesh>
       )}
+      {primitive.children.map((child) => renderChild(child.id))}
     </group>
   );
 }
@@ -299,6 +308,7 @@ export function XRHeadingMesh({ primitive, entry }: XRHeadingMeshProps) {
 export interface XRParagraphMeshProps {
   primitive: XRParagraph;
   entry: LayoutEntry;
+  renderChild: (primitiveId: string) => React.ReactNode;
 }
 
 /**
@@ -308,7 +318,11 @@ export interface XRParagraphMeshProps {
  * with a faint top-edge glow to signal long-form reading mode.
  * Short snippets (≤ 10 words) skip the backing panel entirely.
  */
-export function XRParagraphMesh({ primitive, entry }: XRParagraphMeshProps) {
+export function XRParagraphMesh({
+  primitive,
+  entry,
+  renderChild,
+}: XRParagraphMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const dense = primitive.densityScore > 0.6;
@@ -360,8 +374,10 @@ export function XRParagraphMesh({ primitive, entry }: XRParagraphMeshProps) {
         lineHeight={1.55}
         letterSpacing={0.005}
       >
-        {primitive.label ?? ""}
+        {primitive.content ?? primitive.label ?? ""}
       </ClippedText>
+
+      {primitive.children.map((child) => renderChild(child.id))}
     </group>
   );
 }
@@ -1076,6 +1092,21 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
   const h = safeDim(entry.size.height);
   const IMG_BG = "#111622";
 
+  function isRenderableImage(url: string) {
+    try {
+      const u = new URL(url);
+      return (
+        u.origin === window.location.origin ||
+        url.startsWith("data:") ||
+        url.startsWith("blob:")
+      );
+    } catch {
+      return false;
+    }
+  }
+  const texture =
+    isRenderableImage(primitive.src ?? "") && useTexture(primitive.src!);
+
   return (
     <group position={pos} rotation={rot}>
       <RoundedBox
@@ -1093,15 +1124,19 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
         />
       </RoundedBox>
 
-      <mesh position={[w / 2, -h / 2, 0.002]}>
-        <planeGeometry args={[w * 0.4, 0.002]} />
-        <meshBasicMaterial
-          color={PANEL_RIM}
-          transparent
-          opacity={0.5}
-          clippingPlanes={clips}
-        />
-      </mesh>
+      {primitive.src && isRenderableImage(primitive.src) ? (
+        <mesh>
+          <planeGeometry args={[w, h]} />
+          <meshBasicMaterial map={texture} />
+        </mesh>
+      ) : (
+        <Html position={[w / 2, -h / 2, 0]}>
+          <img
+            src={primitive.src ?? ""}
+            style={{ width: w * 100, height: h * 100 }}
+          />
+        </Html>
+      )}
       <mesh position={[w / 2, -h / 2, 0.002]} rotation={[0, 0, Math.PI / 2]}>
         <planeGeometry args={[h * 0.4, 0.002]} />
         <meshBasicMaterial

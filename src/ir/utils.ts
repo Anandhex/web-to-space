@@ -7,6 +7,7 @@ import type {
   IRSource,
   ParserConfig,
   IRNode,
+  ParseContext,
 } from "./types";
 
 export function readNodeState(element: Element): IRNodeState {
@@ -36,7 +37,19 @@ export function readNodeState(element: Element): IRNodeState {
   };
 }
 
-export function readNodeAttributes(element: Element): IRNodeAttributes {
+export function readNodeAttributes(
+  element: Element,
+  context?: ParseContext,
+): IRNodeAttributes {
+  const resolveUrl = (url: string | null) => {
+    if (url) {
+      // console.log("Resolving URL:", url, "with context:", context?.sourceUrl);
+    }
+    if (!url) return null;
+    if (!context?.sourceUrl) return url;
+    return new URL(url, context.sourceUrl).href;
+  };
+
   return {
     expanded: element.getAttribute("aria-expanded") ?? null,
     checked: element.getAttribute("aria-checked") ?? null,
@@ -60,8 +73,8 @@ export function readNodeAttributes(element: Element): IRNodeAttributes {
     flowto: element.getAttribute("aria-flowto") ?? null,
     haspopup: element.getAttribute("aria-haspopup") ?? null,
     alt: element.getAttribute("alt") ?? null,
-    src: element.getAttribute("src") ?? null,
-    href: element.getAttribute("href") ?? null,
+    src: resolveUrl(element.getAttribute("src")),
+    href: element.getAttribute("href"),
     live: element.getAttribute("aria-live") ?? null,
     rowspan: element.getAttribute("rowspan") ?? null,
     colspan: element.getAttribute("colspan") ?? null,
@@ -89,6 +102,7 @@ export function readNodeAttributes(element: Element): IRNodeAttributes {
     })(),
     componentType: null,
     autoplay: element.getAttribute("autoplay") ?? null,
+    content: element.textContent?.trim() ?? null,
   };
 }
 
@@ -196,6 +210,7 @@ export function createEmptyAttributes(): IRNodeAttributes {
     captions: [],
     componentType: null,
     autoplay: null,
+    content: null,
   };
 }
 
@@ -392,6 +407,11 @@ export function resolveNodeLabel(
   return direct ? cap(direct) : null;
 }
 
+const LANDMARK_SCOPE_SELECTOR =
+  "main, article, section, nav, aside, " +
+  '[role="main"], [role="article"], [role="region"], ' +
+  '[role="navigation"], [role="complementary"]';
+
 export function resolveRoleFromElement(
   element: Element,
   config: ParserConfig,
@@ -403,15 +423,19 @@ export function resolveRoleFromElement(
   if (config.useExplicitSemantics) {
     const ariaRole = element.getAttribute("role")?.trim().toLowerCase();
     if (ariaRole) {
+      const mapped = ARIA_ROLE_MAP[ariaRole] ?? "generic";
       const level =
         ariaRole === "heading"
           ? Number.parseInt(element.getAttribute("aria-level") ?? "2", 10) || 2
           : null;
-      return {
-        role: ARIA_ROLE_MAP[ariaRole] ?? "generic",
-        level,
-        source: "explicit",
-      };
+
+      if (
+        (mapped === "banner" || mapped === "contentinfo") &&
+        element.closest(LANDMARK_SCOPE_SELECTOR)
+      ) {
+        return { role: "generic", level: null, source: "explicit" };
+      }
+      return { role: mapped, level, source: "explicit" };
     }
   }
 
@@ -443,15 +467,23 @@ export function resolveRoleFromTag(
 ): { role: IRRole; level: number | null } {
   if (tag === "main") return { role: "main", level: null };
   if (tag === "header") {
-    // A header is only a banner if it is NOT scoped to a sectioning element
-    if (element && element.closest("main, article, section, nav, aside")) {
+    // A header is only a true page banner if we can confirm it is NOT scoped
+    // to a sectioning element. If `element` is unavailable, we cannot make
+    // that determination — fail closed toward "generic" rather than
+    // defaulting to "banner". Promoting an unverified header to banner risks
+    // shoving arbitrary section-level content into a fixed-height slot that
+    // has no pagination, causing severe layout overflow (seen in practice:
+    // a banner-classified node needing 1.475m against a 0.16m slot).
+    if (!element) return { role: "generic", level: null };
+    if (element.closest(LANDMARK_SCOPE_SELECTOR)) {
       return { role: "generic", level: null };
     }
     return { role: "banner", level: null };
   }
   if (tag === "footer") {
-    // A footer is only a contentinfo if it is NOT scoped to a sectioning element
-    if (element && element.closest("main, article, section, nav, aside")) {
+    // Same reasoning as header above.
+    if (!element) return { role: "generic", level: null };
+    if (element.closest(LANDMARK_SCOPE_SELECTOR)) {
       return { role: "generic", level: null };
     }
     return { role: "contentinfo", level: null };

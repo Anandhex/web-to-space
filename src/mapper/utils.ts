@@ -90,16 +90,38 @@ export function resolveChildren(
 // Semantic fact helpers
 // ─────────────────────────────────────────────────────────────
 
+function collectText(
+  nodeId: string,
+  ir: PageIR,
+  visited = new Set<string>(),
+): string {
+  if (visited.has(nodeId)) return "";
+  visited.add(nodeId);
+  const node = ir.nodes[nodeId];
+  if (!node) return "";
+  const own = node.content ?? node.label ?? "";
+  const childText = node.children
+    .map((id) => collectText(id, ir, visited))
+    .filter(Boolean)
+    .join(" ");
+  return [own, childText].filter(Boolean).join(" ");
+}
+
 /**
  * Word count and reading time for paragraph-like nodes.
  * Layout uses densityScore to decide text rendering approach.
  */
-export function computeDensity(node: IRNode): {
+export function computeDensity(
+  node: IRNode,
+  ir?: PageIR,
+): {
   wordCount: number;
   estimatedReadingTimeSec: number;
   densityScore: number;
 } {
-  const text = node.label ?? "";
+  const text = ir
+    ? collectText(node.id, ir)
+    : (node.content ?? node.label ?? "");
   const wordCount = text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
   const estimatedReadingTimeSec = Math.round((wordCount / 200) * 60);
   const densityScore = Math.min(1, Math.max(0, (wordCount - 10) / (200 - 10)));

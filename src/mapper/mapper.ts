@@ -68,6 +68,7 @@ export function baseFrom(node: IRNode, type: XRPrimitiveType): XRPrimitiveBase {
     id: node.id,
     type,
     label: node.label,
+    content: node.content,
     sourceIds: [node.id],
     confidence: node.confidence,
     depth: node.readingDepth,
@@ -114,6 +115,7 @@ function synthesiseTOC(
       id: `toc__${n.id}`,
       type: "XRLink",
       label: n.label, // <-- now comes from parser (correct source of truth)
+      content: n.content, // <-- now comes from parser (correct source of truth)
       sourceIds: [n.id],
       confidence: n.confidence,
 
@@ -146,6 +148,7 @@ function synthesiseTOC(
     id: tocId,
     type: "XRNavigationBar",
     label: "Table of Contents",
+    content: null,
 
     sourceIds: sectionNodes.map((n) => n.id),
     confidence: deriveConfidence(sectionNodes),
@@ -170,6 +173,63 @@ function synthesiseTOC(
   });
 
   return tocNode;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Landmark hoisting
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The set of XR primitive types that belong at the top-level scene, each
+ * assigned to their own spatial slot by the engine's landmark classifier.
+ *
+ * When the parser folds these into `main`'s subtree (because they appear
+ * as DOM siblings of the main content that get captured by `resolveChildren`),
+ * the mapper must extract them from `XRContentPanel.children` and promote
+ * them to direct scene children so the engine slots them correctly.
+ */
+const LANDMARK_TYPES_TO_HOIST = new Set<XRPrimitiveType>([
+  "XRBanner",
+  "XRFooter",
+  "XRComplementary",
+  // XRNavigationBar without "toc__" prefix (toc is already hoisted via synthesiseTOC)
+]);
+
+/**
+ * Walk the direct children of an XRContentPanel and pull out any primitive
+ * whose type belongs at top-level scene scope (banner, footer, complementary).
+ *
+ * Mutates `contentPanel.children` in place — removes hoisted primitives.
+ * Returns the hoisted primitives in document order so the caller can insert
+ * them into `sceneChildren` at the appropriate position.
+ *
+ * Why mutate rather than rebuild:
+ *   The content panel was just constructed; no other reference holds its
+ *   children array yet. Mutating avoids an unnecessary object spread and
+ *   keeps the registered primitive reference in `ctx.primitives` valid.
+ */
+function hoistLandmarkChildren(contentPanel: XRPrimitive): XRPrimitive[] {
+  const hoisted: XRPrimitive[] = [];
+  const kept: XRPrimitive[] = [];
+
+  for (const child of contentPanel.children) {
+    const shouldHoist =
+      LANDMARK_TYPES_TO_HOIST.has(child.type) ||
+      // Non-TOC navigation bars that leaked into the main slot
+      (child.type === "XRNavigationBar" && !child.id.startsWith("toc__"));
+
+    if (shouldHoist) {
+      hoisted.push(child);
+    } else {
+      kept.push(child);
+    }
+  }
+
+  // Mutate in place — preserves the registered ctx.primitives reference.
+  contentPanel.children.length = 0;
+  contentPanel.children.push(...kept);
+
+  return hoisted;
 }
 
 // Entry point
@@ -211,12 +271,28 @@ export function mapIRToScene(
   }
 
   const sceneChildren: XRPrimitive[] = [];
-  for (const childId of rootIRNode.children) {
-    const node = ir.nodes[childId];
-    if (!node) continue;
-    const primitive = mapNode(node, ctx);
-    if (primitive) sceneChildren.push(primitive);
+
+  const rootPrimitive = mapNode(rootIRNode, ctx);
+
+  if (rootPrimitive) {
+    // Problem 1 fix: landmarks that the parser folded into XRContentPanel's
+    // subtree must be promoted to top-level scene children so the engine
+    // can slot them into their correct spatial positions (banner slot,
+    // footer slot, complementary slot). hoistLandmarkChildren mutates
+    // rootPrimitive.children in place and returns the extracted primitives.
+    const hoisted =
+      rootPrimitive.type === "XRContentPanel"
+        ? hoistLandmarkChildren(rootPrimitive)
+        : [];
+
+    sceneChildren.push(rootPrimitive);
+
+    // Append hoisted landmarks after the content panel, preserving
+    // document order among themselves (they come out in the order they
+    // appeared in XRContentPanel.children).
+    sceneChildren.push(...hoisted);
   }
+
   const toc = synthesiseTOC(ir, ctx);
   if (toc) sceneChildren.unshift(toc);
 
@@ -227,6 +303,7 @@ export function mapIRToScene(
     sourceIds: [ir.root],
     confidence: 1.0,
     depth: 0,
+    content: null,
     // placement: absent — Layout sets the scene root transform
     children: sceneChildren,
     relations: {
