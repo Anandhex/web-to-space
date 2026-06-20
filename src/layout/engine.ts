@@ -659,6 +659,30 @@ function classifyLandmark(primitive: XRPrimitive): SlotName {
  */
 // In engine.ts, update stackChildrenSimple:
 
+// Panel-like containers that own their own horizontal padding.
+// All other types (XRListItem, XRParagraph, XRHeading, XRLink, …) receive
+// a worldSize.width that is already the usable content width — the parent
+// stackChildrenSimple call already subtracted panelPaddingX when it
+// produced their LayoutEntry. Subtracting again would double-narrow them.
+const PANEL_LIKE_TYPES = new Set([
+  "XRContentPanel",
+  "XRSection",
+  "XRArticle",
+  "XRFormPanel",
+  "XRFormField",
+  "XRGenericPanel",
+  "XRList",
+  "XRNavigationBar",
+  "XRBanner",
+  "XRFooter",
+  "XRComplementary",
+  "XRDialog",
+  "XRTabGroup",
+  "XRTabPanel",
+  "XRTree",
+  "XRMenu",
+]);
+
 function stackChildrenSimple(
   children: XRPrimitive[],
   panelWidth: number,
@@ -671,7 +695,14 @@ function stackChildrenSimple(
     return { childEntries: [], totalHeight: 0 };
   }
 
-  const childWidth = Math.max(0.025, panelWidth - config.panelPaddingX * 2);
+  // Only panel-like containers own padding. Content nodes (XRListItem,
+  // XRParagraph, XRHeading, XRLink, etc.) are already given a
+  // content-width by their parent's stackChildrenSimple call; subtracting
+  // padding again would over-narrow them and cause text overflow/overlap.
+  const ownsPadding = !parentType || PANEL_LIKE_TYPES.has(parentType);
+  const childWidth = ownsPadding
+    ? Math.max(0.025, panelWidth - config.panelPaddingX * 2)
+    : Math.max(0.025, panelWidth);
   const panelUsableWidth = childWidth;
 
   // ── XRList grid layout ────────────────────────────────────────────────────
@@ -739,7 +770,14 @@ function stackChildrenSimple(
   }
 
   // ── Default: single-column vertical stack ────────────────────────────────
-  let cursorY = -config.panelPaddingTop;
+  // Panel-like containers start the cursor below their own top padding and
+  // indent children by panelPaddingX. Content nodes (XRListItem, XRParagraph,
+  // XRHeading, …) have no internal padding — children start at y=0 and x=0
+  // relative to the container, since the container itself is already inset
+  // correctly by its parent.
+  const startY = ownsPadding ? -config.panelPaddingTop : 0;
+  const childX = ownsPadding ? config.panelPaddingX : 0;
+  let cursorY = startY;
   const childEntries: LayoutEntry[] = [];
 
   for (let i = 0; i < children.length; i++) {
@@ -754,7 +792,7 @@ function stackChildrenSimple(
 
     const entry: LayoutEntry = {
       id: child.id,
-      position: { x: config.panelPaddingX, y: cursorY - gap, z: 0 },
+      position: { x: childX, y: cursorY - gap, z: 0 },
       rotation: zeroRotation(),
       size: { width: childWidth, height: h },
       curveRadius: 0,
@@ -765,11 +803,11 @@ function stackChildrenSimple(
     cursorY -= gap + h;
   }
 
+  const paddingContrib = ownsPadding ? config.panelPaddingTop * 2 : 0;
   const totalHeight =
-    config.panelPaddingTop +
+    paddingContrib +
     childEntries.reduce((s, e) => s + e.size.height, 0) +
-    config.childGapY * Math.max(0, children.length - 1) +
-    config.panelPaddingTop;
+    config.childGapY * Math.max(0, children.length - 1);
 
   return { childEntries, totalHeight };
 }
