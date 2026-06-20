@@ -8,6 +8,7 @@ import type {
   ParserConfig,
   IRNode,
   ParseContext,
+  BuildContext,
 } from "./types";
 
 export function readNodeState(element: Element): IRNodeState {
@@ -564,11 +565,40 @@ export function isListCandidate(
   element: Element,
   config: ParserConfig,
 ): boolean {
-  const role = resolveRoleFromElement(element, config).role;
+  // Pierce through generic wrappers to check the actual content
+  function unwrap(el: Element): Element {
+    const tag = el.tagName.toLowerCase();
+    if (tag === "div" || tag === "span") {
+      const hasAttributes =
+        el.hasAttribute("role") ||
+        el.hasAttribute("aria-label") ||
+        el.hasAttribute("id");
+      if (!hasAttributes) {
+        const children = Array.from(el.children).filter(
+          (c) => !SKIP_TAGS.has(c.tagName.toLowerCase()),
+        );
+        if (children.length === 1) {
+          return unwrap(children[0]);
+        }
+      }
+    }
+    return el;
+  }
+
+  const unwrapped = unwrap(element);
+  const role = resolveRoleFromElement(unwrapped, config).role;
+
+  // A list item candidate should not be a landmark, interactive, or heading
   if (LANDMARK_ROLES.has(role)) return false;
   if (INTERACTIVE_ROLES.has(role)) return false;
   if (role === "heading") return false;
-  const tag = element.tagName.toLowerCase();
+
+  // Check if it has content (text or elements)
+  const hasContent =
+    unwrapped.textContent?.trim() || unwrapped.children.length > 0;
+  if (!hasContent) return false;
+
+  const tag = unwrapped.tagName.toLowerCase();
   return tag !== "ul" && tag !== "ol" && tag !== "li";
 }
 
@@ -847,4 +877,101 @@ export function isLeafNode(
   });
 
   return hasContent;
+}
+
+// ── Helper to get semantic signature (pierces generic wrappers) ──────────
+
+export function getSemanticSignature(
+  element: Element,
+  ctx: BuildContext,
+): string {
+  // Pierce through generic wrappers to find actual content
+  function pierceWrappers(el: Element): Element[] {
+    const result: Element[] = [];
+    const tag = el.tagName.toLowerCase();
+
+    if ((tag === "div" || tag === "span") && !el.hasAttribute("role")) {
+      const children = Array.from(el.children).filter(
+        (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
+      );
+      if (children.length === 1) {
+        return pierceWrappers(children[0]);
+      } else if (children.length > 1) {
+        // Multiple children - use all of them
+        for (const child of children) {
+          result.push(...pierceWrappers(child));
+        }
+        return result;
+      }
+    }
+    return [el];
+  }
+
+  const elements = pierceWrappers(element);
+  const roles: string[] = [];
+
+  for (const el of elements) {
+    const tag = el.tagName.toLowerCase();
+    if (ctx.skipTags.has(tag)) continue;
+
+    const roleInfo = resolveRoleFromElement(el, ctx.config);
+    if (roleInfo.role !== "generic") {
+      roles.push(roleInfo.role);
+      // Add level for headings
+      if (roleInfo.level !== null) {
+        roles.push(`h${roleInfo.level}`);
+      }
+    } else {
+      // For generic, use tag name
+      roles.push(tag);
+    }
+
+    // Also check children for important structures
+    for (const child of Array.from(el.children)) {
+      const childTag = child.tagName.toLowerCase();
+      if (ctx.skipTags.has(childTag)) continue;
+      const childRole = resolveRoleFromElement(child, ctx.config);
+      if (childRole.role !== "generic") {
+        roles.push(childRole.role);
+      }
+    }
+  }
+
+  // Deduplicate and sort for consistent signatures
+  const uniqueRoles = Array.from(new Set(roles));
+  return uniqueRoles.sort().join("|");
+}
+export function areStructurallySimilar(
+  el1: Element,
+  el2: Element,
+  ctx: BuildContext,
+): boolean {
+  // Compare semantic signatures
+  const sig1 = getSemanticSignature(el1, ctx);
+  const sig2 = getSemanticSignature(el2, ctx);
+
+  if (sig1 !== sig2) return false;
+
+  // Also check if both have similar depth/nesting
+  function getContentDepth(el: Element): number {
+    let depth = 0;
+    let current = el;
+    while (current.children.length === 1) {
+      const child = current.children[0];
+      const tag = child.tagName.toLowerCase();
+      if (tag === "div" || tag === "span") {
+        depth++;
+        current = child;
+      } else {
+        break;
+      }
+    }
+    return depth;
+  }
+
+  const depth1 = getContentDepth(el1);
+  const depth2 = getContentDepth(el2);
+
+  // Allow depth difference of up to 1 (some items might have extra wrappers)
+  return Math.abs(depth1 - depth2) <= 1;
 }

@@ -36,6 +36,8 @@ import {
   createEmptyAttributes,
   isListCandidate,
   hydrateRelations,
+  areStructurallySimilar,
+  getSemanticSignature,
 } from "./utils";
 
 import {
@@ -915,6 +917,122 @@ async function handleHeadingSection(
 }
 
 // ── Handler 4: homogeneous run → inferred list ───────────────────────────────
+async function createListItem(
+  element: Element,
+  parentId: string,
+  landmarkParentId: string,
+  ctx: BuildContext,
+  readingDepth: number,
+): Promise<string> {
+  const id = `${parentId}-item-${ctx.counters.node++}`;
+  const readingIndex = ctx.counters.reading++;
+
+  // Pierce through generic wrappers to find the actual content
+  // But preserve the original element for attributes/state
+  function pierceWrappers(el: Element): {
+    content: Element;
+    wrappers: Element[];
+  } {
+    const wrappers: Element[] = [];
+    let current = el;
+    const tag = current.tagName.toLowerCase();
+
+    while ((tag === "div" || tag === "span") && !current.hasAttribute("role")) {
+      const children = Array.from(current.children).filter(
+        (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
+      );
+      if (children.length === 1) {
+        wrappers.push(current);
+        current = children[0];
+      } else {
+        break;
+      }
+    }
+    return { content: current, wrappers };
+  }
+
+  const { content: contentEl, wrappers } = pierceWrappers(element);
+
+  // Check if this list item contains a nested list
+  // If it does, we need to handle it differently (don't flatten)
+  const hasNestedList = Array.from(
+    contentEl.querySelectorAll('ul, ol, [role="list"]'),
+  ).some((el) => contentEl.contains(el) && el !== contentEl);
+
+  // Process children of the list item
+  let childElements = Array.from(contentEl.children).filter(
+    (child) => !ctx.skipTags.has(child.tagName.toLowerCase()),
+  );
+
+  // If there's a nested list, don't pierce it - let it be processed normally
+  let childIds: string[] = [];
+
+  if (hasNestedList) {
+    // Process children normally, without special list item handling
+    childIds = await buildChildrenFromSiblings(
+      childElements,
+      id,
+      landmarkParentId,
+      ctx,
+      readingDepth + 1,
+      false,
+    );
+  } else {
+    // Process children normally
+    childIds = await buildChildrenFromSiblings(
+      childElements,
+      id,
+      landmarkParentId,
+      ctx,
+      readingDepth + 1,
+      false,
+    );
+  }
+
+  // Merge attributes from wrappers onto the content element
+  const mergedAttrs = {
+    ...readNodeAttributes(contentEl, { sourceUrl: ctx.pageUrl }),
+  };
+  for (const wrapper of wrappers) {
+    const wrapperAttrs = readNodeAttributes(wrapper, {
+      sourceUrl: ctx.pageUrl,
+    });
+    for (const key of Object.keys(wrapperAttrs) as (keyof IRNodeAttributes)[]) {
+      if (wrapperAttrs[key] !== null && wrapperAttrs[key] !== undefined) {
+        if (mergedAttrs[key] === null || mergedAttrs[key] === undefined) {
+          mergedAttrs[key] = wrapperAttrs[key] as any;
+        }
+      }
+    }
+  }
+
+  // Resolve label from the merged attributes
+  const label =
+    resolveNodeLabel(contentEl, ctx.config, ctx.doc) ||
+    resolveNodeLabel(element, ctx.config, ctx.doc);
+
+  ctx.nodes[id] = {
+    id,
+    role: "listitem",
+    level: null,
+    label,
+    unlabelledYet: label === null,
+    content: contentEl.textContent?.trim() || null,
+    landmark: false,
+    source: "structural",
+    confidence: confidenceForSource("structural", ctx.config),
+    readingIndex,
+    parent: parentId,
+    children: childIds,
+    relations: createEmptyRelations(),
+    state: readNodeState(contentEl),
+    attributes: mergedAttrs,
+    readingDepth,
+  };
+
+  ctx.elementToNodeId.set(element, id);
+  return id;
+}
 
 async function handleListRun(
   siblings: Element[],
@@ -925,31 +1043,63 @@ async function handleListRun(
   readingDepth: number,
 ): Promise<{ id: string; endIndex: number } | null> {
   const first = peelSibling(siblings[index], ctx).element;
+
+  // Check if this could be a list item (not landmark, not interactive, not heading)
   if (!isListCandidate(first, ctx.config)) return null;
 
-  const signature = childSignature(first);
+  // Get semantic signature of the first item
+  const firstSig = getSemanticSignature(first, ctx);
+
+  // Check if it has meaningful content (not just empty wrappers)
+  if (!firstSig || firstSig === "") return null;
+
+  // Collect all structurally similar items
   const run: Element[] = [];
   let scan = index;
 
   while (scan < siblings.length) {
     const candidate = peelSibling(siblings[scan], ctx).element;
     if (!isListCandidate(candidate, ctx.config)) break;
-    if (childSignature(candidate) !== signature) break;
+
+    // Compare semantic structure
+    if (!areStructurallySimilar(first, candidate, ctx)) {
+      // If they're not similar but one is a wrapper that contains the other's structure,
+      // we might still want to include it
+      const candidateSig = getSemanticSignature(candidate, ctx);
+      if (!candidateSig || candidateSig !== firstSig) {
+        break;
+      }
+    }
+
+    // Check that it has some content
+    const hasContent =
+      candidate.textContent?.trim() || candidate.children.length > 0;
+    if (!hasContent) break;
+
     run.push(candidate);
     scan += 1;
   }
 
   if (run.length < ctx.config.minListRun) return null;
 
+  // Create the list node
   const listId = `${parentId}-list-${ctx.counters.section++}`;
   const readingIndex = ctx.counters.reading++;
 
+  // Create list items - pass the original item (with wrappers) to preserve context
   const listChildren = await Promise.all(
     run.map((item) =>
-      createNode(item, listId, landmarkParentId, ctx, {}, readingDepth + 1),
+      createListItem(
+        item, // Pass the original, not unwrapped
+        listId,
+        landmarkParentId,
+        ctx,
+        readingDepth + 1,
+      ),
     ),
   );
 
+  // Store the list node
   ctx.nodes[listId] = {
     id: listId,
     role: "list",
@@ -971,7 +1121,6 @@ async function handleListRun(
 
   return { id: listId, endIndex: scan };
 }
-
 // ── Handler 5: <a>-run → inferred navigation landmark ────────────────────────
 //
 // FIX: label is resolved from the already-built parent node's own label rather

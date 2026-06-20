@@ -238,6 +238,7 @@ function estimateHeight(
     const text = (primitive as XRText).text || "";
     const wordCount = countWords(text);
     const m = metrics.paragraph;
+
     // Always return at least one line height
     if (wordCount === 0) {
       return m.fontSize * m.lineHeightRatio + m.verticalPadding;
@@ -295,12 +296,15 @@ function estimateHeight(
       }
       return Math.max(metrics.link.minHeight, totalHeight);
     }
-    return estimateTextBearingHeight(
+
+    const height = estimateTextBearingHeight(
       primitive.label ?? "",
       panelUsableWidth,
       metrics.link,
       metrics.fallbackElementHeight,
     );
+
+    return height;
   }
 
   // ── Code block (line-count based, same formula as paragraph) ──────────────
@@ -436,7 +440,14 @@ function estimateHeight(
             branchAncestors,
             scene,
           );
-          return Math.max(metrics.listItem.minHeight, childrenHeight);
+          // stackChildrenSimple starts XRListItem children at y = -panelPaddingTop
+          // (because XRListItem is in OWNS_TOP_PADDING). The estimate must include
+          // that offset or the card height is short by panelPaddingTop and content
+          // overflows the bottom of the allocated row height.
+          return Math.max(
+            metrics.listItem.minHeight,
+            childrenHeight + config.panelPaddingTop,
+          );
         }
         return estimateTextBearingHeight(
           primitive.content ?? primitive.label ?? "",
@@ -509,7 +520,7 @@ function estimateHeight(
             if (item.children.length > 0) {
               const childrenH = item.children.reduce(
                 (sum: number, child: XRPrimitive, idx: number) => {
-                  const gap = config.childGapY;
+                  const gap = idx === 0 ? 0 : config.childGapY; // ← suppress first gap
                   return (
                     sum +
                     gap +
@@ -582,16 +593,21 @@ function estimateHeight(
   // Fixed-height floor for this type, if any (used in stages 1 and 2).
   const fixedFloor = FIXED_HEIGHT_LOOKUP(metrics)[primitive.type];
 
-  // Stage 1: has children — sum them recursively.
   if (primitive.children.length > 0) {
-    const childHeights = primitive.children.map((c: XRPrimitive) =>
+    const childHeights = primitive.children.map((c) =>
       estimateHeight(c, panelUsableWidth, metrics, config, ancestors, scene),
     );
-    const total = childHeights.reduce((s: number, h: number) => s + h, 0);
+    const total = childHeights.reduce((s, h) => s + h, 0);
     const gaps = config.childGapY * Math.max(0, primitive.children.length - 1);
-    const fromChildren =
-      config.panelPaddingTop + total + gaps + config.panelPaddingTop;
-    // Honour any fixed floor (e.g. XRBanner must be at least metrics.banner.height).
+
+    // Use the SAME set stackChildrenSimple uses for OWNS_TOP_PADDING —
+    // these are the types whose children are offset by panelPaddingTop
+    // at the top AND need bottom padding too.
+    const paddingContrib = OWNS_X_PADDING.has(primitive.type)
+      ? config.panelPaddingTop * 2
+      : 0;
+
+    const fromChildren = paddingContrib + total + gaps;
     return fixedFloor !== undefined
       ? Math.max(fixedFloor, fromChildren)
       : Math.max(metrics.fallbackElementHeight, fromChildren);
@@ -670,7 +686,6 @@ const OWNS_X_PADDING = new Set([
   "XRArticle",
   "XRFormPanel",
   "XRFormField",
-  "XRGenericPanel",
   "XRList",
   "XRNavigationBar",
   "XRBanner",
@@ -717,6 +732,10 @@ function stackChildrenSimple(
   // This path is taken only when the caller identifies the parent as XRList
   // and supplies a resolved column count.
   if (parentType === "XRList" && listColumns && listColumns > 1) {
+    console.log("Stacking XRList with grid layout:", {
+      childWidth,
+      listColumns,
+    });
     const columns = listColumns;
     const cardWidth = Math.max(0.025, childWidth / columns);
     const rowCount = Math.ceil(children.length / columns);
@@ -792,6 +811,7 @@ function stackChildrenSimple(
 
     if (!h || h <= 0 || !isFinite(h)) {
       h = metrics.fallbackElementHeight;
+      console.warn(`Child ${child.id} had zero height, using fallback`, child);
     }
 
     const gap = i === 0 ? 0 : config.childGapY;
@@ -1378,10 +1398,8 @@ function layoutPrimitive(
           if (childHeight === undefined) {
             diag.missingHeightMapEntries =
               (diag.missingHeightMapEntries ?? 0) + 1;
-            const usableWidth = Math.max(
-              0.025,
-              worldSize.width - config.panelPaddingX * 2,
-            );
+
+            const usableWidth = Math.max(0.025, worldSize.width);
             childHeight = estimateHeight(
               child,
               usableWidth,
@@ -1392,10 +1410,7 @@ function layoutPrimitive(
             );
           }
 
-          const usableWidth = Math.max(
-            0.025,
-            worldSize.width - config.panelPaddingX * 2,
-          );
+          const usableWidth = Math.max(0.025, worldSize.width);
 
           layoutPrimitive(
             child,

@@ -354,6 +354,9 @@ function mapText(node: IRNode, ctx: MappingContext): XRText {
     isProseRun: true,
     children: [], // Text nodes are always leaves
   };
+  if (!primitive.text) {
+    console.warn(`XRText ${node.id} has no text content!`, node);
+  }
   registerPrimitive(ctx, primitive, "text→XRText");
   return primitive;
 }
@@ -675,6 +678,7 @@ function mapLink(node: IRNode, ctx: MappingContext): XRLink {
     isCurrent: node.state.current !== null && node.state.current !== "false",
     children: resolveChildren(node, ctx),
   };
+  primitive.label = primitive.label || node.content || node.label || "Link";
   registerPrimitive(ctx, primitive, "link→XRLink");
   return primitive;
 }
