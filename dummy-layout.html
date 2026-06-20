@@ -26,6 +26,8 @@
         --tag-ink: #7a8aaa;
         --mono: "IBM Plex Mono", monospace;
         --sans: "Syne", sans-serif;
+        --text-color: #a8b4d0;
+        --text-bg: rgba(79, 142, 255, 0.05);
       }
 
       * {
@@ -225,6 +227,31 @@
         line-height: 1.5;
       }
 
+      /* ── Text node specific styling ── */
+      .node-text {
+        color: var(--text-color);
+        background: var(--text-bg);
+        border-left: 3px solid #6b7fa0;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .node-text .component-type {
+        font-size: 8px;
+        color: var(--muted);
+        background: var(--tag-bg);
+        padding: 1px 4px;
+        border-radius: 2px;
+        margin-left: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
       /* role-specific accent colours on the left border */
       .node[data-role="heading"] {
         border-left: 3px solid var(--accent);
@@ -259,6 +286,10 @@
       .node[data-role="region"] {
         border-left: 3px solid #818cf8;
         border-style: dashed;
+      }
+      .node[data-role="text"] {
+        border-left: 3px solid #6b7fa0;
+        background: var(--text-bg);
       }
 
       /* heading levels */
@@ -356,6 +387,42 @@
         padding: 12px 0;
       }
 
+      /* inline run preview */
+      .inline-preview {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        padding: 6px 8px;
+        background: var(--surface-2);
+        border-radius: 4px;
+        margin-top: 4px;
+        font-size: 12px;
+      }
+      .inline-preview .token {
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        background: var(--tag-bg);
+        color: var(--tag-ink);
+      }
+      .inline-preview .token.text {
+        background: var(--text-bg);
+        color: var(--text-color);
+      }
+      .inline-preview .token.link {
+        background: rgba(167, 139, 250, 0.15);
+        color: #a78bfa;
+      }
+      .inline-preview .token.button {
+        background: rgba(52, 211, 153, 0.15);
+        color: #34d399;
+      }
+      .inline-preview .token.generic {
+        background: var(--tag-bg);
+        color: var(--tag-ink);
+      }
+
       /* ── tabs bar ── */
       .tabsbar {
         display: flex;
@@ -395,6 +462,30 @@
         color: var(--accent);
         border-color: var(--accent-border);
         background: var(--accent-dim);
+      }
+
+      /* ── metadata highlight ── */
+      .meta-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 4px 0;
+        border-bottom: 1px solid var(--border);
+        font-size: 11px;
+      }
+      .meta-row .key {
+        color: var(--muted);
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 9px;
+        letter-spacing: 0.05em;
+      }
+      .meta-row .value {
+        font-family: var(--mono);
+        color: var(--ink);
+        text-align: right;
+        max-width: 60%;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       @media (max-width: 820px) {
@@ -446,11 +537,6 @@
     <script type="module">
       import { parsePageToIR } from "/src/ir/parser.ts";
       import { mapIRToScene } from "/src/mapper/mapper.ts";
-      import {
-        computeLayoutPlan,
-        mergeLayoutPlan,
-        QUEST_PRO_PROFILE,
-      } from "/src/layout/engine.ts";
 
       // ── state ─────────────────────────────────────────────────────────────
       let ir = null; // raw PageIR from parser
@@ -484,15 +570,56 @@
         $status.innerHTML = `<span class="${type}">${msg}</span>`;
       }
 
+      function truncate(str, max = 60) {
+        if (!str) return "";
+        return str.length > max ? str.slice(0, max) + "…" : str;
+      }
+
       // ── top-level section ids (children of "main") ────────────────────────
       function sectionIds() {
         const mainNode = ir?.nodes?.["main"];
         return mainNode?.children ?? [];
       }
 
+      // ── Check if node has text children ───────────────────────────────────
+      function hasTextChildren(node) {
+        if (!node?.children) return false;
+        return node.children.some((id) => {
+          const child = ir.nodes[id];
+          return child?.role === "text";
+        });
+      }
+
+      // ── Get inline preview for a node ────────────────────────────────────
+      function getInlinePreview(node) {
+        if (!node?.children) return null;
+        const preview = [];
+        for (const childId of node.children) {
+          const child = ir.nodes[childId];
+          if (!child) continue;
+          if (child.role === "text") {
+            preview.push({
+              type: "text",
+              text: truncate(child.content || "", 30),
+            });
+          } else if (child.role === "link") {
+            preview.push({
+              type: "link",
+              text: truncate(child.label || child.content || "link", 20),
+            });
+          } else if (child.role === "button") {
+            preview.push({
+              type: "button",
+              text: truncate(child.label || child.content || "button", 20),
+            });
+          } else {
+            preview.push({ type: "generic", text: child.role });
+          }
+        }
+        return preview;
+      }
+
       // ── render a single IRNode as a DOM element ───────────────────────────
-      // This is the ONLY place that knows how to display a node.
-      // It trusts role and children entirely from the IR.
       function renderNode(nodeId) {
         const node = ir.nodes[nodeId];
         if (!node) return null;
@@ -503,16 +630,44 @@
 
         const roleTag = document.createElement("span");
         roleTag.className = "node-role";
-        roleTag.textContent = node.role + (node.level ? ` h${node.level}` : "");
+        let roleText = node.role;
+        if (node.level) roleText += ` h${node.level}`;
+        if (node.source) roleText += ` · ${node.source}`;
+        roleTag.textContent = roleText;
         wrap.appendChild(roleTag);
 
         // ── role-specific content ──────────────────────────────────────────
         switch (node.role) {
+          case "text": {
+            // Text node - show content with optional component type
+            const el = document.createElement("div");
+            el.className = "node-text";
+            el.textContent = node.content || "";
+
+            if (node.attributes?.componentType) {
+              const typeSpan = document.createElement("span");
+              typeSpan.className = "component-type";
+              typeSpan.textContent = node.attributes.componentType;
+              el.appendChild(typeSpan);
+            }
+            wrap.appendChild(el);
+            break;
+          }
+
           case "heading": {
             const el = document.createElement("div");
             el.className = `node-label heading-${node.level ?? 1}`;
-            el.textContent = label(node);
+            el.textContent = node.label || node.content || "";
             wrap.appendChild(el);
+
+            // Show inline preview if it has text children
+            if (hasTextChildren(node)) {
+              const preview = getInlinePreview(node);
+              if (preview) {
+                const previewEl = createInlinePreview(preview);
+                wrap.appendChild(previewEl);
+              }
+            }
             break;
           }
 
@@ -520,8 +675,17 @@
           case "generic": {
             const el = document.createElement("div");
             el.className = "node-label";
-            el.textContent = label(node);
+            el.textContent = node.label || node.content || "";
             wrap.appendChild(el);
+
+            // Show inline preview if it has text children
+            if (hasTextChildren(node)) {
+              const preview = getInlinePreview(node);
+              if (preview) {
+                const previewEl = createInlinePreview(preview);
+                wrap.appendChild(previewEl);
+              }
+            }
             break;
           }
 
@@ -531,20 +695,35 @@
             a.href = resolveUrl(node.attributes?.href) ?? "#";
             a.target = "_blank";
             a.rel = "noopener noreferrer";
-            // If the link has children they carry the content — show only the
-            // href as the identifier. Only fall back to label() for childless links.
-            a.textContent = node.children?.length
-              ? (node.attributes?.href ?? "link")
-              : label(node, node.attributes?.href ?? "link");
+            a.textContent =
+              node.label || node.content || node.attributes?.href || "link";
             wrap.appendChild(a);
+
+            // Show inline preview if it has text children (rich link)
+            if (hasTextChildren(node)) {
+              const preview = getInlinePreview(node);
+              if (preview) {
+                const previewEl = createInlinePreview(preview);
+                wrap.appendChild(previewEl);
+              }
+            }
             break;
           }
 
           case "button": {
             const el = document.createElement("div");
             el.className = "node-label";
-            el.textContent = `⬡ ${label(node)}`;
+            el.textContent = `⬡ ${node.label || node.content || "button"}`;
             wrap.appendChild(el);
+
+            // Show inline preview if it has text children
+            if (hasTextChildren(node)) {
+              const preview = getInlinePreview(node);
+              if (preview) {
+                const previewEl = createInlinePreview(preview);
+                wrap.appendChild(previewEl);
+              }
+            }
             break;
           }
 
@@ -558,8 +737,6 @@
               img.loading = "lazy";
               wrap.appendChild(img);
             }
-            // Only show a caption when the img has a real alt text — skip
-            // filename fallbacks produced by the parser for decorative images.
             const realAlt = (node.attributes?.alt ?? "").trim();
             if (realAlt) {
               const cap = document.createElement("div");
@@ -573,10 +750,9 @@
           }
 
           case "figure": {
-            // let children render below
             const cap = document.createElement("div");
             cap.className = "node-label";
-            cap.textContent = label(node);
+            cap.textContent = node.label || "";
             wrap.appendChild(cap);
             break;
           }
@@ -584,7 +760,7 @@
           case "blockquote": {
             const bq = document.createElement("blockquote");
             bq.className = "node-bq";
-            bq.textContent = label(node);
+            bq.textContent = node.label || node.content || "";
             wrap.appendChild(bq);
             break;
           }
@@ -592,7 +768,7 @@
           case "code": {
             const pre = document.createElement("pre");
             pre.className = "node-code";
-            pre.textContent = label(node);
+            pre.textContent = node.label || node.content || "";
             wrap.appendChild(pre);
             break;
           }
@@ -605,7 +781,6 @@
           }
 
           case "list": {
-            // children (listitems) rendered recursively below
             const lbl = document.createElement("div");
             lbl.className = "node-label";
             lbl.style.color = "var(--muted)";
@@ -618,8 +793,16 @@
           case "listitem": {
             const el = document.createElement("div");
             el.className = "node-label";
-            el.textContent = label(node);
+            el.textContent = node.label || node.content || "";
             wrap.appendChild(el);
+
+            if (hasTextChildren(node)) {
+              const preview = getInlinePreview(node);
+              if (preview) {
+                const previewEl = createInlinePreview(preview);
+                wrap.appendChild(previewEl);
+              }
+            }
             break;
           }
 
@@ -641,7 +824,6 @@
               tbl.appendChild(tr);
             }
             wrap.appendChild(tbl);
-            // table already fully rendered — skip generic child recursion
             return wrap;
           }
 
@@ -655,7 +837,7 @@
             el.className = "node-label";
             el.style.fontFamily = "var(--mono)";
             el.style.fontSize = "12px";
-            el.textContent = `[${node.role}] ${label(node)}`;
+            el.textContent = `[${node.role}] ${node.label || node.content || ""}`;
             wrap.appendChild(el);
             break;
           }
@@ -665,7 +847,6 @@
           case "region":
           case "group":
           default: {
-            // container node: just show label if present; children render below
             if (node.label) {
               const el = document.createElement("div");
               el.className = "node-label";
@@ -678,7 +859,7 @@
         }
 
         // ── recurse into children (except table which returned early) ──────
-        if (node.children?.length) {
+        if (node.children?.length && node.role !== "table") {
           const childWrap = document.createElement("div");
           childWrap.className = "node-children";
           for (const childId of node.children) {
@@ -691,6 +872,21 @@
         return wrap;
       }
 
+      // ── Create inline preview element ────────────────────────────────────
+      function createInlinePreview(preview) {
+        const container = document.createElement("div");
+        container.className = "inline-preview";
+        container.title = "Inline content decomposition";
+
+        for (const item of preview) {
+          const span = document.createElement("span");
+          span.className = `token ${item.type}`;
+          span.textContent = item.text;
+          container.appendChild(span);
+        }
+        return container;
+      }
+
       // ── render TOC tree ───────────────────────────────────────────────────
       function renderTOCNode(tocNode, depth = 0) {
         const frag = document.createDocumentFragment();
@@ -699,8 +895,18 @@
           const btn = document.createElement("button");
           btn.className =
             "toc-entry" + (tocNode.id === activeId ? " active" : "");
-          btn.textContent = tocNode.label ?? tocNode.id;
+
+          // Show label, fallback to id
+          const labelText = tocNode.label || tocNode.id;
+          btn.textContent = labelText;
           btn.style.paddingLeft = `${8 + depth * 10}px`;
+
+          // Add a small indicator if this section has text children
+          const node = ir.nodes[tocNode.id];
+          if (node && hasTextChildren(node)) {
+            btn.textContent += " 📝";
+          }
+
           btn.addEventListener("click", () => {
             activeId = tocNode.id;
             render();
@@ -722,7 +928,7 @@
         return wrapper;
       }
 
-      // ── render aside: node metadata for active section ────────────────────
+      // ── render aside: node metadata ───────────────────────────────────────
       function renderAside(nodeId) {
         $aside.innerHTML = "";
         const node = ir?.nodes?.[nodeId];
@@ -731,35 +937,53 @@
           return;
         }
 
-        const rows = [
+        // Basic metadata
+        const meta = [
           ["id", node.id],
           ["role", node.role],
           ["source", node.source],
           ["landmark", node.landmark ? "yes" : "no"],
           ["children", node.children?.length ?? 0],
-          ["label", (node.label ?? "").slice(0, 80) || "—"],
+          ["label", truncate(node.label ?? "—", 40)],
           ["parent", node.parent ?? "—"],
+          ["confidence", node.confidence?.toFixed(2) ?? "—"],
+          ["readingDepth", node.readingDepth ?? "—"],
         ];
 
-        const tbl = document.createElement("table");
-        tbl.className = "node-table";
-        tbl.style.fontSize = "11px";
-        for (const [k, v] of rows) {
-          const tr = document.createElement("tr");
-          const th = document.createElement("th");
-          th.textContent = k;
-          const td = document.createElement("td");
-          td.textContent = String(v);
-          td.style.fontFamily = "var(--mono)";
-          tr.appendChild(th);
-          tr.appendChild(td);
-          tbl.appendChild(tr);
+        for (const [k, v] of meta) {
+          const row = document.createElement("div");
+          row.className = "meta-row";
+          const keySpan = document.createElement("span");
+          keySpan.className = "key";
+          keySpan.textContent = k;
+          const valSpan = document.createElement("span");
+          valSpan.className = "value";
+          valSpan.textContent = String(v);
+          row.appendChild(keySpan);
+          row.appendChild(valSpan);
+          $aside.appendChild(row);
         }
-        $aside.appendChild(tbl);
 
-        // attrs section
+        // Show inline preview if node has text children
+        if (hasTextChildren(node)) {
+          const preview = getInlinePreview(node);
+          if (preview) {
+            const header = document.createElement("div");
+            header.className = "panel-head";
+            header.style.margin = "10px 0 4px";
+            header.textContent = "inline content";
+            $aside.appendChild(header);
+
+            const previewEl = createInlinePreview(preview);
+            $aside.appendChild(previewEl);
+          }
+        }
+
+        // Attributes section
         const attrs = node.attributes ?? {};
-        const attrKeys = Object.keys(attrs).filter((k) => attrs[k] !== null);
+        const attrKeys = Object.keys(attrs).filter(
+          (k) => attrs[k] !== null && attrs[k] !== undefined,
+        );
         if (attrKeys.length) {
           const h = document.createElement("div");
           h.className = "panel-head";
@@ -767,21 +991,45 @@
           h.textContent = "attributes";
           $aside.appendChild(h);
 
-          const atbl = document.createElement("table");
-          atbl.className = "node-table";
-          atbl.style.fontSize = "11px";
           for (const k of attrKeys) {
-            const tr = document.createElement("tr");
-            const th = document.createElement("th");
-            th.textContent = k;
-            const td = document.createElement("td");
-            td.textContent = String(attrs[k]).slice(0, 80);
-            td.style.fontFamily = "var(--mono)";
-            tr.appendChild(th);
-            tr.appendChild(td);
-            atbl.appendChild(tr);
+            const row = document.createElement("div");
+            row.className = "meta-row";
+            const keySpan = document.createElement("span");
+            keySpan.className = "key";
+            keySpan.textContent = k;
+            const valSpan = document.createElement("span");
+            valSpan.className = "value";
+            const val = attrs[k];
+            valSpan.textContent =
+              typeof val === "string" ? truncate(val, 40) : String(val);
+            row.appendChild(keySpan);
+            row.appendChild(valSpan);
+            $aside.appendChild(row);
           }
-          $aside.appendChild(atbl);
+        }
+
+        // Show text content if available and not already shown via children
+        if (node.content && !hasTextChildren(node)) {
+          const h = document.createElement("div");
+          h.className = "panel-head";
+          h.style.margin = "10px 0 4px";
+          h.textContent = "content";
+          $aside.appendChild(h);
+
+          const contentDiv = document.createElement("div");
+          contentDiv.style.cssText = `
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-color);
+            background: var(--surface-2);
+            padding: 6px 8px;
+            border-radius: 4px;
+            margin-top: 4px;
+            white-space: pre-wrap;
+            word-break: break-word;
+          `;
+          contentDiv.textContent = node.content;
+          $aside.appendChild(contentDiv);
         }
       }
 
@@ -820,13 +1068,29 @@
         if (!activeNode) {
           $center.innerHTML = `<p class="empty-state">Select a section.</p>`;
         } else {
-          $head.textContent = label(activeNode, activeId);
-          for (const childId of activeNode.children ?? []) {
-            const el = renderNode(childId);
-            if (el) $center.appendChild(el);
-          }
-          if (!activeNode.children?.length) {
-            $center.innerHTML = `<p class="empty-state">No child nodes.</p>`;
+          const labelText = label(activeNode, activeId);
+          $head.textContent =
+            labelText + (hasTextChildren(activeNode) ? " 📝" : "");
+
+          if (activeNode.children?.length) {
+            for (const childId of activeNode.children) {
+              const el = renderNode(childId);
+              if (el) $center.appendChild(el);
+            }
+          } else {
+            // Show content directly if no children
+            if (activeNode.content) {
+              const contentDiv = document.createElement("div");
+              contentDiv.className = "node";
+              contentDiv.dataset.role = activeNode.role;
+              const contentEl = document.createElement("div");
+              contentEl.className = "node-label";
+              contentEl.textContent = activeNode.content;
+              contentDiv.appendChild(contentEl);
+              $center.appendChild(contentDiv);
+            } else {
+              $center.innerHTML = `<p class="empty-state">No child nodes.</p>`;
+            }
           }
         }
 
@@ -866,15 +1130,18 @@
           });
           console.log("Parsed IR:", ir);
           console.log("Mapped Scene:", mappedScene);
-          const layoutPlan = computeLayoutPlan(mappedScene, QUEST_PRO_PROFILE);
-          console.log("Layout Plan:", layoutPlan);
-          const mergedPlan = mergeLayoutPlan(mappedScene, layoutPlan);
-          console.log("Merged Layout Plan:", mergedPlan);
           window.currentIR = ir;
+
           const ids = sectionIds();
           activeId = ids[0] ?? null;
+
+          // Count text nodes
+          const textNodes = Object.values(ir.nodes).filter(
+            (n) => n.role === "text",
+          );
+          const totalNodes = Object.keys(ir.nodes).length;
           setStatus(
-            `<span class="ok">✓</span> ${Object.keys(ir.nodes).length} nodes · ${ids.length} sections`,
+            `<span class="ok">✓</span> ${totalNodes} nodes · ${ids.length} sections · ${textNodes.length} text nodes`,
           );
           render();
         } catch (e) {

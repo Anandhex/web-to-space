@@ -14,6 +14,7 @@ import type {
   IRFallbackEntry,
   IRNode,
   IRNodeAttributes,
+  IRRole,
   IRSource,
   LandmarkRecord,
   LandmarkTOCNode,
@@ -36,6 +37,13 @@ import {
   isListCandidate,
   hydrateRelations,
 } from "./utils";
+
+import {
+  shouldDecomposeContent,
+  decomposeInlineContentRecursive,
+  createInlineNodes,
+  type InlineContext,
+} from "./inline-parser";
 
 /**
  * Stub provider — always returns null so the node stays "generic".
@@ -318,6 +326,8 @@ function normaliseChildContent(
   return result;
 }
 
+// parser.ts - Updated createNode with proper ordering
+
 async function createNode(
   element: Element,
   parentId: string,
@@ -327,35 +337,169 @@ async function createNode(
   readingDepth = 0,
 ): Promise<string> {
   const id = `${parentId}-node-${ctx.counters.node++}`;
-  const roleInfo = resolveRoleFromElement(element, ctx.config);
-  const label = resolveNodeLabel(element, ctx.config, ctx.doc);
   const readingIndex = ctx.counters.reading++;
 
   ctx.elementToNodeId.set(element, id);
 
-  // ── Layer 3: AI-assisted fallback ───────────────────────────────────────
-  // Invoked when layers 1 & 2 left the node at "generic" confidence.
+  // ── STEP 1: Determine base role from element ──────────────────────────
+  // This includes explicit role attributes and structural tag mapping
+  let roleInfo = resolveRoleFromElement(element, ctx.config);
   let resolvedRole = roleInfo.role;
   let resolvedSource: IRSource = roleInfo.source;
   let resolvedConfidence = confidenceForSource(roleInfo.source, ctx.config);
 
+  // ── STEP 2: Check if this is a generic div/span with only text ────────
+  // If it's a generic wrapper with only text content, treat it as a text node
+  const tag = element.tagName.toLowerCase();
+  const isGenericWrapper = tag === "div" || tag === "span";
+  const hasOnlyText = hasOnlyTextContent(element, ctx);
+
+  if (isGenericWrapper && hasOnlyText && resolvedRole === "generic") {
+    // This is just a text container - create a text node directly
+    const text = element.textContent?.trim() || "";
+    if (text) {
+      const textId = `${parentId}-text-${ctx.counters.node++}`;
+      ctx.nodes[textId] = {
+        id: textId,
+        role: "text",
+        level: null,
+        label: null,
+        content: text,
+        unlabelledYet: true,
+        landmark: false,
+        source: "inline",
+        confidence: ctx.config.sourceConfidence["inline"] || 0.9,
+        readingIndex: ctx.counters.reading++,
+        readingDepth,
+        parent: parentId,
+        children: [],
+        relations: createEmptyRelations(),
+        state: createEmptyState(),
+        attributes: {
+          ...createEmptyAttributes(),
+          componentType: tag,
+        },
+      };
+      return textId;
+    }
+  }
+
+  // ── STEP 3: Process children (build the tree) ──────────────────────────
+  // This must happen BEFORE AI fallback because AI should only run on
+  // nodes that have been fully processed structurally
+
+  // Check if this node has block children
+  const childElements = Array.from(element.children).filter(
+    (child) => !ctx.skipTags.has(child.tagName.toLowerCase()),
+  );
+
+  const hasBlockChildren = childElements.some(
+    (child) => !ctx.inlineTags.has(child.tagName.toLowerCase()),
+  );
+
+  const children: string[] = [];
+  let textNodes: string[] = [];
+  let hasBlockChild = false;
+
+  if (!hasBlockChildren && childElements.length > 0) {
+    // Leaf node with only inline children - check for mixed content
+    const shouldDecompose = shouldDecomposeContent(element, {
+      inlineTags: ctx.inlineTags,
+      skipTags: ctx.skipTags,
+      config: ctx.config,
+      doc: ctx.doc,
+      pageUrl: ctx.pageUrl,
+    });
+
+    if (shouldDecompose) {
+      // Decompose mixed content
+      const runs = decomposeInlineContentRecursive(
+        element,
+        {
+          inlineTags: ctx.inlineTags,
+          skipTags: ctx.skipTags,
+          config: ctx.config,
+          doc: ctx.doc,
+          pageUrl: ctx.pageUrl,
+        },
+        id,
+      );
+
+      const result = createInlineNodes(runs, id, ctx, readingDepth + 1);
+      children.push(...result.nodeIds);
+      textNodes = result.textRuns;
+      hasBlockChild = false;
+    } else {
+      // No mixed content - normal processing
+      const childIds = await buildChildrenFromSiblings(
+        childElements,
+        id,
+        landmarkParentId,
+        ctx,
+        readingDepth,
+      );
+      children.push(...childIds);
+      hasBlockChild = false;
+    }
+  } else if (hasBlockChildren) {
+    // Has block children - process normally
+    const normalisedChildren = normaliseChildContent(element, ctx.skipTags);
+    const childIds = await buildChildrenFromSiblings(
+      normalisedChildren,
+      id,
+      landmarkParentId,
+      ctx,
+      readingDepth,
+    );
+    children.push(...childIds);
+    hasBlockChild = true;
+  }
+
+  // ── STEP 4: Label resolution (after structural processing) ─────────────
+  // Only resolve labels for nodes that need them
+  const label = resolveNodeLabelSmart(
+    element,
+    resolvedRole,
+    ctx.config,
+    ctx.doc,
+  );
+
+  // ── STEP 5: AI Fallback (ABSOLUTELY LAST) ──────────────────────────────
+  // Only run AI fallback if:
+  // 1. AI fallback is enabled in config
+  // 2. The node is still 'generic' (or low confidence)
+  // 3. The node has meaningful content (not just a wrapper)
+  // 4. The node has children or content to classify
+  const hasContent =
+    children.length > 0 || textNodes.length > 0 || element.textContent?.trim();
+
   if (
     ctx.config.useAIFallback &&
-    resolvedConfidence < ctx.config.aiFallbackThreshold
+    resolvedConfidence < ctx.config.aiFallbackThreshold &&
+    resolvedRole === "generic" &&
+    hasContent &&
+    !isGenericWrapper // Don't run AI on generic wrappers - they're just text containers
   ) {
     const subtree = serialiseDOMSubtree(element, ctx.skipTags);
     const tag = element.tagName.toLowerCase();
+
     try {
       const aiResult = await ctx.fallbackProvider.classify(subtree, id);
       if (
         aiResult !== null &&
         aiResult.confidence >= ctx.config.aiFallbackThreshold
       ) {
-        resolvedRole = aiResult.role;
-        resolvedSource = "ai";
-        resolvedConfidence = aiResult.confidence;
+        // Only apply AI result if it improves the role
+        const currentConfidence = confidenceForSource(
+          resolvedSource,
+          ctx.config,
+        );
+        if (aiResult.confidence > currentConfidence) {
+          resolvedRole = aiResult.role;
+          resolvedSource = "ai";
+          resolvedConfidence = aiResult.confidence;
+        }
       } else {
-        // Provider returned null or low confidence — log as timeout/fallback
         ctx.fallbackLog.push({ id, tag, reason: "ai-timeout" });
         resolvedSource = "ai-timeout";
         resolvedConfidence = confidenceForSource("ai-timeout", ctx.config);
@@ -367,22 +511,16 @@ async function createNode(
     }
   }
 
-  const isSemanticContainer =
-    LANDMARK_ROLES.has(resolvedRole) ||
-    resolvedRole === "region" ||
-    resolvedRole === "article" ||
-    resolvedRole === "list";
+  // ── STEP 6: Determine content ────────────────────────────────────────────
+  let content = null;
+  if (!hasBlockChild) {
+    content =
+      textNodes.length > 0
+        ? textNodes.join(" ")
+        : (element.textContent?.trim() ?? null);
+  }
 
-  const childDepth = isSemanticContainer ? readingDepth + 1 : readingDepth;
-
-  const children = await buildChildrenFromSiblings(
-    normaliseChildContent(element, ctx.skipTags),
-    id,
-    landmarkParentId,
-    ctx,
-    childDepth,
-  );
-
+  // ── STEP 7: Store the node ──────────────────────────────────────────────
   ctx.nodes[id] = {
     id,
     role: resolvedRole,
@@ -401,20 +539,150 @@ async function createNode(
       readNodeAttributes(element, { sourceUrl: ctx.pageUrl }),
       liftedAttrs,
     ),
-    content: (() => {
-      const hasBlockChild = Array.from(element.childNodes).some((n) => {
-        if (n.nodeType !== Node.ELEMENT_NODE) return false;
-        const t = (n as Element).tagName.toLowerCase();
-        return !SKIP_TAGS.has(t) && !INLINE_TAGS.has(t);
-      });
-      // When block children exist, text is decomposed into child IR nodes.
-      // Keep content null so the parent primitive doesn't re-render it.
-      return hasBlockChild ? null : (element.textContent?.trim() ?? null);
-    })(),
+    content,
     readingDepth,
   };
 
   return id;
+}
+
+// parser.ts - Updated smart label resolution
+
+function resolveNodeLabelSmart(
+  element: Element,
+  role: IRRole,
+  config: ParserConfig,
+  doc?: Document,
+): string | null {
+  // ── Case 1: Generic wrappers with text content ──────────────────────────
+  // Div/span with only text should NOT have labels
+  const tag = element.tagName.toLowerCase();
+  const isGenericWrapper = tag === "div" || tag === "span";
+  if (isGenericWrapper && role === "generic") {
+    // Check if it has only text content
+    const hasOnlyText = !Array.from(element.children).some(
+      (child) =>
+        !["script", "style", "noscript"].includes(child.tagName.toLowerCase()),
+    );
+    if (hasOnlyText) {
+      return null; // No label for generic text containers
+    }
+  }
+
+  // ── Case 2: Text-bearing nodes ──────────────────────────────────────────
+  const TEXT_BEARING = new Set(["paragraph", "heading", "text", "caption"]);
+
+  if (TEXT_BEARING.has(role) && !config.useTextLabels) {
+    return null;
+  }
+
+  // ── Case 3: Semantic containers ──────────────────────────────────────────
+  const SEMANTIC_CONTAINERS = new Set([
+    "main",
+    "navigation",
+    "banner",
+    "contentinfo",
+    "complementary",
+    "search",
+    "form",
+    "region",
+    "article",
+    "section",
+    "dialog",
+    "tabpanel",
+  ]);
+
+  if (SEMANTIC_CONTAINERS.has(role) && config.useSemanticLabels) {
+    // Try to resolve a meaningful label
+    const label = resolveNodeLabel(element, config, doc);
+    if (label) return label;
+
+    // For sections, try to find a heading
+    if (role === "region" || role === "section") {
+      const headings = Array.from(
+        element.querySelectorAll("h1, h2, h3, h4, h5, h6"),
+      );
+      for (const heading of headings) {
+        const headingText = heading.textContent?.trim();
+        if (headingText) {
+          return headingText.slice(0, config.labelMaxChars);
+        }
+      }
+    }
+
+    // Fallback to role-based label
+    return `${role}`;
+  }
+
+  // ── Case 4: Interactive elements ──────────────────────────────────────────
+  if (config.useAriaLabels) {
+    const INTERACTIVE = new Set([
+      "link",
+      "button",
+      "textbox",
+      "searchbox",
+      "checkbox",
+      "radio",
+      "combobox",
+      "slider",
+      "spinbutton",
+      "switch",
+      "tab",
+      "menuitem",
+      "option",
+    ]);
+
+    if (INTERACTIVE.has(role)) {
+      return resolveNodeLabel(element, config, doc);
+    }
+  }
+
+  // ── Case 5: Generic nodes with landmark status ────────────────────────────
+  if (role === "generic" && LANDMARK_ROLES.has(role)) {
+    return resolveNodeLabel(element, config, doc);
+  }
+
+  // ── Case 6: Default - try to resolve but be conservative ──────────────────
+  // Only return label if it's meaningful (not just text content)
+  const label = resolveNodeLabel(element, config, doc);
+
+  // If the label is just the text content and it's a generic node, skip it
+  if (role === "generic" && label === element.textContent?.trim()) {
+    return null;
+  }
+
+  return label || null;
+}
+
+// Helper: Check if an element has ONLY text content (no elements)
+function hasOnlyTextContent(element: Element, ctx: BuildContext): boolean {
+  let hasText = false;
+
+  for (const child of Array.from(element.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const text = (child.textContent ?? "").trim();
+      if (text) {
+        hasText = true;
+      }
+    } else if (child.nodeType === Node.ELEMENT_NODE) {
+      const el = child as Element;
+      const tag = el.tagName.toLowerCase();
+      // If it's not a skip tag and not an inline tag, it's a block element
+      if (!ctx.skipTags.has(tag) && !ctx.inlineTags.has(tag)) {
+        return false; // Has block child
+      }
+      // If it's an inline element, recursively check
+      if (ctx.inlineTags.has(tag)) {
+        // Recursively check if this inline element has only text
+        const hasOnlyTextInInline = hasOnlyTextContent(el, ctx);
+        if (!hasOnlyTextInInline) {
+          return false;
+        }
+      }
+    }
+  }
+
+  return hasText;
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,6 +1293,8 @@ export const parsePageToIR = async (
   const parser = new DOMParser();
   const parsedDoc = parser.parseFromString(htmlString, "text/html");
 
+  const inlineTags = new Set(INLINE_TAGS);
+
   // Build effective skip/wrapper sets from config
   const skipTags = new Set(SKIP_TAGS);
   if (config.includeSvg) skipTags.delete("svg");
@@ -1056,6 +1326,7 @@ export const parsePageToIR = async (
     config,
     skipTags,
     wrapperTags,
+    inlineTags,
     pageUrl: url,
   };
 

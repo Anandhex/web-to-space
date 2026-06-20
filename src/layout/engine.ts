@@ -76,6 +76,7 @@ import type {
   XRList,
   XRMediaPlayer,
   SemanticScene,
+  XRText,
 } from "../mapper/types";
 import { selectSlots } from "./slots";
 import { selectLayoutTemplate } from "./templates";
@@ -99,13 +100,44 @@ import {
   estimateParagraphHeight,
   estimateTextBearingHeight,
   FIXED_HEIGHT_LOOKUP,
-  paragraphWordsThatFit,
   resolveListColumns,
   resolveTableStrategy,
-  splitIntoWords,
   zeroRotation,
   zeroVec,
 } from "./utils";
+
+function sumChildrenHeights(
+  children: XRPrimitive[],
+  panelUsableWidth: number,
+  metrics: RenderMetrics,
+  config: LayoutConfig,
+  ancestors: Set<string>,
+  scene?: SemanticScene,
+): number {
+  if (children.length === 0) return 0;
+
+  let totalHeight = 0;
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i];
+    const childHeight = estimateHeight(
+      child,
+      panelUsableWidth,
+      metrics,
+      config,
+      new Set(ancestors),
+      scene,
+    );
+    const validHeight =
+      childHeight && childHeight > 0 && isFinite(childHeight)
+        ? childHeight
+        : metrics.fallbackElementHeight;
+    totalHeight += validHeight;
+    if (i < children.length - 1) {
+      totalHeight += config.childGapY;
+    }
+  }
+  return totalHeight;
+}
 
 // ─────────────────────────────────────────────────────────────
 // Layout configuration (spatial parameters, not render metrics)
@@ -173,6 +205,20 @@ function estimateHeight(
       | 5
       | 6;
     const m = metrics.heading[level] ?? metrics.heading[2] ?? metrics.paragraph;
+    if (primitive.children.length > 0) {
+      const childrenHeight = sumChildrenHeights(
+        primitive.children,
+        panelUsableWidth,
+        metrics,
+        config,
+        branchAncestors,
+        scene,
+      );
+
+      const minHeight = m.fontSize * m.lineHeightRatio + m.verticalPadding;
+      return Math.max(minHeight, childrenHeight);
+    }
+
     const lineH = m.fontSize * m.lineHeightRatio;
     const wordCount = countWords(primitive.content ?? primitive.label ?? "");
     const textHeight =
@@ -185,53 +231,75 @@ function estimateHeight(
             );
           })();
 
-    // Add block children height if present (e.g. h2>img, h3>figure)
-    if (primitive.children.length > 0) {
-      const childrenHeight = primitive.children.reduce(
-        (sum, child) =>
-          sum +
-          config.childGapY +
-          estimateHeight(
-            child,
-            panelUsableWidth,
-            metrics,
-            config,
-            new Set(branchAncestors),
-            scene,
-          ),
-        0,
-      );
-      return textHeight + childrenHeight;
-    }
     return textHeight;
+  }
+  if (primitive.type === "XRText") {
+    const text = (primitive as XRText).text || "";
+    const wordCount = countWords(text);
+    const m = metrics.paragraph;
+    // Always return at least one line height
+    if (wordCount === 0) {
+      return m.fontSize * m.lineHeightRatio + m.verticalPadding;
+    }
+    const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
+    const lineCount = Math.ceil(wordCount / Math.max(1, wordsPerLine));
+    const lineH = m.fontSize * m.lineHeightRatio;
+    return Math.max(
+      lineH + m.verticalPadding,
+      lineCount * lineH + m.verticalPadding,
+    );
   }
 
   // ── Paragraph (word-count based) ──────────────────────────────────────────
   if (primitive.type === "XRParagraph") {
-    const textHeight = estimateParagraphHeight(
+    // If paragraph has children, measure them
+    if (primitive.children.length > 0) {
+      if (primitive.children.length > 0) {
+        const childrenHeight = sumChildrenHeights(
+          primitive.children,
+          panelUsableWidth,
+          metrics,
+          config,
+          branchAncestors,
+          scene,
+        );
+        return childrenHeight + metrics.paragraph.verticalPadding;
+      }
+    }
+    // No children - use word count from label
+    return estimateParagraphHeight(
       primitive as XRParagraph,
       panelUsableWidth,
       metrics,
     );
-    // Add block children height (p>img, p>ul, p>div>img, etc.)
+  }
+
+  if (primitive.type === "XRLink") {
     if (primitive.children.length > 0) {
-      const childrenHeight = primitive.children.reduce(
-        (sum, child) =>
-          sum +
-          config.childGapY +
-          estimateHeight(
-            child,
-            panelUsableWidth,
-            metrics,
-            config,
-            new Set(branchAncestors),
-            scene,
-          ),
-        0,
-      );
-      return textHeight + childrenHeight;
+      let totalHeight = 0;
+      for (let i = 0; i < primitive.children.length; i++) {
+        const child = primitive.children[i];
+        const childHeight = estimateHeight(
+          child,
+          panelUsableWidth,
+          metrics,
+          config,
+          ancestors,
+          scene,
+        );
+        totalHeight += childHeight;
+        if (i < primitive.children.length - 1) {
+          totalHeight += config.childGapY;
+        }
+      }
+      return Math.max(metrics.link.minHeight, totalHeight);
     }
-    return textHeight;
+    return estimateTextBearingHeight(
+      primitive.label ?? "",
+      panelUsableWidth,
+      metrics.link,
+      metrics.fallbackElementHeight,
+    );
   }
 
   // ── Code block (line-count based, same formula as paragraph) ──────────────
@@ -359,51 +427,37 @@ function estimateHeight(
       // Height = labelHeight + childrenHeight, floored at tb.minHeight.
       if (primitive.type === "XRListItem") {
         if (primitive.children.length > 0) {
-          const childrenHeight = primitive.children.reduce(
-            (sum: number, child: XRPrimitive, idx: number) => {
-              // Every child gets a gap from the item above it (label row or sibling).
-              const gap = config.childGapY;
-              return (
-                sum +
-                gap +
-                estimateHeight(
-                  child,
-                  panelUsableWidth,
-                  metrics,
-                  config,
-                  new Set(branchAncestors),
-                  scene,
-                )
-              );
-            },
-            0,
+          const childrenHeight = sumChildrenHeights(
+            primitive.children,
+            panelUsableWidth,
+            metrics,
+            config,
+            branchAncestors,
+            scene,
           );
-          return Math.max(tb.minHeight, labelHeight + childrenHeight);
+          return Math.max(metrics.listItem.minHeight, childrenHeight);
         }
-        return labelHeight;
+        return estimateTextBearingHeight(
+          primitive.content ?? primitive.label ?? "",
+          panelUsableWidth,
+          metrics.listItem,
+          metrics.fallbackElementHeight,
+        );
       }
 
       // Add child content height if present (e.g. XRAlert with body paragraphs,
       // XRTreeItem with nested items)
       if (primitive.children.length > 0) {
-        const childrenHeight = primitive.children.reduce(
-          (sum: number, child: XRPrimitive, idx: number) => {
-            const gap = idx === 0 ? 0 : config.childGapY;
-            return (
-              sum +
-              gap +
-              estimateHeight(
-                child,
-                panelUsableWidth,
-                metrics,
-                config,
-                ancestors,
-              )
-            );
-          },
-          0,
+        let childrenHeight = sumChildrenHeights(
+          primitive.children,
+          panelUsableWidth,
+          metrics,
+          config,
+          branchAncestors,
+          scene,
         );
-        return Math.max(labelHeight, tb.minHeight + childrenHeight);
+        childrenHeight + config.panelPaddingTop * 2;
+        return Math.max(labelHeight, childrenHeight);
       }
 
       return labelHeight;
@@ -794,50 +848,35 @@ function paginateContentPanel(
       pageIndexMap: {},
       placedPositionMap: new Map(),
       placedHeightMap: new Map(),
-      continuationEntries: [],
     };
   }
 
   const childWidth = Math.max(0.025, panelWidth - config.panelPaddingX * 2);
-  const panelUsableWidth = childWidth;
   const VIEWPORT = config.maxPanelViewportHeight;
 
-  // Pre-estimate heights for direct children that will take the "leaf" path
-  // in the main loop below (plain non-section, non-generic-panel nodes).
-  // Section-like and XRGenericPanel children are re-measured node-by-node
-  // inside splitSection() instead, since their height isn't a single fixed
-  // number — it depends on where page breaks land among their descendants.
-  // This array is indexed in parallel with `children`; entries for
-  // section-like / XRGenericPanel children are computed but simply unused.
-  const heights = children.map((c) =>
-    estimateHeight(c, panelUsableWidth, metrics, config, new Set(), scene),
-  );
-
-  // positionMap holds the final page-relative position for each direct child.
-  // Section children are written here by splitSection() directly.
   const positionMap: Map<string, Vec3> = new Map();
-
-  // heightMap holds the height ACTUALLY USED when placing each node — i.e.
-  // splitHeight for a paragraph fragment that got truncated at a page
-  // boundary, or the plain estimateHeight() result otherwise. This is the
-  // authoritative size for the LayoutEntry the renderer will build; callers
-  // (layoutPrimitive) must use this instead of re-calling estimateHeight(),
-  // which would return the FULL untruncated height for a split fragment and
-  // produce a LayoutEntry sized larger than the content actually placed there.
   const heightMap: Map<string, number> = new Map();
-
   const pageIndexMap: Record<string, number> = {};
-  const continuationEntries: LayoutEntry[] = [];
   const pageYOffsets: number[] = [0];
 
-  // Mutable page state — shared between the main loop and splitSection().
   let pageIdx = 0;
   let pageHeight = config.panelPaddingTop;
   let itemsOnPage = 0;
-  // cursorY is PAGE-RELATIVE. Reset to -panelPaddingTop on every new page.
   let cursorY = -config.panelPaddingTop;
+  let absoluteY = config.panelPaddingTop;
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  function nextPage(absolutePageStart: number): void {
+    pageYOffsets.push(absolutePageStart);
+    pageIdx += 1;
+    pageHeight = config.panelPaddingTop;
+    itemsOnPage = 0;
+    cursorY = -config.panelPaddingTop;
+  }
+
+  function stampSubtree(node: XRPrimitive, page: number): void {
+    pageIndexMap[node.id] = page;
+    for (const child of node.children) stampSubtree(child, page);
+  }
 
   function isSectionLike(p: XRPrimitive): boolean {
     return (
@@ -848,144 +887,19 @@ function paginateContentPanel(
     );
   }
 
-  /** Recursively stamp every node in a subtree with the given page index. */
-  function stampSubtree(node: XRPrimitive, page: number): void {
-    pageIndexMap[node.id] = page;
-    for (const child of node.children) stampSubtree(child, page);
-  }
-
-  /**
-   * Advance to the next page.
-   * Resets cursorY to the top of the new page (page-relative origin).
-   * Records the absolute y-offset of the new page for PaginationMeta.
-   *
-   * NOTE: pageYOffsets stores absolute cumulative heights for the renderer
-   * to know where each page starts in the content's total height. It is
-   * NOT used for y-position computation inside the engine — that always
-   * uses the page-relative cursorY.
-   */
-  function nextPage(absolutePageStart: number): void {
-    pageYOffsets.push(absolutePageStart);
-    pageIdx += 1;
-    pageHeight = config.panelPaddingTop;
-    itemsOnPage = 0;
-    cursorY = -config.panelPaddingTop; // reset to page-relative origin
-  }
-
-  /**
-   * Try to split a paragraph at the page boundary.
-   *
-   * If the paragraph fits a split (some words on this page, rest on next):
-   *   - Returns the reduced height for the fragment that fits.
-   *   - Pushes a continuation LayoutEntry onto continuationEntries.
-   *   - The caller must advance to the next page after calling this.
-   *
-   * If splitting is not possible (paragraph type mismatch, budget = 0,
-   * or all words fit / none fit), returns { splitHeight: fullHeight, didSplit: false }.
-   */
-  function maybeSplitParagraph(
-    p: XRPrimitive,
-    fullHeight: number,
-    budget: number,
-    nextPageIdx: number,
-  ): { splitHeight: number; didSplit: boolean } {
-    if (p.type !== "XRParagraph")
-      return { splitHeight: fullHeight, didSplit: false };
-    if (budget <= 0) return { splitHeight: fullHeight, didSplit: false };
-
-    const wordsThatFit = paragraphWordsThatFit(
-      budget,
-      panelUsableWidth,
-      metrics,
-    );
-    const totalWords =
-      (p as XRParagraph).wordCount ?? countWords(p.content ?? p.label ?? "");
-
-    if (wordsThatFit <= 0 || wordsThatFit >= totalWords) {
-      return { splitHeight: fullHeight, didSplit: false };
-    }
-
-    const m = metrics.paragraph;
-    const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
-    const lineH = m.fontSize * m.lineHeightRatio;
-    const splitLines = Math.ceil(wordsThatFit / wordsPerLine);
-    const splitHeight = splitLines * lineH + m.verticalPadding;
-
-    const contWordOffset = wordsThatFit;
-    const remainingWords = totalWords - wordsThatFit;
-    const contLines = Math.ceil(remainingWords / wordsPerLine);
-    const contHeight = contLines * lineH + m.verticalPadding;
-
-    const contId = `${p.id}__cont_${nextPageIdx}`;
-    // The continuation sits at the top of the next page (page-relative origin).
-    // Note: this is a SEPARATE synthetic id from the original paragraph, so it
-    // does not collide with stampSubtree(p, ...) calls made elsewhere for the
-    // fragment that stays behind on the current page — both halves get a
-    // correct, independent page-index stamp.
-    const contEntry: LayoutEntry = {
-      id: contId,
-      position: { x: config.panelPaddingX, y: -config.panelPaddingTop, z: 0 },
-      rotation: zeroRotation(),
-      size: { width: childWidth, height: contHeight },
-      curveRadius: 0,
-      worldLocked: true,
-      continuationWordOffset: contWordOffset,
-      pageIndex: nextPageIdx,
-    };
-    // Register in positionMap so the placed-position contract covers it.
-    positionMap.set(contId, contEntry.position);
-    pageIndexMap[contId] = nextPageIdx;
-    heightMap.set(contId, contHeight);
-    continuationEntries.push(contEntry);
-
-    diag.paragraphContinuations.push({
-      originalId: p.id,
-      pageIndex: nextPageIdx,
-      wordOffset: contWordOffset,
-    });
-
-    return { splitHeight, didSplit: true };
-  }
-
-  // ── Section splitter ───────────────────────────────────────────────────────
-  //
-  // Lays out the children of a section-like primitive (or XRGenericPanel)
-  // across pages, writing page-relative positions into positionMap.
-  //
-  // Operates directly on the shared outer page state (pageIdx, pageHeight,
-  // itemsOnPage, cursorY) so that recursion naturally continues from wherever
-  // the cursor currently sits — no coordination needed at call boundaries.
-  //
-  // Recursion rules
-  // ───────────────
-  // • isSectionLike child  → force a fresh page, recurse into children, then
-  //                          record the wrapper's position as the top of that page.
-  // • XRGenericPanel child → recurse inline (no fresh page), then record the
-  //                          wrapper's position as wherever the first child landed.
-  // • anything else        → leaf: placed as one block, paragraph-split if
-  //                          it straddles the boundary.
-  //
-  // Wrapper positions are written AFTER recursion so they reflect the page and
-  // cursor where the content actually landed, not a speculative pre-recursion
-  // snapshot that may be invalidated by an intra-child page break.
-  //
+  // ── Simplified splitSection ───────────────────────────────────────────────
+  // Now handles children as atomic units. Text nodes are atomic.
+  // No paragraph splitting - children move as whole units.
   function splitSection(section: XRPrimitive): void {
     for (let j = 0; j < section.children.length; j++) {
       const sc = section.children[j];
 
-      // ── Recursive: section-like child ─────────────────────────────────────
+      // ── Section-like child ─────────────────────────────────────────────────
       if (isSectionLike(sc)) {
-        if (sc.children.length === 0) {
-          // A childless section has no visible content, so it should not
-          // consume a page or inject blank space. Skipping it entirely
-          // (rather than giving it phantom padding-only height) avoids a
-          // spurious empty page/gap in the layout.
-          continue;
-        }
+        if (sc.children.length === 0) continue;
 
-        const sectionNewPage = config.sectionStartsOnNewPage !== false;
-
-        if (sectionNewPage && itemsOnPage > 0) {
+        // Force fresh page for sections
+        if (config.sectionStartsOnNewPage !== false && itemsOnPage > 0) {
           const absOffsetBase = pageYOffsets[pageIdx] ?? 0;
           pageYOffsets.push(absOffsetBase + VIEWPORT);
           pageIdx += 1;
@@ -994,8 +908,6 @@ function paginateContentPanel(
           cursorY = -config.panelPaddingTop;
         }
 
-        // Record which page this section lands on, and its position at the
-        // top of that page — before recursing so descendants can inherit it.
         pageIndexMap[sc.id] = pageIdx;
         positionMap.set(sc.id, {
           x: config.panelPaddingX,
@@ -1003,18 +915,8 @@ function paginateContentPanel(
           z: 0,
         });
 
-        // Mark the page as occupied before recursing so the first child
-        // inside doesn't see itemsOnPage === 0 and skip its gap check.
-        // We don't advance cursorY or pageHeight — the children do that.
         const pageBeforeRecursion = pageIdx;
         splitSection(sc);
-        // Height = however far the cursor moved on the page the section
-        // STARTED on. If the section's content overflowed onto further
-        // pages, those continuation pages belong to the section's children
-        // (already stamped individually), not to a single bounding box for
-        // the section itself — this height only describes its first-page
-        // footprint, which is what a single LayoutEntry for `sc` can
-        // meaningfully represent.
         if (pageIdx === pageBeforeRecursion) {
           heightMap.set(sc.id, pageHeight - config.panelPaddingTop);
         } else {
@@ -1023,16 +925,10 @@ function paginateContentPanel(
         continue;
       }
 
-      // ── Recursive: generic panel child ────────────────────────────────────
-      // No fresh page. Recurse first, then record the wrapper's position as
-      // wherever the cursor was at the start of the recursion. This avoids
-      // recording a pre-recursion cursor that gets invalidated by a page break
-      // inside the generic panel's children.
+      // ── Generic panel child ──────────────────────────────────────────────
       if (sc.type === "XRGenericPanel") {
-        if (sc.children.length === 0) continue; // childless no-op
+        if (sc.children.length === 0) continue;
 
-        // Snapshot page state before recursing so we can record the wrapper's
-        // entry using the position the cursor was at when it started.
         const wrapperPage = pageIdx;
         const wrapperY = cursorY - (itemsOnPage > 0 ? config.childGapY : 0);
         const cursorBeforeRecursion = wrapperY;
@@ -1045,10 +941,6 @@ function paginateContentPanel(
         });
 
         splitSection(sc);
-        // Height = distance the cursor moved on the wrapper's own page,
-        // from where it started to where it ended up — mirrors the
-        // section-like case above. If content overflowed past this page,
-        // the remainder belongs to children already stamped on later pages.
         if (pageIdx === wrapperPage) {
           heightMap.set(sc.id, cursorBeforeRecursion - cursorY);
         } else {
@@ -1060,70 +952,29 @@ function paginateContentPanel(
         continue;
       }
 
-      // ── Leaf child ────────────────────────────────────────────────────────
-      // Reached only for primitives that are neither section-like nor
-      // XRGenericPanel — i.e. genuinely atomic content (paragraphs, figures,
-      // tables, lists, etc.) that should be placed as a single block, or
-      // split via maybeSplitParagraph if it's a paragraph straddling a page
-      // boundary.
+      // ── Leaf child (atomic) ──────────────────────────────────────────────
+      // No paragraph splitting - the child is measured as a whole
       const sch = estimateHeight(
         sc,
-        panelUsableWidth,
+        childWidth,
         metrics,
         config,
         new Set(),
+        scene,
       );
       const scGap = itemsOnPage > 0 ? config.childGapY : 0;
 
+      // If the child doesn't fit on the current page, move to next page
       if (pageHeight + scGap + sch > VIEWPORT && itemsOnPage > 0) {
-        const budget = VIEWPORT - pageHeight - scGap;
-        const nextSubPageIdx = pageIdx + 1;
-        const { splitHeight, didSplit } = maybeSplitParagraph(
-          sc,
-          sch,
-          budget,
-          nextSubPageIdx,
-        );
-
-        if (didSplit) {
-          // The fragment that stays behind belongs on the CURRENT page
-          // (pageIdx has not been advanced yet at this point) — correct.
-          stampSubtree(sc, pageIdx);
-          positionMap.set(sc.id, {
-            x: config.panelPaddingX,
-            y: cursorY - scGap,
-            z: 0,
-          });
-          // Record splitHeight, NOT sch (the full unsplit height) — this
-          // fragment only contains the truncated text, and a LayoutEntry
-          // sized at the full height would extend past where the actual
-          // (truncated) content ends.
-          heightMap.set(sc.id, splitHeight);
-          cursorY -= scGap + splitHeight;
-          pageHeight += scGap + splitHeight;
-          itemsOnPage += 1;
-        }
-
-        // Open the next sub-page. This MUST happen before the fallthrough
-        // stamp below: when didSplit is false (sc is not a paragraph, or
-        // couldn't be split), nothing has been stamped/placed for sc yet,
-        // and we want it to land on the NEW page, not the one it didn't
-        // fit on. Advancing pageIdx/cursorY/pageHeight/itemsOnPage here,
-        // before the fallthrough, is what makes that correct — do not
-        // reorder these lines relative to the stamp below.
         const absOffsetBase = pageYOffsets[pageIdx] ?? 0;
         pageYOffsets.push(absOffsetBase + VIEWPORT);
         pageIdx += 1;
         cursorY = -config.panelPaddingTop;
         pageHeight = config.panelPaddingTop;
         itemsOnPage = 0;
-
-        if (didSplit) continue;
       }
 
-      // Place the leaf on the current page. If we just fell through from
-      // the overflow branch above without a split, "current page" here is
-      // already the freshly-advanced page (see comment above).
+      // Place the child on the current page
       const g = itemsOnPage > 0 ? config.childGapY : 0;
       stampSubtree(sc, pageIdx);
       positionMap.set(sc.id, {
@@ -1139,31 +990,26 @@ function paginateContentPanel(
   }
 
   // ── Main pagination loop ───────────────────────────────────────────────────
-
-  // Running absolute y for computing pageYOffsets accurately.
-  // We track it separately from cursorY (which is always page-relative).
-  let absoluteY = config.panelPaddingTop;
-
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
-    const h = heights[i];
+    const h = estimateHeight(
+      child,
+      childWidth,
+      metrics,
+      config,
+      new Set(),
+      scene,
+    );
 
     if (isSectionLike(child)) {
-      const isChildlessSection = child.children.length === 0;
+      if (child.children.length === 0) continue;
 
-      if (isChildlessSection) {
-        // See splitSection's identical case above: no content, no page.
-        continue;
-      }
-      const sectionNewPage = config.sectionStartsOnNewPage !== false;
-      // Sections always start on a fresh page.
-      if (sectionNewPage && itemsOnPage > 0) {
+      if (config.sectionStartsOnNewPage !== false && itemsOnPage > 0) {
         nextPage(absoluteY);
-        absoluteY = config.panelPaddingTop; // reset absolute tracker for new page
+        absoluteY = config.panelPaddingTop;
       }
 
       pageIndexMap[child.id] = pageIdx;
-      // Section itself is placed at the top of this fresh page.
       positionMap.set(child.id, {
         x: config.panelPaddingX,
         y: -config.panelPaddingTop,
@@ -1172,25 +1018,14 @@ function paginateContentPanel(
 
       const pageBeforeRecursion = pageIdx;
       splitSection(child);
-      // Mirrors splitSection's own section-like-child height logic: only
-      // describe the footprint on the page the section started on.
       if (pageIdx === pageBeforeRecursion) {
         heightMap.set(child.id, pageHeight - config.panelPaddingTop);
       } else {
         heightMap.set(child.id, VIEWPORT - config.panelPaddingTop);
       }
-      // absoluteY is not directly tracked through splitSection since it
-      // operates on shared outer state. Recompute from pageHeight.
       absoluteY = config.panelPaddingTop + pageHeight;
     } else if (child.type === "XRGenericPanel") {
-      // Top-level XRGenericPanel: same treatment as a nested XRGenericPanel
-      // inside splitSection — no forced fresh page, but routed through
-      // splitSection so that any section-like descendants buried inside it
-      // still get correct fresh-page handling. Previously this fell into
-      // the plain "leaf" branch below and was measured/placed as one
-      // opaque block via `h`, which silently prevented nested sections
-      // inside a top-level wrapper panel from ever starting a fresh page.
-      if (child.children.length === 0) continue; // childless no-op, mirrors splitSection
+      if (child.children.length === 0) continue;
 
       const wrapperPage = pageIdx;
       const wrapperY = cursorY - (itemsOnPage > 0 ? config.childGapY : 0);
@@ -1214,50 +1049,15 @@ function paginateContentPanel(
       }
       absoluteY = config.panelPaddingTop + pageHeight;
     } else {
-      // Non-section, non-generic-panel direct children: genuinely atomic
-      // leaves (paragraphs, figures, tables, etc.), measured monolithically
-      // via the pre-computed `h` and placed as one block, or paragraph-split
-      // across the boundary.
+      // Atomic leaf child
       const gap = itemsOnPage === 0 ? 0 : config.childGapY;
-      const budget = VIEWPORT - pageHeight - gap;
 
+      // If child doesn't fit, move to next page
       if (pageHeight + gap + h > VIEWPORT && itemsOnPage > 0) {
-        // Try paragraph split first.
-        const nextPageIdx = pageIdx + 1;
-        const { splitHeight, didSplit } = maybeSplitParagraph(
-          child,
-          h,
-          budget,
-          nextPageIdx,
-        );
-
-        if (didSplit) {
-          stampSubtree(child, pageIdx);
-          positionMap.set(child.id, {
-            x: config.panelPaddingX,
-            y: cursorY - gap,
-            z: 0,
-          });
-          // Record splitHeight, not h (full height) — see comment in
-          // splitSection's identical leaf-split case.
-          heightMap.set(child.id, splitHeight);
-          cursorY -= gap + splitHeight;
-          pageHeight += gap + splitHeight;
-          absoluteY += gap + splitHeight;
-          itemsOnPage += 1;
-        }
-
-        // Advance to next page regardless of whether we split. As in
-        // splitSection's leaf branch, this MUST precede the fallthrough
-        // stamp below when didSplit is false, so the unsplit child lands
-        // on the new page rather than the one it overflowed.
         nextPage(absoluteY);
         absoluteY = config.panelPaddingTop;
-
-        if (didSplit) continue; // continuation sits at top of new page; skip re-placing
       }
 
-      // Place child on current page.
       const g = itemsOnPage === 0 ? 0 : config.childGapY;
       stampSubtree(child, pageIdx);
       positionMap.set(child.id, {
@@ -1274,8 +1074,7 @@ function paginateContentPanel(
   }
 
   const totalPages = pageIdx + 1;
-
-  const pagination: PaginationMeta | null =
+  const pagination =
     totalPages > 1
       ? { pageCount: totalPages, pageZStep: config.pageZStep, pageYOffsets }
       : null;
@@ -1285,7 +1084,6 @@ function paginateContentPanel(
     pageIndexMap,
     placedPositionMap: positionMap,
     placedHeightMap: heightMap,
-    continuationEntries,
   };
 }
 // ─────────────────────────────────────────────────────────────
@@ -1390,7 +1188,6 @@ function layoutPrimitive(
         pageIndexMap: newPageIndexMap,
         placedPositionMap: newPlacedPositionMap,
         placedHeightMap: newPlacedHeightMap,
-        continuationEntries,
       } = paginateContentPanel(
         primitive.children,
         worldSize.width,
@@ -1407,35 +1204,6 @@ function layoutPrimitive(
           id: primitive.id,
           pageCount: pagination.pageCount,
         });
-      }
-
-      for (const cont of continuationEntries) {
-        entries[cont.id] = cont;
-        diag.totalPlaced += 1;
-
-        // Synthesise a proper XRParagraph primitive for this continuation so
-        // the renderer treats it as a normal paragraph — no split awareness
-        // needed downstream. The label is pre-sliced to the words that belong
-        // on this page; wordCount is adjusted accordingly.
-        const originalId = cont.id.replace(/__cont_\d+$/, "");
-        const originalPrim = scene.primitives[originalId] as
-          | XRParagraph
-          | undefined;
-        if (originalPrim && originalPrim.type === "XRParagraph") {
-          const offset = cont.continuationWordOffset ?? 0;
-          const words = splitIntoWords(originalPrim.label ?? "");
-          const slicedLabel = words.slice(offset).join(" ");
-          const syntheticPrim: XRParagraph = {
-            ...originalPrim,
-            id: cont.id,
-            label: slicedLabel,
-            content: slicedLabel,
-            wordCount: words.length - offset,
-          };
-          // Register in the flat primitives map so buildPrimitiveMap
-          // (seeded from scene.primitives) picks it up in the renderer.
-          scene.primitives[cont.id] = syntheticPrim;
-        }
       }
 
       // Recurse using only the maps — no childEntries, no position or
@@ -1696,7 +1464,6 @@ export function computeLayoutPlan(
     unplacedIds: [],
     totalPlaced: 0,
     fallbackHeightIds: [],
-    paragraphContinuations: [],
     slotOverflows: [],
   };
 

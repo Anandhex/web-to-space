@@ -750,3 +750,101 @@ export function hydrateRelations(
     }
   }
 }
+
+/**
+ * Checks if an element has both text and inline element children
+ */
+export function hasTextAndInlineChildren(
+  element: Element,
+  inlineTags: Set<string>,
+): boolean {
+  let hasText = false;
+  let hasInlineChild = false;
+
+  for (const child of Array.from(element.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const text = (child.textContent ?? "").trim();
+      if (text) {
+        hasText = true;
+      }
+    } else if (child.nodeType === Node.ELEMENT_NODE) {
+      const tag = (child as Element).tagName.toLowerCase();
+      if (inlineTags.has(tag) && !SKIP_TAGS.has(tag)) {
+        hasInlineChild = true;
+      }
+    }
+  }
+
+  return hasText && hasInlineChild;
+}
+
+/**
+ * Determines if an element is a leaf node in the semantic tree
+ * A leaf node has no block children - only text and/or inline elements
+ */
+export function isLeafNode(
+  element: Element,
+  inlineTags: Set<string>,
+  skipTags: Set<string>,
+): boolean {
+  const tag = element.tagName.toLowerCase();
+
+  // These are always leaves if they have content
+  const LEAF_TAGS = new Set([
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "a",
+    "button",
+    "summary",
+    "label",
+    "li",
+  ]);
+  if (LEAF_TAGS.has(tag)) {
+    let hasContent = false;
+    for (const child of Array.from(element.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const text = (child.textContent ?? "").trim();
+        if (text) {
+          hasContent = true;
+          break;
+        }
+      }
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        const childTag = (child as Element).tagName.toLowerCase();
+        if (!skipTags.has(childTag)) {
+          hasContent = true;
+          break;
+        }
+      }
+    }
+    return hasContent;
+  }
+
+  // Check for block children
+  for (const child of Array.from(element.children)) {
+    const childTag = child.tagName.toLowerCase();
+    if (skipTags.has(childTag)) continue;
+    if (!inlineTags.has(childTag)) {
+      return false;
+    }
+  }
+
+  // No block children found - this is a leaf if it has content
+  const hasContent = Array.from(element.childNodes).some((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return (node.textContent ?? "").trim().length > 0;
+    }
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const tag = (node as Element).tagName.toLowerCase();
+      return !skipTags.has(tag);
+    }
+    return false;
+  });
+
+  return hasContent;
+}

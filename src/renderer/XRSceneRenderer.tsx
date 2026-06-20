@@ -71,6 +71,8 @@ import {
   XRNavigationMesh,
   XRMediaMesh,
   XRCodeBlockMesh,
+  XRTextMesh,
+  XRLinkMesh,
   XRBlockQuoteMesh,
   XRSeparatorMesh,
   XRProgressBarMesh,
@@ -399,6 +401,26 @@ function PrimitiveDispatcher({
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
           <XRParagraphMesh
             primitive={primitive as XRParagraph}
+            entry={zeroedEntry(entry)}
+            renderChild={renderChild}
+          />
+        </group>
+      );
+    case "XRText":
+      return (
+        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+          <XRTextMesh
+            primitive={primitive as import("../mapper/types").XRText}
+            entry={zeroedEntry(entry)}
+          />
+        </group>
+      );
+
+    case "XRLink":
+      return (
+        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+          <XRLinkMesh
+            primitive={primitive as import("../mapper/types").XRLink}
             entry={zeroedEntry(entry)}
             renderChild={renderChild}
           />
@@ -994,7 +1016,7 @@ export function XRSceneRenderer({
     error: pipelineError,
   } = usePipeline(html, sceneIn, url, deviceProfile, {
     ...layoutConfig,
-    // sectionStartsOnNewPage: false,
+    sectionStartsOnNewPage: false,
   });
 
   const {

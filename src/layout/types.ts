@@ -62,21 +62,6 @@ export interface LayoutEntry {
    * Present only on XRList entries.
    */
   listColumns?: number;
-
-  /**
-   * Continuation metadata for XRParagraph entries that were split across
-   * page boundaries by the layout engine.
-   *
-   * When a paragraph is too tall to fit in the remaining page budget the
-   * engine emits the original entry (covering words 0 … splitWordOffset-1)
-   * and inserts a synthetic continuation entry for the next page. The
-   * continuation entry has `continuationWordOffset` set to the first word
-   * that should appear on that page. The renderer slices the paragraph text
-   * at this offset instead of rendering the full label.
-   *
-   * Absent on entries that fit in a single page.
-   */
-  continuationWordOffset?: number;
 }
 
 /**
@@ -109,12 +94,7 @@ export interface LayoutDiagnostics {
   totalPlaced: number;
   /** Primitives whose height was estimated via the fallback floor. */
   fallbackHeightIds: string[];
-  /** Continuation paragraph entries injected by the paginator. */
-  paragraphContinuations: Array<{
-    originalId: string;
-    pageIndex: number;
-    wordOffset: number;
-  }>;
+
   missingHeightMapEntries?: number;
   slotOverflows?: Array<{
     id: string;
@@ -381,10 +361,7 @@ export interface PaginateResult {
    * recomputation anywhere in the subtree.
    */
   placedPositionMap: Map<string, Vec3>;
-  /**
-   * Synthetic continuation entries for paragraphs split across page boundaries.
-   */
-  continuationEntries: LayoutEntry[];
+
   /**
    * primitiveId → final placed height after pagination, covers every descendant.
    */

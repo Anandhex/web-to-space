@@ -57,6 +57,8 @@ export const DEFAULT_CONFIG: ParserConfig = {
   minListRun: 3,
   minLinkRun: 3,
   minParagraphRun: 3,
+  useSemanticLabels: true,
+  useTextLabels: false,
   labelMaxChars: 280,
   includeSvg: false,
   includeCanvas: false,
@@ -66,6 +68,7 @@ export const DEFAULT_CONFIG: ParserConfig = {
     ai: 0.61,
     "ai-timeout": 0.4,
     generic: 0.55,
+    inline: 0.9,
   },
   aiFallbackThreshold: 0.6,
   readingOrderStrategy: "dom",
@@ -150,6 +153,26 @@ export const PARSER_CONFIGS = {
   readingOrderFlowtoAware: {
     ...DEFAULT_CONFIG,
     readingOrderStrategy: "flowto-aware" as const,
+  },
+  /** Minimal label resolution - only semantic containers get labels */
+  minimalLabels: {
+    ...DEFAULT_CONFIG,
+    useSemanticLabels: true,
+    useTextLabels: false,
+  },
+
+  /** No labels at all - pure structure */
+  noLabels: {
+    ...DEFAULT_CONFIG,
+    useSemanticLabels: false,
+    useTextLabels: false,
+  },
+
+  /** Full labels - everything gets labels */
+  fullLabels: {
+    ...DEFAULT_CONFIG,
+    useSemanticLabels: true,
+    useTextLabels: true,
   },
 } satisfies Record<string, ParserConfig>;
 

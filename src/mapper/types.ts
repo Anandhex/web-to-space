@@ -29,6 +29,7 @@ export type XRPrimitiveType =
   | "XRToggle"
   | "XRComboBox"
   | "XRDialog"
+  | "XRText"
   | "XRAlert"
   | "XRTooltip"
   | "XRMediaPlayer"
@@ -510,6 +511,16 @@ export interface XRTabPanel extends XRPrimitiveBase {
   type: "XRTabPanel";
 }
 
+export interface XRText extends XRPrimitiveBase {
+  type: "XRText";
+  /** The actual text content from the IR text node */
+  text: string;
+  /** Semantic type: "em", "strong", "span", etc. from componentType attribute */
+  componentType: string | null;
+  /** Always true for text nodes - they're prose runs */
+  isProseRun: boolean;
+}
+
 /** Dropdown / context menu. */
 export interface XRMenu extends XRPrimitiveBase {
   type: "XRMenu";
@@ -581,6 +592,7 @@ export type XRPrimitive =
   | XRComboBox
   | XRDialog
   | XRAlert
+  | XRText
   | XRTooltip
   | XRMediaPlayer
   | XRCodeBlock
@@ -744,6 +756,7 @@ export type MappingRule =
   | "table:cards→XRTable"
   | "generic→XRGenericPanel"
   | "none→(elided)"
+  | "text→XRText"
   | "presentation→(elided)";
 
 // ============================================================

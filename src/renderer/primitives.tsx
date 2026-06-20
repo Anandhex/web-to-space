@@ -266,6 +266,21 @@ export function XRHeadingMesh({
   const fontSize = headingFontSize(primitive.level);
   const showAccent = primitive.level >= 3;
 
+  const hasTextChildren = primitive.children.some(
+    (child) =>
+      child.type === "XRText" ||
+      child.type === "XRLink" ||
+      child.type === "XRButton",
+  );
+  if (hasTextChildren)
+    return (
+      <group position={pos} rotation={rot}>
+        <group position={[0, 0, 0]}>
+          {primitive.children.map((child) => renderChild(child.id))}
+        </group>
+      </group>
+    );
+
   return (
     <group position={pos} rotation={rot}>
       <ClippedText
@@ -328,6 +343,27 @@ export function XRParagraphMesh({
   const dense = primitive.densityScore > 0.6;
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
+
+  const hasTextChildren = primitive.children.some(
+    (child) =>
+      child.type === "XRText" ||
+      child.type === "XRLink" ||
+      child.type === "XRButton",
+  );
+
+  // If it has text children, render them inline without a backing panel
+  // The children themselves are the content
+  if (hasTextChildren) {
+    return (
+      <group position={pos} rotation={rot}>
+        {/* No backing panel - children render inline */}
+        <group position={[0, 0, 0]}>
+          {primitive.children.map((child) => renderChild(child.id))}
+        </group>
+      </group>
+    );
+  }
+
   const skipPanel = primitive.wordCount <= 10;
 
   return (
@@ -363,7 +399,7 @@ export function XRParagraphMesh({
         </mesh>
       )}
 
-      {/* Body text */}
+      {/* Body text - only render content directly if no text children */}
       <ClippedText
         anchorX="left"
         anchorY="top"
@@ -377,6 +413,7 @@ export function XRParagraphMesh({
         {primitive.content ?? primitive.label ?? ""}
       </ClippedText>
 
+      {/* Any non-text children (images, lists, etc.) */}
       {primitive.children.map((child) => renderChild(child.id))}
     </group>
   );
@@ -1533,6 +1570,137 @@ export function XRTabGroupMesh({
       </RoundedBox>
 
       {primitive.children.map((child) => renderChild(child.id))}
+    </group>
+  );
+}
+
+// primitives.tsx - Add XRTextMesh for rendering text nodes
+
+export interface XRTextMeshProps {
+  primitive: import("../mapper/types").XRText;
+  entry: LayoutEntry;
+}
+
+/**
+ * XRTextMesh renders a single text node.
+ *
+ * Text nodes are atomic - they represent a single text run with optional
+ * semantic formatting (em, strong, code, etc.).
+ *
+ * The componentType determines the visual styling:
+ * - "strong" / "b": bold
+ * - "em" / "i": italic
+ * - "code": monospace
+ * - "span": plain text (default)
+ * - "text": plain text (default)
+ */
+export function XRTextMesh({ primitive, entry }: XRTextMeshProps) {
+  const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
+  const w = safeDim(entry.size.width);
+  const h = safeDim(entry.size.height);
+
+  // Determine styling based on component type
+  const componentType = primitive.componentType || "text";
+  let fontWeight: string | number = "400";
+  let fontStyle: "normal" | "italic" = "normal";
+  let color = BODY_COL;
+
+  switch (componentType) {
+    case "strong":
+    case "b":
+      fontWeight = "700";
+      color = HEADING_COL;
+      break;
+    case "em":
+    case "i":
+      fontStyle = "italic";
+      color = HEADING_COL;
+      break;
+    case "code":
+      fontWeight = "500";
+      color = "#7ee787";
+      break;
+    case "link":
+      color = ACCENT_COL;
+      fontWeight = "500";
+      break;
+    default:
+      // 'text' or 'span' or unknown
+      color = BODY_COL;
+      break;
+  }
+
+  return (
+    <group position={pos} rotation={rot}>
+      <ClippedText
+        anchorX="left"
+        anchorY="top"
+        position={[0, 0, 0.002]}
+        fontSize={0.026}
+        color={color}
+        fontWeight={fontWeight}
+        fontStyle={fontStyle}
+        maxWidth={w}
+        lineHeight={1.55}
+        letterSpacing={0.005}
+      >
+        {primitive.text}
+      </ClippedText>
+    </group>
+  );
+}
+
+// primitives.tsx - Add XRLinkMesh
+
+export interface XRLinkMeshProps {
+  primitive: import("../mapper/types").XRLink;
+  entry: LayoutEntry;
+  renderChild: (primitiveId: string) => React.ReactNode;
+}
+
+/**
+ * XRLinkMesh renders a link with optional rich content.
+ *
+ * If the link has text children, they are rendered inline.
+ * If not, the label is rendered as text.
+ */
+export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
+  const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
+  const w = safeDim(entry.size.width);
+  const h = safeDim(entry.size.height);
+
+  // Check if link has text children (rich link)
+  const hasTextChildren = primitive.children.some(
+    (child) => child.type === "XRText",
+  );
+
+  // Hover effect
+  const { ref, handlers } = useHoverScale(1.0, 1.02);
+
+  return (
+    <group ref={ref} position={pos} rotation={rot} {...handlers}>
+      {hasTextChildren ? (
+        // Rich link - render children inline with link styling
+        <group position={[0, 0, 0]}>
+          {primitive.children.map((child) => renderChild(child.id))}
+        </group>
+      ) : (
+        // Simple link - render label as text
+        <ClippedText
+          anchorX="left"
+          anchorY="top"
+          position={[0, 0, 0.002]}
+          fontSize={0.026}
+          color={primitive.isCurrent ? "#ffffff" : ACCENT_COL}
+          fontWeight={primitive.isCurrent ? "700" : "500"}
+          maxWidth={w}
+          lineHeight={1.55}
+        >
+          {primitive.label ?? primitive.href ?? ""}
+        </ClippedText>
+      )}
     </group>
   );
 }

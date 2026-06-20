@@ -65,6 +65,7 @@ export type IRRole =
   | "menuitemradio"
   | "presentation"
   | "none"
+  | "text"
   | "generic";
 
 export type IRSource =
@@ -72,6 +73,7 @@ export type IRSource =
   | "structural"
   | "ai"
   | "ai-timeout"
+  | "inline"
   | "generic";
 
 export interface IRNodeAttributes {
@@ -403,6 +405,20 @@ export interface ParserConfig {
    */
   readingOrderStrategy: "dom" | "landmark-first" | "flowto-aware";
 
+  /**
+   * When true, semantic containers (landmarks, sections) will attempt to
+   * resolve labels from headings, ARIA, etc.
+   * When false, labels for semantic containers are skipped.
+   */
+  useSemanticLabels: boolean;
+
+  /**
+   * When true, text-bearing nodes (paragraph, heading, text) will
+   * have labels derived from their text content.
+   * When false, text-bearing nodes skip label resolution.
+   */
+  useTextLabels: boolean;
+
   excludeHiddenContent: boolean;
 }
 
@@ -429,6 +445,7 @@ export interface BuildContext {
   config: ParserConfig;
   skipTags: Set<string>;
   wrapperTags: Set<string>;
+  inlineTags: Set<string>;
   pageUrl: string;
 }
 

@@ -48,6 +48,7 @@ import type {
   XRTree,
   XRTreeItem,
   XRGenericPanel,
+  XRText,
 } from "./types";
 import {
   resolveChildren,
@@ -316,8 +317,6 @@ function mapHeading(node: IRNode, ctx: MappingContext): XRHeading {
     ...baseFrom(node, "XRHeading"),
     type: "XRHeading",
     level: node.level ?? 2,
-    // Only carry block children — inline text is already in node.content.
-    // If the heading has no block children, this is [] as before.
     children: resolvedChildren,
   };
   registerPrimitive(ctx, primitive, "heading→XRHeading");
@@ -339,6 +338,23 @@ function mapParagraph(node: IRNode, ctx: MappingContext): XRParagraph {
     children: resolvedChildren,
   };
   registerPrimitive(ctx, primitive, "paragraph→XRParagraph");
+  return primitive;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Mapping rules — text nodes
+// ─────────────────────────────────────────────────────────────
+
+function mapText(node: IRNode, ctx: MappingContext): XRText {
+  const primitive: XRText = {
+    ...baseFrom(node, "XRText"),
+    type: "XRText",
+    text: node.content || node.label || "",
+    componentType: node.attributes?.componentType || null,
+    isProseRun: true,
+    children: [], // Text nodes are always leaves
+  };
+  registerPrimitive(ctx, primitive, "text→XRText");
   return primitive;
 }
 
@@ -645,7 +661,7 @@ function mapButton(node: IRNode, ctx: MappingContext): XRButton {
     label: resolveLabel(node, ctx.ir) ?? node.label,
     state: extractState(node),
     hasPopup: node.attributes.haspopup,
-    children: [],
+    children: resolveChildren(node, ctx),
   };
   registerPrimitive(ctx, primitive, "button→XRButton");
   return primitive;
@@ -657,7 +673,7 @@ function mapLink(node: IRNode, ctx: MappingContext): XRLink {
     type: "XRLink",
     href: node.attributes.href,
     isCurrent: node.state.current !== null && node.state.current !== "false",
-    children: [],
+    children: resolveChildren(node, ctx),
   };
   registerPrimitive(ctx, primitive, "link→XRLink");
   return primitive;
@@ -955,6 +971,8 @@ export function mapNode(node: IRNode, ctx: MappingContext): XRPrimitive | null {
     case "region":
       return mapSection(node, ctx, "landmark:region→XRSection");
 
+    case "text":
+      return mapText(node, ctx);
     // Content structure
     case "heading":
       return mapHeading(node, ctx);
