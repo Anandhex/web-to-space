@@ -72,7 +72,7 @@ export const QUEST_3_PROFILE: DeviceProfile = {
     eyeLevel: 1.5,
     eyeLevelOffset: -0.1,
     panelCurveRadius: 1.2,
-    childGapY: 0.02,
+    childGapY: 0.008,
     panelPaddingTop: 0.04,
     panelPaddingX: 0.04,
     maxPanelViewportHeight: 0.9,

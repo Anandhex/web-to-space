@@ -521,6 +521,32 @@ function PrimitiveDispatcher({
       );
 
     case "XRSection": {
+      const hasCrossPageChildren = primitive.children.some((child) => {
+        const childEntry = plan.entries[child.id];
+        return (
+          childEntry?.pageIndex !== undefined &&
+          childEntry.pageIndex !== entry.pageIndex
+        );
+      });
+
+      if (hasCrossPageChildren) {
+        // Render children directly at their own positions
+        return (
+          <>
+            {primitive.children.map((child) => (
+              <PrimitiveDispatcher
+                key={child.id}
+                primitive={child}
+                plan={plan}
+                pageState={pageState}
+                setPage={setPage}
+                primitiveMap={primitiveMap}
+              />
+            ))}
+          </>
+        );
+      }
+
       return (
         <group key={primitive.id} position={[0, 0, 0]} rotation={rot}>
           <XRSectionMesh
@@ -675,23 +701,53 @@ function PrimitiveDispatcher({
     }
 
     default: {
-      // XRGenericPanel and any other unrecognised wrapper.
-      //
-      // FIX: this must render at the primitive's own layout-plan position
-      // ([ex,ey,ez]), not unconditionally at [0,0,0]. A generic panel that
-      // sits at the TOP of its parent's stack (y≈0) happened to look correct
-      // either way, which is why this went unnoticed — but a generic panel
-      // placed further down the stack (e.g. a <span> wrapper appearing
-      // mid-paragraph, like the "saingeom" run in a list item) has a real,
-      // nonzero position from stackChildrenSimple. Rendering it at [0,0,0]
-      // discards that offset and collapses it back onto the top of its
-      // parent, visually overlapping whatever else is already there.
-      //
-      // Three.js group composition handles this exactly like every other
-      // non-landmark case above (XRHeading, XRParagraph, etc.) — the child's
-      // own children continue to use THEIR layout-plan positions, which are
-      // already relative to this panel's origin, so nothing needs to change
-      // on the renderChild side.
+      // XRGenericPanel should be completely transparent - just render children directly
+      // No group, no padding, no position offset, no visual representation
+      if (primitive.type === "XRGenericPanel") {
+        return (
+          <>
+            {primitive.children.map((child) => (
+              <PrimitiveDispatcher
+                key={child.id}
+                primitive={child}
+                plan={plan}
+                pageState={pageState}
+                setPage={setPage}
+                primitiveMap={primitiveMap}
+              />
+            ))}
+          </>
+        );
+      }
+
+      // For other generic types, check if this is a cross-page container
+      const hasCrossPageChildren = primitive.children.some((child) => {
+        const childEntry = plan.entries[child.id];
+        return (
+          childEntry?.pageIndex !== undefined &&
+          childEntry.pageIndex !== entry.pageIndex
+        );
+      });
+
+      if (hasCrossPageChildren) {
+        // Render children directly (they'll position themselves correctly)
+        return (
+          <>
+            {primitive.children.map((child) => (
+              <PrimitiveDispatcher
+                key={child.id}
+                primitive={child}
+                plan={plan}
+                pageState={pageState}
+                setPage={setPage}
+                primitiveMap={primitiveMap}
+              />
+            ))}
+          </>
+        );
+      }
+
+      // Normal case: render this container at its position with children inside
       return (
         <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
           <GenericPanelMesh primitive={primitive} entry={zeroedEntry(entry)} />
@@ -710,7 +766,6 @@ function PrimitiveDispatcher({
     }
   }
 }
-
 // ─────────────────────────────────────────────────────────────
 // Sub-components
 // ─────────────────────────────────────────────────────────────

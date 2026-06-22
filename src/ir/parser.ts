@@ -386,10 +386,15 @@ async function createNode(
     }
   }
 
-  const promoted = promoteLinkedImageDeep(element, ctx);
-  if (promoted) {
-    // treat the synthetic figure as the element to process
-    return handleMediaLeaf(promoted, liftedAttrs, parentId, ctx, readingDepth);
+  const figureResult = handleFigureSythenticCreation(
+    element,
+    parentId,
+    ctx,
+    readingDepth,
+  );
+  if (figureResult) {
+    // The figure and its img child have been created, return the figure id
+    return figureResult;
   }
 
   // ── STEP 3: Process children (build the tree) ──────────────────────────
@@ -922,17 +927,126 @@ async function handleHeadingSection(
   return { id: sectionId, endIndex };
 }
 
+function handleFigureSythenticCreation(
+  element: Element,
+  parentId: string,
+  ctx: BuildContext,
+  readingDepth: number,
+): string | undefined {
+  const promoted = promoteLinkedImageDeep(element, ctx);
+  if (promoted) {
+    const figElement = promoted.element;
+    // Use data-ir-src for the image source
+    const src = figElement.getAttribute("data-ir-src") || "";
+    const href = figElement.getAttribute("data-ir-figure-href") || null;
+    const alt = figElement.getAttribute("alt") || null;
+
+    // Find caption from child elements
+    let caption = null;
+    const captionEl = figElement.querySelector(
+      ".devsite-landing-row-item-description-content, figcaption, .caption",
+    );
+    if (captionEl) {
+      caption = captionEl.textContent?.trim() || null;
+    }
+    if (!caption) {
+      caption = alt;
+    }
+
+    const id = `${parentId}-figure-${ctx.counters.node++}`;
+
+    // Create the img node with the src
+    const imgId = `${id}-img-${ctx.counters.node++}`;
+    ctx.nodes[imgId] = {
+      id: imgId,
+      role: "img",
+      level: null,
+      label: alt,
+      content: null,
+      unlabelledYet: alt === null,
+      landmark: false,
+      source: "structural",
+      confidence: confidenceForSource("structural", ctx.config),
+      readingIndex: ctx.counters.reading++,
+      parent: id,
+      children: [],
+      relations: createEmptyRelations(),
+      state: createEmptyState(),
+      attributes: {
+        ...createEmptyAttributes(),
+        src: src, // Now this will have the actual URL
+        href: href,
+        alt: alt,
+      },
+      readingDepth: readingDepth + 1,
+    };
+
+    ctx.nodes[id] = {
+      id,
+      role: "figure",
+      level: null,
+      label: caption,
+      content: null,
+      unlabelledYet: caption === null,
+      landmark: false,
+      source: "structural",
+      confidence: confidenceForSource("structural", ctx.config),
+      readingIndex: ctx.counters.reading++,
+      parent: parentId,
+      children: [imgId],
+      relations: createEmptyRelations(),
+      state: createEmptyState(),
+      attributes: {
+        ...createEmptyAttributes(),
+        src: src,
+        href: href,
+      },
+      readingDepth,
+    };
+    ctx.elementToNodeId.set(element, id);
+    return id;
+  }
+}
+
 // In createNode, before processing children:
 // Promote figure/a>picture>img → synthetic figure with href + src
 function promoteLinkedImageDeep(
   element: Element,
   ctx: BuildContext,
-): Element | null {
-  // Handles: figure > a > picture > img  OR  a > picture > img  OR  a > img
+): { element: Element; isFigure: boolean } | null {
   const tag = element.tagName.toLowerCase();
 
+  // Already a figure with an image inside
+  if (tag === "figure") {
+    // Check if it contains an img or picture
+    const img = element.querySelector("img, picture > img");
+    if (img) {
+      // Create a synthetic figure with proper src
+      const fig = element.ownerDocument!.createElement("figure");
+      const src = img.getAttribute("src") || "";
+      const alt = img.getAttribute("alt") || "";
+      const href = element.querySelector("a")?.getAttribute("href") || null;
+
+      fig.setAttribute("data-ir-figure-href", href || "");
+      fig.setAttribute("data-ir-src", src);
+      if (alt) fig.setAttribute("alt", alt);
+
+      // Also copy any caption from the figure
+      const caption = element.querySelector(
+        "figcaption, .caption, .devsite-landing-row-item-description-content",
+      );
+      if (caption) {
+        const captionClone = caption.cloneNode(true) as Element;
+        fig.appendChild(captionClone);
+      }
+
+      return { element: fig, isFigure: true };
+    }
+    return null;
+  }
+
   let anchor: Element | null = null;
-  if (tag === "figure" || tag === "div") {
+  if (tag === "div") {
     // find single <a> child
     const aChildren = Array.from(element.children).filter(
       (c) => c.tagName.toLowerCase() === "a",
@@ -948,25 +1062,44 @@ function promoteLinkedImageDeep(
   const anchorChildren = Array.from(anchor.children).filter(
     (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
   );
-  if (anchorChildren.length === 1) {
-    const maybeImg = anchorChildren[0];
-    if (maybeImg.tagName.toLowerCase() === "img") {
-      imgEl = maybeImg;
-    } else if (maybeImg.tagName.toLowerCase() === "picture") {
-      const picChildren = Array.from(maybeImg.children).filter(
+
+  // Look for img directly or inside picture
+  for (const child of anchorChildren) {
+    if (child.tagName.toLowerCase() === "img") {
+      imgEl = child;
+      break;
+    } else if (child.tagName.toLowerCase() === "picture") {
+      const picChildren = Array.from(child.children).filter(
         (c) => c.tagName.toLowerCase() === "img",
       );
-      if (picChildren.length === 1) imgEl = picChildren[0];
+      if (picChildren.length > 0) {
+        imgEl = picChildren[0];
+        break;
+      }
     }
   }
+
   if (!imgEl) return null;
 
   const fig = anchor.ownerDocument!.createElement("figure");
-  fig.setAttribute("data-ir-figure-href", anchor.getAttribute("href") ?? "");
-  fig.setAttribute("src", imgEl.getAttribute("src") ?? "");
-  const alt = imgEl.getAttribute("alt") ?? "";
+  const src = imgEl.getAttribute("src") || "";
+  const alt = imgEl.getAttribute("alt") || "";
+  const href = anchor.getAttribute("href") || "";
+
+  fig.setAttribute("data-ir-figure-href", href);
+  fig.setAttribute("data-ir-src", src);
   if (alt) fig.setAttribute("alt", alt);
-  return fig;
+
+  // Also copy any caption or description from the original element
+  const desc = element.querySelector(
+    ".devsite-landing-row-item-description-content, figcaption, .caption",
+  );
+  if (desc) {
+    const captionClone = desc.cloneNode(true) as Element;
+    fig.appendChild(captionClone);
+  }
+
+  return { element: fig, isFigure: true };
 }
 
 // ── Handler 4: homogeneous run → inferred list ───────────────────────────────
@@ -1010,34 +1143,6 @@ async function createListItem(
   // FIX: Linked-image promotion at item level, before any child processing.
   // If the pierced content is a figure/a>picture>img card, emit a media leaf
   // directly instead of recursing into the subtree with no text label.
-  const promoted = promoteLinkedImageDeep(contentEl, ctx);
-  if (promoted) {
-    // Discard the counters already claimed above and emit a compact media node.
-    ctx.nodes[id] = {
-      id,
-      role: "img",
-      level: null,
-      label: promoted.getAttribute("alt") || null,
-      content: null,
-      unlabelledYet: !promoted.getAttribute("alt"),
-      landmark: false,
-      source: "structural",
-      confidence: confidenceForSource("structural", ctx.config),
-      readingIndex,
-      parent: parentId,
-      children: [],
-      relations: createEmptyRelations(),
-      state: createEmptyState(),
-      attributes: {
-        ...createEmptyAttributes(),
-        href: promoted.getAttribute("data-ir-figure-href") || null,
-        src: promoted.getAttribute("src") || null,
-      },
-      readingDepth,
-    };
-    ctx.elementToNodeId.set(element, id);
-    return id;
-  }
 
   const hasNestedList = Array.from(
     contentEl.querySelectorAll('ul, ol, [role="list"]'),
