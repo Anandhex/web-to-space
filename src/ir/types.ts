@@ -115,6 +115,7 @@ export interface IRNodeAttributes {
   componentType: string | null;
   autoplay: string | null;
   content: string | null;
+  styleTags: string[];
 }
 
 export interface IRNodeState {

@@ -318,7 +318,7 @@ export function mapIRToScene(
   };
 
   ctx.primitives["scene"] = rootScene;
-
+  console.log(rootScene, ctx.primitives);
   return {
     root: rootScene,
     primitives: ctx.primitives,

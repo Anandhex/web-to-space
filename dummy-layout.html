@@ -1112,7 +1112,10 @@
           if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
           const html = await res.text();
           setStatus("parsing…");
-          ir = await parsePageToIR(html, url);
+          ir = await parsePageToIR(
+            `<main><ul><li><a href="/wiki/Andrew_Choi" title="Andrew Choi">Andrew Choi</a> provides Jinu's singing voice.<sup id="cite_ref-PrestigeCast_13-9" class="reference"><a href="#cite_note-PrestigeCast-13"><span class="cite-bracket">[</span>13<span class="cite-bracket">]</span></a></sup></li></ul></main>`,
+            url,
+          );
           const mappedScene = mapIRToScene(ir, {
             generateTOC: true,
             generateTOCAlways: true,

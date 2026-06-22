@@ -41,6 +41,21 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { useTexture } from "@react-three/drei";
 
+// In layout/utils.ts
+export function flattenInlineWrappers<
+  T extends { type: string; children?: T[] },
+>(children: T[]): T[] {
+  return children.flatMap((child) =>
+    child.type === "XRGenericPanel" &&
+    child.children?.every(
+      (c) =>
+        c.type === "XRText" || c.type === "XRLink" || c.type === "XRButton",
+    )
+      ? child.children!
+      : [child],
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
 // Panel clipping context
 // ─────────────────────────────────────────────────────────────
@@ -74,6 +89,12 @@ import type {
 } from "../mapper/types";
 import type { LayoutEntry } from "../layout/types";
 import type { RenderMetrics } from "../layout/types";
+import {
+  listItemLabelBlockHeight,
+  LIST_ITEM_LABEL_TOP_INSET,
+  mergeAdjacentTextRuns,
+  isInlinePrimitive,
+} from "../layout/utils";
 
 // ─────────────────────────────────────────────────────────────
 // Render metrics context
@@ -159,7 +180,13 @@ const PANEL_BG = "#0d1117";
 const PANEL_RIM = "#1e2d3d";
 const HEADING_COL = "#e6f1ff";
 const BODY_COL = "#a8b8cc";
-const ACCENT_COL = "#58a6ff";
+const ACCENT_COL = "#00d4ff";
+// Inline bold/italic prose (e.g. <i><b>Title</b></i> inside a paragraph)
+// uses this instead of HEADING_COL — pure white reads as brighter than
+// HEADING_COL's slight blue tint against the dark panel background, and
+// keeping it as its own constant means it can be tuned independently of
+// actual headings.
+const EMPHASIS_COL = "#ffffff";
 const NAV_BG = "#111927";
 const MEDIA_BG = "#0a0e14";
 
@@ -405,6 +432,205 @@ export function XRHeadingMesh({
 }
 
 // ─────────────────────────────────────────────────────────────
+// Shared inline prose utilities
+// Used by XRParagraphMesh and XRListItemMesh — must stay in sync
+// with engine.ts's estimateInlineFlowHeight + flattenInlineWrappers.
+// ─────────────────────────────────────────────────────────────
+
+type TextSeg = { kind: "text"; text: string; bold?: boolean; italic?: boolean };
+type LinkSeg = { kind: "link"; text: string };
+export type InlineSeg = TextSeg | LinkSeg;
+
+export type InlineRow =
+  | { kind: "inline"; segments: InlineSeg[] }
+  | { kind: "block"; childId: string };
+
+/**
+ * Convert a flat list of XR primitives (after flattenInlineWrappers +
+ * mergeAdjacentTextRuns) into alternating rows of inline segments and
+ * block slots. Every XRText/XRLink/XRButton becomes a segment; everything
+ * else forces a block row rendered via renderChild.
+ */
+export function buildInlineRows(children: any[]): InlineRow[] {
+  const rows: InlineRow[] = [];
+  let currentSegs: InlineSeg[] = [];
+
+  const flush = (): void => {
+    if (currentSegs.length === 0) return;
+    rows.push({ kind: "inline", segments: currentSegs });
+    currentSegs = [];
+  };
+
+  for (const child of children) {
+    if (isInlinePrimitive(child.type)) {
+      const text: string = child.text ?? child.label ?? child.content ?? "";
+      if (child.type === "XRLink") {
+        currentSegs.push({ kind: "link", text });
+      } else {
+        // Bold/italic can come from a single componentType ("b"/"strong"/
+        // "i"/"em") or from an accumulated styleTags stack (e.g. ["i","b"]
+        // for <i><b>…</b></i>, where componentType alone can't represent
+        // two simultaneous styles). OR both signals in, same as XRTextMesh.
+        const componentType = child.componentType ?? null;
+        const styleTags: string[] = child.styleTags ?? [];
+        const bold =
+          componentType === "strong" ||
+          componentType === "b" ||
+          styleTags.includes("strong") ||
+          styleTags.includes("b");
+        const italic =
+          componentType === "em" ||
+          componentType === "i" ||
+          styleTags.includes("em") ||
+          styleTags.includes("i");
+        currentSegs.push({
+          kind: "text",
+          text,
+          ...(bold ? { bold: true } : {}),
+          ...(italic ? { italic: true } : {}),
+        });
+      }
+    } else {
+      flush();
+      rows.push({ kind: "block", childId: child.id });
+    }
+  }
+  flush();
+  return rows;
+}
+
+/**
+ * Build the joined string + troika colorRanges for one inline row.
+ *
+ * Color is the only per-character styling troika's <Text colorRanges>
+ * supports — there is no equivalent per-character ranging for fontWeight/
+ * fontStyle, so bold/italic spans can't be drawn heavier or slanted within
+ * a single mesh. Instead, styled (bold/italic) text segments are given the
+ * brighter EMPHASIS_COL instead of the muted BODY_COL, so they still stand
+ * out from plain prose on the same line without forcing a line break.
+ */
+export function buildRowMeta(segments: InlineSeg[]): {
+  text: string;
+  colorRanges: Record<number, number> | null;
+} {
+  let text = "";
+  const colorRanges: Record<number, number> = {};
+  let hasColor = false;
+
+  const accentHex = parseInt(ACCENT_COL.replace("#", ""), 16);
+  const bodyHex = parseInt(BODY_COL.replace("#", ""), 16);
+  const emphasisHex = parseInt(EMPHASIS_COL.replace("#", ""), 16);
+
+  const colorForSegment = (seg: InlineSeg): number => {
+    if (seg.kind === "link") return accentHex;
+    if (seg.kind === "text" && (seg.bold || seg.italic)) return emphasisHex;
+    return bodyHex;
+  };
+
+  let prevColor: number | null = null;
+  for (let si = 0; si < segments.length; si++) {
+    const seg = segments[si];
+    const charStart = text.length;
+    text += seg.text;
+
+    const color = colorForSegment(seg);
+    if (color !== prevColor) {
+      colorRanges[charStart] = color;
+      hasColor = true;
+    }
+    prevColor = color;
+  }
+
+  // Always seed an explicit entry at character 0 once colorRanges is used.
+  // Troika's <Text colorRanges> applies the `color` prop as the default for
+  // any uncovered leading span, but only once the GPU vertex-color buffer
+  // has been (re)synced for that exact range layout. Rows whose first
+  // segment's color wasn't written above (shouldn't happen given the loop
+  // always writes charStart === 0 on the first iteration, but kept as a
+  // defensive guard) would otherwise render with a stale/near-black vertex
+  // color until troika's next full resync instead of inheriting the
+  // intended `color` prop immediately.
+  if (hasColor && colorRanges[0] === undefined) {
+    colorRanges[0] = bodyHex;
+  }
+
+  return { text, colorRanges: hasColor ? colorRanges : null };
+}
+
+/**
+ * Render a list of InlineRows as React Three Fiber nodes.
+ *
+ * Uses a local cursorY counter starting at `startY` — no dependency on
+ * layout-plan entries. This is correct because:
+ *  - For XRListItem children, plan entries use list-local stacked Y values
+ *    that assumed the old "one block per child" model, not the prose flow.
+ *  - For XRParagraph children, the plan entries after flattenInlineWrappers
+ *    may reference IDs of nodes that no longer appear at the top level.
+ *
+ * xInset shifts all text/underlines right from the group origin (used by
+ * XRListItemMesh to apply the card's left padding).
+ */
+interface InlineProseRowsProps {
+  rows: InlineRow[];
+  startY: number;
+  panelWidth: number;
+  fontSize: number;
+  lineHeightRatio: number;
+  xInset?: number;
+  renderChild: (id: string) => React.ReactNode;
+}
+
+export function InlineProseRows({
+  rows,
+  startY,
+  panelWidth,
+  fontSize,
+  lineHeightRatio,
+  xInset = 0,
+  renderChild,
+}: InlineProseRowsProps) {
+  const lineH = fontSize * lineHeightRatio;
+  const usableWidth = panelWidth - xInset;
+  // cursorY is mutated during render — this is intentional and safe because
+  // InlineProseRows is always called from a single render pass, never
+  // concurrently. React will call this function once per render cycle and
+  // the returned elements are stable.
+  let cursorY = startY;
+
+  return (
+    <>
+      {rows.map((row, i) => {
+        if (row.kind === "block") {
+          return <group key={`b-${i}`}>{renderChild(row.childId)}</group>;
+        }
+
+        const { text, colorRanges } = buildRowMeta(row.segments);
+        const rowY = cursorY;
+        cursorY -= lineH;
+
+        return (
+          <group key={`il-${i}`}>
+            <ClippedText
+              anchorX="left"
+              {...(colorRanges ? ({ colorRanges } as any) : {})}
+              anchorY="top"
+              position={[xInset, rowY, 0.002]}
+              fontSize={fontSize}
+              color={BODY_COL}
+              maxWidth={usableWidth}
+              lineHeight={lineHeightRatio}
+              letterSpacing={0.005}
+            >
+              {text}
+            </ClippedText>
+          </group>
+        );
+      })}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // 2. XRParagraphMesh
 // ─────────────────────────────────────────────────────────────
 
@@ -412,42 +638,69 @@ export interface XRParagraphMeshProps {
   primitive: XRParagraph;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;
+  /** Returns the layout entry for a direct child by id, or null if not found. */
+  getChildEntry?: (childId: string) => LayoutEntry | null;
 }
 
 /**
  * Multi-line body text rendered on a frosted-glass panel.
  *
  * Dense paragraphs (densityScore > 0.6) receive a slightly larger panel
- * with a faint top-edge glow to signal long-form reading mode.
+ * with a faint top-edge glow to signal long-form reading mode.\
  * Short snippets (≤ 10 words) skip the backing panel entirely.
  */
 export function XRParagraphMesh({
   primitive,
   entry,
   renderChild,
+  getChildEntry,
 }: XRParagraphMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const dense = primitive.densityScore > 0.6;
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
+  const metrics = useRenderMetrics();
 
-  const hasTextChildren = primitive.children.some(
-    (child) =>
-      child.type === "XRText" ||
-      child.type === "XRLink" ||
-      child.type === "XRButton",
+  // FIX: flatten transparent XRGenericPanel wrappers (e.g. a <span title="…">
+  // around a link/text run) BEFORE checking for inline content. Previously
+  // this check ran against the unflattened `primitive.children`, so a
+  // paragraph whose only "inline-looking" content was wrapped one level
+  // deeper (XRGenericPanel → XRLink) registered as having zero inline
+  // children, skipped the InlineProseRows flow path entirely, and fell
+  // through to the block-stacked fallback below.
+  const flatForInlineCheck = flattenInlineWrappers(primitive.children ?? []);
+  const hasAnyInlineChild = flatForInlineCheck.some((c) =>
+    isInlinePrimitive(c.type),
   );
 
-  // If it has text children, render them inline without a backing panel
-  // The children themselves are the content
-  if (hasTextChildren) {
+  // ── Mixed / pure-inline children: flow layout ────────────────────────────
+  // Merge adjacent plain-text XRText siblings so fragmented runs like
+  //   ["This page was last edited on ", "20 June 2026", " (UTC)."]
+  // collapse into one <Text> call with the correct word-count.
+  //
+  // Scan the merged list left-to-right:
+  //   • Consecutive inline primitives (XRText, XRLink, XRButton) are
+  //     accumulated into a single text string and rendered as one <Text>
+  //     node anchored top-left at the current cursor Y.
+  //   • Block primitives (XRImage, XRFigure, or any unknown type) flush
+  //     the current inline run, then render the block via renderChild at
+  //     the cursor Y so it gets the block's layout-plan position.
+  if (hasAnyInlineChild) {
+    const mergedChildren = mergeAdjacentTextRuns(flatForInlineCheck);
+    const rows = buildInlineRows(mergedChildren);
+    const m = metrics.paragraph;
+
     return (
       <group position={pos} rotation={rot}>
-        {/* No backing panel - children render inline */}
-        <group position={[0, 0, 0]}>
-          {primitive.children.map((child) => renderChild(child.id))}
-        </group>
+        <InlineProseRows
+          rows={rows}
+          startY={0}
+          panelWidth={w}
+          fontSize={m.fontSize}
+          lineHeightRatio={m.lineHeightRatio}
+          renderChild={renderChild}
+        />
       </group>
     );
   }
@@ -1289,9 +1542,77 @@ export function XRListItemMesh({
 }: XRListItemMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const ACCENT_H = 0.005;
+
+  // primitive.label on XRListItem is the accessible-name / TOC string. When
+  // the item has inline children (XRText/XRLink runs — see parser.ts
+  // createListItem + buildChildrenFromSiblings), that label duplicates text
+  // already present in those children (e.g. "Arden Cho" as both a standalone
+  // label row and inline via its XRLink child) and must NOT be rendered.
+  //
+  // However: a plain-text <li> with no inline tags at all (no <a>, no <span>)
+  // produces children: [] — createListItem's childElements comes from
+  // contentEl.children, which only sees Elements, so bare text nodes are
+  // dropped and never become an XRText child. For that case, label/content
+  // IS the item's only content and must still be rendered, or items like
+  // "Danny Chung as Baby Saja" silently disappear.
+  const hasInlineChildren = primitive.children.length > 0;
+  const displayText = hasInlineChildren
+    ? null
+    : (primitive.content ?? primitive.label ?? "");
+
+  // Top inset: when there's real label text to draw (no-children case), use
+  // the same metrics-driven block height the engine reserves so text isn't
+  // clipped. When there are children, no text is drawn up top, so no space
+  // is reserved — children start right at the card's top edge. This must
+  // mirror engine.ts's estimateHeight (XRListItem branch) and
+  // stackChildrenSimple's topOffset exactly, or card height and the visual
+  // top offset will disagree.
+  const topInset = hasInlineChildren
+    ? 0
+    : listItemLabelBlockHeight(primitive.label, metrics);
+  const labelFont = metrics.listItem.font;
+  // ── Inline flow for list items with inline children ────────────────────
+  // Same segment/row model as XRParagraphMesh — merge XRText/XRLink children
+  // into a single prose run instead of dispatching each to renderChild
+  // (which would place each fragment at its own stacked Y, producing the
+  // vertical explosion seen in the screenshot).
+  //
+  // FIX: flatten BEFORE checking for inline content, not after. A list item
+  // like "<a>Arden Cho</a> as Rumi… wields a <span><a>saingeom</a></span>
+  // sword…" parses with its entire prose run wrapped in one intermediate
+  // XRGenericPanel — so primitive.children here is [XRGenericPanel, XRList],
+  // which contains ZERO direct inline primitives even though the panel's
+  // own children are almost entirely inline. Checking inline-ness on the
+  // unflattened list caused this case to skip the prose-flow path entirely
+  // and fall back to rendering the XRGenericPanel as an opaque stacked
+  // block — which is what produced the overlapping/duplicated text in the
+  // screenshot. Flattening first (transparent-wrapper unwrap) surfaces the
+  // run's true inline content regardless of which IR level it landed on.
+  const flatChildren = flattenInlineWrappers(primitive.children as any[]);
+  const hasAnyInlineChild = flatChildren.some((c) => isInlinePrimitive(c.type));
+  const mergedFlatChildren = hasAnyInlineChild
+    ? mergeAdjacentTextRuns(flatChildren)
+    : null;
+
+  // Separate inline vs block children after flattening
+  const inlineOnlyChildren =
+    mergedFlatChildren?.filter((c: any) => isInlinePrimitive(c.type)) ?? [];
+  const blockChildren =
+    mergedFlatChildren?.filter((c: any) => !isInlinePrimitive(c.type)) ?? [];
+  const inlineRows =
+    inlineOnlyChildren.length > 0 ? buildInlineRows(inlineOnlyChildren) : null;
+
+  // Compute prose height for reference (kept for potential future use)
+  const m = metrics.paragraph;
+  const lineH = m.fontSize * m.lineHeightRatio;
+  const proseHeight = inlineRows
+    ? inlineRows.filter((r) => r.kind === "inline").length * lineH
+    : 0;
+  void proseHeight; // block children use plan positions, not this offset
 
   return (
     <group position={pos} rotation={rot}>
@@ -1320,21 +1641,48 @@ export function XRListItemMesh({
         />
       </mesh>
 
-      {primitive.label && (
+      {displayText && (
         <ClippedText
           anchorX="left"
           anchorY="top"
-          position={[0.014, -0.018, PANEL_DEPTH]}
-          fontSize={0.022}
+          position={[0.014, -LIST_ITEM_LABEL_TOP_INSET, PANEL_DEPTH]}
+          fontSize={labelFont.fontSize}
           color={HEADING_COL}
           fontWeight="600"
+          lineHeight={labelFont.lineHeightRatio}
           maxWidth={w - 0.028}
         >
-          {primitive.label}
+          {displayText}
         </ClippedText>
       )}
 
-      {primitive.children.map((child) => renderChild(child.id))}
+      {/* Inline children: merged prose flow via shared InlineProseRows.
+          startY sits just below the accent stripe with a small top pad.
+          xInset matches the label's left padding for visual alignment. */}
+      {inlineRows && (
+        <InlineProseRows
+          rows={inlineRows}
+          startY={-topInset - 0.01}
+          panelWidth={w}
+          fontSize={m.fontSize}
+          lineHeightRatio={m.lineHeightRatio}
+          xInset={0.014}
+          renderChild={renderChild}
+        />
+      )}
+      {/* Block children (sub-lists, images, etc.): rendered directly via
+          renderChild so PrimitiveDispatcher applies the engine's layout-plan
+          positions without any additional offset. Previously these were
+          wrapped in <group position={[0, blockStartY, 0]}> which double-
+          applied translation: once from this group and once from the entry
+          position in PrimitiveDispatcher, causing sublist items to overlap
+          the parent prose text. */}
+      {blockChildren.map((child: any) => renderChild(child.id))}
+      {!hasAnyInlineChild && (
+        <group position={[0, -topInset, 0]}>
+          {primitive.children.map((child) => renderChild(child.id))}
+        </group>
+      )}
     </group>
   );
 }
@@ -1678,23 +2026,29 @@ export function XRTextMesh({ primitive, entry }: XRTextMeshProps) {
   const styleOverride = useContext(TextStyleContext);
   const textMetric = styleOverride ?? metrics.paragraph;
 
-  // Determine styling based on component type
+  // Determine styling based on component type and/or the accumulated
+  // styleTags stack (e.g. <i><b>text</b></i> produces componentType: null,
+  // styleTags: ["i", "b"] — a single componentType string can't represent
+  // two simultaneous styles, so we OR both signals in rather than treating
+  // componentType as the only source of truth).
   const componentType = primitive.componentType || "text";
-  let fontWeight: string | number = "400";
-  let fontStyle: "normal" | "italic" = "normal";
-  let color = BODY_COL;
+  const styleTags = primitive.styleTags ?? [];
+  const isBold =
+    componentType === "strong" ||
+    componentType === "b" ||
+    styleTags.includes("strong") ||
+    styleTags.includes("b");
+  const isItalic =
+    componentType === "em" ||
+    componentType === "i" ||
+    styleTags.includes("em") ||
+    styleTags.includes("i");
+
+  let fontWeight: string | number = isBold ? "700" : "400";
+  let fontStyle: "normal" | "italic" = isItalic ? "italic" : "normal";
+  let color = isBold || isItalic ? HEADING_COL : BODY_COL;
 
   switch (componentType) {
-    case "strong":
-    case "b":
-      fontWeight = "700";
-      color = HEADING_COL;
-      break;
-    case "em":
-    case "i":
-      fontStyle = "italic";
-      color = HEADING_COL;
-      break;
     case "code":
       fontWeight = "500";
       color = "#7ee787";
@@ -1704,8 +2058,8 @@ export function XRTextMesh({ primitive, entry }: XRTextMeshProps) {
       fontWeight = "500";
       break;
     default:
-      // 'text' or 'span' or unknown
-      color = BODY_COL;
+      // bold/italic/color already resolved above from isBold/isItalic;
+      // nothing else to do for 'text' / 'span' / unknown.
       break;
   }
 

@@ -187,6 +187,48 @@ export function paragraphWordsThatFit(
   return lines * wordsPerLine;
 }
 
+/**
+ * Vertical inset from an XRListItem card's top edge to the first glyph of
+ * its label. This is a layout contract value, not a visual tuning constant:
+ * XRSceneRenderer's XRListItemMesh positions the label text mesh at exactly
+ * this offset, and the layout engine (engine.ts, in both estimateHeight's
+ * XRListItem branch and stackChildrenSimple's top-padding calculation) must
+ * use the same value when deciding where the card's children start. If
+ * these two sites ever read different numbers, the label and the first
+ * child either overlap (renderer inset smaller than what layout reserved)
+ * or leave a dead gap (renderer inset larger than what layout reserved).
+ */
+export const LIST_ITEM_LABEL_TOP_INSET = 0.018;
+
+/**
+ * Height occupied by an XRListItem's own label line, including its top
+ * inset (LIST_ITEM_LABEL_TOP_INSET).
+ *
+ * Unlike estimateTextBearingHeight, this does NOT model word-wrapping —
+ * XRListItemMesh renders the label as a single fixed-size top line (it does
+ * not wrap across multiple lines), so the height contribution is always
+ * exactly one line, regardless of label length or panel width.
+ *
+ * Used by:
+ *   - estimateHeight()'s XRListItem branch, to size the card.
+ *   - stackChildrenSimple(), to know where the children's stack should
+ *     start (y = -listItemLabelBlockHeight(...)) instead of the flat
+ *     panelPaddingTop every other OWNS_TOP_PADDING container uses.
+ *   - XRListItemMesh, to offset its rendered children group by the same
+ *     amount the layout engine assumed when it positioned them.
+ *
+ * Returns 0 when there is no label, matching XRListItemMesh's behaviour of
+ * skipping the text mesh entirely when primitive.label is falsy.
+ */
+export function listItemLabelBlockHeight(
+  label: string | null | undefined,
+  metrics: RenderMetrics,
+): number {
+  if (!label) return 0;
+  const font = metrics.listItem.font;
+  return LIST_ITEM_LABEL_TOP_INSET + font.fontSize * font.lineHeightRatio;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Resolved strategy helpers
 // ─────────────────────────────────────────────────────────────
@@ -229,4 +271,245 @@ export function resolveTableStrategy(
 
 export function splitIntoWords(label: string): string[] {
   return label.split(/\s+/);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Inline flow layout helpers
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Primitive types that are purely inline (flow horizontally on the same
+ * line as adjacent runs). Everything else is treated as a block-break.
+ *
+ * XRImage / XRFigure are intentionally absent — they always force a new
+ * vertical row.
+ */
+const INLINE_PRIMITIVE_TYPES = new Set(["XRText", "XRLink", "XRButton"]);
+
+/** Returns true when a primitive should flow inline with its neighbours. */
+export function isInlinePrimitive(type: string): boolean {
+  return INLINE_PRIMITIVE_TYPES.has(type);
+}
+
+/**
+ * Flatten XRGenericPanel wrappers that contain only inline children.
+ *
+ * The parser wraps Korean-romanisation spans, citation superscripts, and
+ * other purely-stylistic inline containers in XRGenericPanel nodes (because
+ * they carry a `title` attribute that prevents wrapper-piercing). Those
+ * wrappers must be transparent to both the layout engine and the renderer:
+ *
+ *   Before: [..., XRText("wields a "), XRGenericPanel[XRLink("saingeom")], XRText(" sword")]
+ *   After:  [..., XRText("wields a "), XRLink("saingeom"), XRText(" sword")]
+ *
+ * Called in:
+ *   - estimateHeight (engine.ts) — XRListItem and XRParagraph branches
+ *   - XRParagraphMesh / XRListItemMesh (primitives.tsx) — inline flow renderer
+ *
+ * Both call sites must use this function on the same input so the height the
+ * engine reserves matches the height the renderer actually draws.
+ *
+ * A wrapper is flattened when ALL of its direct children are inline
+ * primitives (XRText, XRLink, XRButton). Wrappers with block children
+ * (XRImage, sub-lists) are left in place.
+ */
+export function flattenInlineWrappers<
+  T extends { type: string; children?: T[] },
+>(children: T[]): T[] {
+  return children.flatMap((child) => {
+    if (
+      child.type === "XRGenericPanel" &&
+      Array.isArray(child.children) &&
+      child.children.length > 0 &&
+      child.children.every((c) => isInlinePrimitive(c.type))
+    ) {
+      return child.children as T[];
+    }
+    // FIX: recurse into wrappers that don't qualify yet because one of
+    // their own children is itself a still-wrapped wrapper (e.g. a <span>
+    // around an <i> around an <a> — two nested transparent containers
+    // rather than one). Without this, a chain of nested non-interactive
+    // wrappers only unwraps its outermost level, leaving an inner
+    // XRGenericPanel as an opaque block even though its content is
+    // ultimately pure inline text/links once fully unwrapped.
+    if (
+      child.type === "XRGenericPanel" &&
+      Array.isArray(child.children) &&
+      child.children.length > 0
+    ) {
+      const unwrappedDescendants = flattenInlineWrappers(child.children);
+      if (unwrappedDescendants.every((c) => isInlinePrimitive(c.type))) {
+        return unwrappedDescendants;
+      }
+    }
+    return [child];
+  });
+}
+
+/**
+ * Merge adjacent XRText sibling primitives into single combined nodes.
+ *
+ * Fragmented text like:
+ *   XRText("This page was last edited on ")
+ *   XRText("20 June 2026, at 23:57")
+ *   XRText(" (UTC).")
+ * arrives from the mapper as three separate nodes but should measure and
+ * render as one continuous run. This function collapses consecutive XRText
+ * nodes (preserving non-XRText nodes in place) before height estimation or
+ * rendering so both sites see the same fused word-count.
+ *
+ * IMPORTANT: only merges nodes whose `componentType` is plain text (null,
+ * "text", "span") AND that carry no `styleTags` (e.g. ["b"], ["i"]).
+ * Bold/italic/code runs keep their individual identity — whether that's
+ * signalled via componentType or via an accumulated styleTags stack (the
+ * latter is how nested style-only tags like <i><b>…</b></i> are
+ * represented) — so their visual styling is not lost.
+ *
+ * @returns a new array of primitives (original array is not mutated).
+ */
+export function mergeAdjacentTextRuns<
+  T extends {
+    type: string;
+    text?: string;
+    componentType?: string | null;
+    styleTags?: string[] | null;
+    id: string;
+  },
+>(children: T[]): T[] {
+  if (children.length === 0) return children;
+
+  const result: T[] = [];
+
+  const isPlainText = (c: T) =>
+    c.type === "XRText" &&
+    (c.componentType == null ||
+      c.componentType === "text" ||
+      c.componentType === "span") &&
+    (!c.styleTags || c.styleTags.length === 0);
+
+  let i = 0;
+  while (i < children.length) {
+    const child = children[i];
+
+    if (isPlainText(child)) {
+      // Collect consecutive plain-text siblings
+      const runStart = i;
+      const parts: string[] = [child.text ?? ""];
+      i++;
+      while (i < children.length && isPlainText(children[i])) {
+        parts.push(children[i].text ?? "");
+        i++;
+      }
+
+      if (parts.length === 1) {
+        // Nothing to merge
+        result.push(child);
+      } else {
+        // Produce a single fused node (shallow-clone the first node)
+        const merged: T = {
+          ...child,
+          id: child.id, // keep the first node's id for map lookups
+          text: parts.join(""),
+        } as T;
+        result.push(merged);
+      }
+    } else {
+      result.push(child);
+      i++;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Estimate the rendered height of a mixed inline+block child list.
+ *
+ * Algorithm
+ * ─────────
+ * Scan `children` left-to-right maintaining a current-line word budget:
+ *
+ *   • INLINE primitives (XRText, XRLink, XRButton):
+ *       Accumulate their word counts onto the current line.  When the line
+ *       overflows `wordsPerLine`, add extra wrapped lines at `lineH`.
+ *
+ *   • BLOCK primitives (XRImage, XRFigure, or any unknown type):
+ *       1. Flush the current inline run (add its height to totalHeight).
+ *       2. Add the block primitive's own height (via `blockHeightFn`).
+ *       3. Reset the inline cursor.
+ *
+ * After the loop, flush any remaining inline words.
+ *
+ * This matches the renderer's behaviour in XRParagraphMesh where inline
+ * runs are grouped into a single <Text> and images are stacked below.
+ *
+ * @param children       Already-merged list of child primitives.
+ * @param wordsPerLine   From `computeWordsPerLine(panelUsableWidth, m)`.
+ * @param lineH          `m.fontSize * m.lineHeightRatio`.
+ * @param vertPad        `m.verticalPadding` (added once, at the end).
+ * @param blockHeightFn  Returns the height for a non-inline child.
+ * @param gapY           Gap between a flushed inline block and the next block.
+ */
+export function estimateInlineFlowHeight(
+  children: ReadonlyArray<{
+    type: string;
+    text?: string;
+    label?: string;
+    wordCount?: number;
+  }>,
+  wordsPerLine: number,
+  lineH: number,
+  vertPad: number,
+  blockHeightFn: (child: {
+    type: string;
+    text?: string;
+    label?: string;
+    wordCount?: number;
+  }) => number,
+  gapY: number,
+): number {
+  if (children.length === 0) return 0;
+
+  let totalHeight = 0;
+  let inlineWords = 0;
+  let firstBlock = true;
+
+  const flushInline = (): void => {
+    if (inlineWords === 0) return;
+    const lineCount = Math.max(
+      1,
+      Math.ceil(inlineWords / Math.max(1, wordsPerLine)),
+    );
+    if (!firstBlock) totalHeight += gapY;
+    totalHeight += lineCount * lineH;
+    firstBlock = false;
+    inlineWords = 0;
+  };
+
+  for (const child of children) {
+    if (isInlinePrimitive(child.type)) {
+      // Word count from the primitive's own field, or counted from text/label
+      const wc =
+        child.wordCount != null && child.wordCount > 0
+          ? child.wordCount
+          : countWords(
+              (child as { text?: string; label?: string }).text ??
+                (child as { label?: string }).label ??
+                "",
+            );
+      inlineWords += wc;
+    } else {
+      // Block element — flush inline first, then account for the block
+      flushInline();
+      const bh = blockHeightFn(child);
+      if (!firstBlock) totalHeight += gapY;
+      totalHeight += bh;
+      firstBlock = false;
+    }
+  }
+
+  // Flush any trailing inline run
+  flushInline();
+
+  return totalHeight + vertPad;
 }

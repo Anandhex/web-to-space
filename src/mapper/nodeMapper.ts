@@ -260,25 +260,25 @@ function mapList(
     return mapSection(node, ctx, "landmark:region→XRSection");
   }
 
-  // Structural uniformity check: all listitems must share the same child-role signature
-  const itemNodes = childNodes.filter(
-    (n) => n.role === "listitem" && Array.isArray(n.children),
-  );
-  const isUniform =
-    itemNodes.length >= ctx.config.minCardGridItems &&
-    (() => {
-      const sig = (n: IRNode): string =>
-        (n.children ?? [])
-          .map((id) => ctx.ir.nodes[id]?.role ?? "")
-          .sort()
-          .join("|");
-      const first = itemNodes[0] ? sig(itemNodes[0]) : "";
-      return first !== "" && itemNodes.every((n) => sig(n) === first);
-    })();
+  //   // Structural uniformity check: all listitems must share the same child-role signature
+  //   const itemNodes = childNodes.filter(
+  //     (n) => n.role === "listitem" && Array.isArray(n.children),
+  //   );
+  //   const isUniform =
+  //     itemNodes.length >= ctx.config.minCardGridItems &&
+  //     (() => {
+  //       const sig = (n: IRNode): string =>
+  //         (n.children ?? [])
+  //           .map((id) => ctx.ir.nodes[id]?.role ?? "")
+  //           .sort()
+  //           .join("|");
+  //       const first = itemNodes[0] ? sig(itemNodes[0]) : "";
+  //       return first !== "" && itemNodes.every((n) => sig(n) === first);
+  //     })();
 
-  if (!isUniform) {
-    return mapSection(node, ctx, "landmark:region→XRSection");
-  }
+  //   if (!isUniform) {
+  //     return mapSection(node, ctx, "landmark:region→XRSection");
+  //   }
 
   const effectiveRule: MappingRule =
     node.attributes.listType === "ordered"
@@ -351,6 +351,12 @@ function mapText(node: IRNode, ctx: MappingContext): XRText {
     type: "XRText",
     text: node.content || node.label || "",
     componentType: node.attributes?.componentType || null,
+    // Carries combined inline styling (e.g. ["i", "b"] for <i><b>…</b></i>)
+    // that a single componentType string can't represent. Without this,
+    // text wrapped in nested style-only tags (bold inside italic, etc.)
+    // silently loses its styling once it reaches the renderer, since
+    // XRTextMesh derives bold/italic from both componentType AND styleTags.
+    styleTags: node.attributes?.styleTags ?? [],
     isProseRun: true,
     children: [], // Text nodes are always leaves
   };

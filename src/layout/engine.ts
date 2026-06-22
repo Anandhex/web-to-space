@@ -98,8 +98,13 @@ import {
   computeWordsPerLine,
   countWords,
   estimateParagraphHeight,
+  estimateInlineFlowHeight,
   estimateTextBearingHeight,
+  flattenInlineWrappers,
   FIXED_HEIGHT_LOOKUP,
+  isInlinePrimitive,
+  listItemLabelBlockHeight,
+  mergeAdjacentTextRuns,
   resolveListColumns,
   resolveTableStrategy,
   zeroRotation,
@@ -116,9 +121,17 @@ function sumChildrenHeights(
 ): number {
   if (children.length === 0) return 0;
 
+  // Merge consecutive plain-text XRText siblings so fragmented runs like
+  // ["This page was last edited on ", "20 June 2026", " (UTC)."] are
+  // measured as a single word-count rather than three separate lines.
+  // Also flatten inline-only XRGenericPanel wrappers for the same reason.
+  const merged = flattenInlineWrappers(
+    mergeAdjacentTextRuns(children as any[]) as XRPrimitive[],
+  );
+
   let totalHeight = 0;
-  for (let i = 0; i < children.length; i++) {
-    const child = children[i];
+  for (let i = 0; i < merged.length; i++) {
+    const child = merged[i];
     const childHeight = estimateHeight(
       child,
       panelUsableWidth,
@@ -132,7 +145,7 @@ function sumChildrenHeights(
         ? childHeight
         : metrics.fallbackElementHeight;
     totalHeight += validHeight;
-    if (i < children.length - 1) {
+    if (i < merged.length - 1) {
       totalHeight += config.childGapY;
     }
   }
@@ -254,19 +267,73 @@ function estimateHeight(
 
   // ── Paragraph (word-count based) ──────────────────────────────────────────
   if (primitive.type === "XRParagraph") {
-    // If paragraph has children, measure them
+    // If paragraph has children, measure them with the inline-flow algorithm.
+    // Consecutive XRText/XRLink/XRButton nodes are flowed onto the same line
+    // until the line width is exhausted; XRImage/XRFigure nodes force a new
+    // vertical row. Plain adjacent XRText siblings are merged first so
+    // fragmented runs count words correctly.
     if (primitive.children.length > 0) {
-      if (primitive.children.length > 0) {
-        const childrenHeight = sumChildrenHeights(
-          primitive.children,
-          panelUsableWidth,
-          metrics,
-          config,
-          branchAncestors,
-          scene,
+      // FIX: flatten transparent XRGenericPanel wrappers (e.g. <i>, <span>)
+      // BEFORE merging adjacent text runs, mirroring what XRParagraphMesh does
+      // in primitives.tsx. Without this, italic/styled inline text wrapped in
+      // XRGenericPanel is treated as a non-inline block child, causing the
+      // height estimator to undercount inline content and clip the first
+      // word(s) of paragraphs that begin with styled text like <i>KPop Demon
+      // Hunters</i>.
+      const merged = mergeAdjacentTextRuns(
+        flattenInlineWrappers(primitive.children as any[]) as XRPrimitive[],
+      ) as XRPrimitive[];
+      const hasAnyInline = merged.some((c) => isInlinePrimitive(c.type));
+      const hasAnyBlock = merged.some((c) => !isInlinePrimitive(c.type));
+
+      if (hasAnyInline && !hasAnyBlock) {
+        // Pure inline children — use flow estimation (no gaps between runs)
+        const m = metrics.paragraph;
+        const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
+        const lineH = m.fontSize * m.lineHeightRatio;
+        return estimateInlineFlowHeight(
+          merged,
+          wordsPerLine,
+          lineH,
+          m.verticalPadding,
+          () => metrics.fallbackElementHeight,
+          0, // no inter-run gaps for pure inline
         );
-        return childrenHeight + metrics.paragraph.verticalPadding;
       }
+
+      if (hasAnyBlock) {
+        // Mixed inline+block — use flow estimation with gaps between rows
+        const m = metrics.paragraph;
+        const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
+        const lineH = m.fontSize * m.lineHeightRatio;
+        return estimateInlineFlowHeight(
+          merged,
+          wordsPerLine,
+          lineH,
+          m.verticalPadding,
+          (child) =>
+            estimateHeight(
+              child as XRPrimitive,
+              panelUsableWidth,
+              metrics,
+              config,
+              branchAncestors,
+              scene,
+            ),
+          config.childGapY,
+        );
+      }
+
+      // Fallback: all children are unknown types — use sumChildrenHeights
+      const childrenHeight = sumChildrenHeights(
+        merged,
+        panelUsableWidth,
+        metrics,
+        config,
+        branchAncestors,
+        scene,
+      );
+      return childrenHeight + metrics.paragraph.verticalPadding;
     }
     // No children - use word count from label
     return estimateParagraphHeight(
@@ -427,33 +494,83 @@ function estimateHeight(
         metrics.fallbackElementHeight,
       );
 
-      // XRListItem: label is the first row; primitive children (images,
-      // sub-paragraphs, badges, etc.) stack beneath it.
-      // Height = labelHeight + childrenHeight, floored at tb.minHeight.
+      // XRListItem: primitive.label is the accessible-name/TOC string, never
+      // rendered when children exist (see XRListItemMesh in primitives.tsx —
+      // it would duplicate text already present in the inline XRText/XRLink
+      // children). So when there ARE children, card height is just their
+      // stacked height — no label row is drawn, so no space is reserved for
+      // one. When there are NO children, label/content is the item's only
+      // displayable text (a plain-text <li> with no inline tags produces
+      // children: [] in parser.ts's createListItem — text-only nodes are
+      // dropped from contentEl.children), so labelBlockHeight still applies.
       if (primitive.type === "XRListItem") {
         if (primitive.children.length > 0) {
-          const childrenHeight = sumChildrenHeights(
-            primitive.children,
-            panelUsableWidth,
-            metrics,
-            config,
-            branchAncestors,
-            scene,
+          // The renderer (XRListItemMesh) flattens inline-only XRGenericPanel
+          // wrappers and then flows all XRText/XRLink/XRButton children as a
+          // single continuous prose run — exactly like XRParagraphMesh does.
+          // sumChildrenHeights would treat each fragment as a separate stacked
+          // block with its own lineH + verticalPadding + childGapY, producing
+          // a wildly overestimated card height. We must mirror the renderer:
+          // flatten wrappers → merge adjacent text → estimateInlineFlowHeight.
+          const flattened = flattenInlineWrappers(
+            mergeAdjacentTextRuns(primitive.children as any[]) as XRPrimitive[],
           );
-          // stackChildrenSimple starts XRListItem children at y = -panelPaddingTop
-          // (because XRListItem is in OWNS_TOP_PADDING). The estimate must include
-          // that offset or the card height is short by panelPaddingTop and content
-          // overflows the bottom of the allocated row height.
-          return Math.max(
-            metrics.listItem.minHeight,
-            childrenHeight + config.panelPaddingTop,
-          );
+          const hasAnyInline = flattened.some((c) => isInlinePrimitive(c.type));
+          const hasAnyBlock = flattened.some((c) => !isInlinePrimitive(c.type));
+          const m = metrics.paragraph;
+          const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
+          const lineH = m.fontSize * m.lineHeightRatio;
+
+          let contentHeight: number;
+          if (hasAnyInline) {
+            // Inline flow — all XRText/XRLink segments measured as one prose run,
+            // block children (sub-lists, images) measured individually and stacked.
+            contentHeight = estimateInlineFlowHeight(
+              flattened,
+              wordsPerLine,
+              lineH,
+              0,
+              (child) =>
+                estimateHeight(
+                  child as XRPrimitive,
+                  panelUsableWidth,
+                  metrics,
+                  config,
+                  branchAncestors,
+                  scene,
+                ),
+              hasAnyBlock ? config.childGapY : 0,
+            );
+          } else {
+            // All children are blocks (e.g. a list item that contains only a
+            // sub-list or an image) — stack them normally.
+            contentHeight = sumChildrenHeights(
+              flattened,
+              panelUsableWidth,
+              metrics,
+              config,
+              branchAncestors,
+              scene,
+            );
+          }
+
+          const lineH2 =
+            metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
+          return Math.max(lineH2 + 0.02, contentHeight);
         }
-        return estimateTextBearingHeight(
-          primitive.content ?? primitive.label ?? "",
-          panelUsableWidth,
-          metrics.listItem,
-          metrics.fallbackElementHeight,
+        const labelBlockHeight = listItemLabelBlockHeight(
+          primitive.label,
+          metrics,
+        );
+        return Math.max(
+          metrics.listItem.minHeight,
+          labelBlockHeight ||
+            estimateTextBearingHeight(
+              primitive.content ?? primitive.label ?? "",
+              panelUsableWidth,
+              metrics.listItem,
+              metrics.fallbackElementHeight,
+            ),
         );
       }
 
@@ -493,8 +610,16 @@ function estimateHeight(
     return imageH + captionH;
   }
 
-  // ── Card grid: per-card height is text-bearing ──────────────────────────
-  // Override: each XRListItem label can wrap.
+  // ── Card grid: per-card height comes from the XRListItem branch above ────
+  // Previously this duplicated that formula with its own word-wrapped label
+  // estimate (estimateTextBearingHeight applied to item.label), which models
+  // a label that can wrap onto multiple lines. XRListItemMesh renders the
+  // label as a single fixed-size top line that does NOT wrap (see
+  // primitives.tsx) — so the wrapped estimate here could produce a taller
+  // number than the card actually needs, or disagree with the per-item
+  // estimate if either formula changed without the other. Delegating to
+  // estimateHeight(item, ...) guarantees this grid path and a standalone
+  // estimateHeight(someListItem, ...) call always agree.
   if (primitive.type === "XRList") {
     const columns = resolveListColumns(
       primitive as XRList,
@@ -505,41 +630,18 @@ function estimateHeight(
       0.025,
       panelUsableWidth / Math.max(1, columns),
     );
-    // Measure each card's actual height (wrapping its own label + any child content).
-    // Model: label is the first row; primitive children stack beneath it.
-    // Height = labelH + childrenH, floored at metrics.listItem.minHeight.
     const cardHeights =
       primitive.children.length > 0
-        ? primitive.children.map((item: XRPrimitive) => {
-            const labelH = estimateTextBearingHeight(
-              item.label ?? "",
+        ? primitive.children.map((item: XRPrimitive) =>
+            estimateHeight(
+              item,
               cardUsableWidth,
-              metrics.listItem,
-              metrics.fallbackElementHeight,
-            );
-            if (item.children.length > 0) {
-              const childrenH = item.children.reduce(
-                (sum: number, child: XRPrimitive, idx: number) => {
-                  const gap = idx === 0 ? 0 : config.childGapY; // ← suppress first gap
-                  return (
-                    sum +
-                    gap +
-                    estimateHeight(
-                      child,
-                      cardUsableWidth,
-                      metrics,
-                      config,
-                      new Set(branchAncestors),
-                      scene,
-                    )
-                  );
-                },
-                0,
-              );
-              return Math.max(metrics.listItem.minHeight, labelH + childrenH);
-            }
-            return labelH;
-          })
+              metrics,
+              config,
+              new Set(branchAncestors),
+              scene,
+            ),
+          )
         : [metrics.listItem.minHeight];
     // Group cards into rows and sum per-row max height.
     const rowCount = Math.ceil(
@@ -594,20 +696,82 @@ function estimateHeight(
   const fixedFloor = FIXED_HEIGHT_LOOKUP(metrics)[primitive.type];
 
   if (primitive.children.length > 0) {
-    const childHeights = primitive.children.map((c) =>
-      estimateHeight(c, panelUsableWidth, metrics, config, ancestors, scene),
+    // stackChildrenSimple subtracts panelPaddingX from both sides for containers
+    // in OWNS_X_PADDING before passing width to children. Match that here or
+    // text wraps to a different line count than estimated → height mismatch.
+    const childEstimateWidth = OWNS_X_PADDING.has(primitive.type)
+      ? Math.max(0.025, panelUsableWidth - config.panelPaddingX * 2)
+      : panelUsableWidth;
+
+    // FIX: flatten transparent XRGenericPanel wrappers and merge adjacent
+    // text runs BEFORE measuring, then use inline-flow estimation for any
+    // inline (XRText/XRLink/XRButton) content instead of summing each
+    // child as its own independently-stacked block.
+    //
+    // Without this, a primitive like XRGenericPanel (no dedicated branch
+    // above — it always lands here) measured its own height by treating
+    // EVERY child as a full row with childGapY between each, even when the
+    // children were a prose run of [XRLink, XRText, XRLink, XRText, …] that
+    // should flow onto shared lines. That produced a height (e.g. 0.4639m
+    // for a short two-line bio) wildly larger than what XRListItemMesh /
+    // XRParagraphMesh actually render when the SAME content appears as
+    // their child — those call sites already use inline-flow correctly.
+    // The mismatch meant a list item's measured height (via the correct
+    // inline-flow path in the XRListItem branch above) ended up SMALLER
+    // than its own prose child's self-reported height (via this buggy
+    // path), leaving a visible gap below the rendered text — the box
+    // border stopped where the listitem THOUGHT the content ended, well
+    // short of where the renderer actually drew it.
+    const merged = flattenInlineWrappers(
+      mergeAdjacentTextRuns(primitive.children as any[]) as XRPrimitive[],
     );
-    const total = childHeights.reduce((s, h) => s + h, 0);
-    const gaps = config.childGapY * Math.max(0, primitive.children.length - 1);
+    const hasAnyInline = merged.some((c) => isInlinePrimitive(c.type));
+    const hasAnyBlock = merged.some((c) => !isInlinePrimitive(c.type));
 
-    // Use the SAME set stackChildrenSimple uses for OWNS_TOP_PADDING —
-    // these are the types whose children are offset by panelPaddingTop
-    // at the top AND need bottom padding too.
-    const paddingContrib = OWNS_X_PADDING.has(primitive.type)
-      ? config.panelPaddingTop * 2
-      : 0;
+    let fromChildren: number;
+    if (hasAnyInline) {
+      const m = metrics.paragraph;
+      const wordsPerLine = computeWordsPerLine(childEstimateWidth, m);
+      const lineH = m.fontSize * m.lineHeightRatio;
+      const contentHeight = estimateInlineFlowHeight(
+        merged,
+        wordsPerLine,
+        lineH,
+        0,
+        (c) =>
+          estimateHeight(
+            c as XRPrimitive,
+            childEstimateWidth,
+            metrics,
+            config,
+            ancestors,
+            scene,
+          ),
+        hasAnyBlock ? config.childGapY : 0,
+      );
+      const paddingContrib = OWNS_X_PADDING.has(primitive.type)
+        ? config.panelPaddingTop * 2
+        : 0;
+      fromChildren = paddingContrib + contentHeight;
+    } else {
+      const childHeights = merged.map((c) =>
+        estimateHeight(
+          c,
+          childEstimateWidth,
+          metrics,
+          config,
+          ancestors,
+          scene,
+        ),
+      );
+      const total = childHeights.reduce((s, h) => s + h, 0);
+      const gaps = config.childGapY * Math.max(0, merged.length - 1);
+      const paddingContrib = OWNS_X_PADDING.has(primitive.type)
+        ? config.panelPaddingTop * 2
+        : 0;
+      fromChildren = paddingContrib + total + gaps;
+    }
 
-    const fromChildren = paddingContrib + total + gaps;
     return fixedFloor !== undefined
       ? Math.max(fixedFloor, fromChildren)
       : Math.max(metrics.fallbackElementHeight, fromChildren);
@@ -699,9 +863,11 @@ const OWNS_X_PADDING = new Set([
 ]);
 
 // Containers that reserve vertical space at the top for their own label/header.
-// Children must start at y = -panelPaddingTop, not y = 0.
-// XRListItem renders its own label text at ~y=-0.018; children must start
-// below that, which panelPaddingTop (0.04m) covers.
+// Children must start below that reserved space, not at y = 0.
+// XRListItem is included for historical/structural reasons (it's a
+// label-bearing container in principle) but its actual topOffset is 0 — see
+// stackChildrenSimple below — since XRListItemMesh never draws a label row
+// when the item has children, so there's nothing to reserve space for.
 const OWNS_TOP_PADDING = new Set([...Array.from(OWNS_X_PADDING), "XRListItem"]);
 
 function stackChildrenSimple(
@@ -711,6 +877,11 @@ function stackChildrenSimple(
   metrics: RenderMetrics,
   parentType?: string,
   listColumns?: number,
+  // parentLabel is no longer used here (XRListItem's topOffset is now always
+  // 0 — see below) but kept in the signature to avoid a churn-y signature
+  // change across both call sites for a label that may regain a use if
+  // XRListItem's contract changes again.
+  parentLabel?: string | null,
 ): SimpleStackResult {
   if (children.length === 0) {
     return { childEntries: [], totalHeight: 0 };
@@ -718,9 +889,16 @@ function stackChildrenSimple(
 
   // X-padding: only containers that own their full slot width subtract panelPaddingX.
   // Y-padding: containers that render their own label/header at the top need
-  // children to start at y = -panelPaddingTop, not y = 0.
+  // children to start below that label, not at y = 0.
   const ownsXPadding = !parentType || OWNS_X_PADDING.has(parentType);
   const ownsTopPadding = !parentType || OWNS_TOP_PADDING.has(parentType);
+  // XRListItem never renders primitive.label as text when it has children
+  // (see XRListItemMesh in primitives.tsx) — this function only runs with
+  // parentType === "XRListItem" when that item's children.length > 0 (the
+  // early-return above handles the empty case), so no label row is ever
+  // drawn for any call that reaches here. Children therefore start at the
+  // card's top edge, offset 0 — there's nothing above them to clear.
+  const topOffset = parentType === "XRListItem" ? 0 : config.panelPaddingTop;
   const childWidth = ownsXPadding
     ? Math.max(0.025, panelWidth - config.panelPaddingX * 2)
     : Math.max(0.025, panelWidth);
@@ -796,11 +974,13 @@ function stackChildrenSimple(
 
   // ── Default: single-column vertical stack ────────────────────────────────
   // Panel-like containers start the cursor below their own top padding and
-  // indent children by panelPaddingX. Content nodes (XRListItem, XRParagraph,
-  // XRHeading, …) have no internal padding — children start at y=0 and x=0
-  // relative to the container, since the container itself is already inset
-  // correctly by its parent.
-  const startY = ownsTopPadding ? -config.panelPaddingTop : 0;
+  // indent children by panelPaddingX. Content nodes (XRParagraph, XRHeading,
+  // …) have no internal padding — children start at y=0 and x=0 relative to
+  // the container, since the container itself is already inset correctly by
+  // its parent. XRListItem's topOffset is 0 (no label row is drawn when it
+  // has children — see topOffset above), so it behaves like the latter group
+  // despite being in OWNS_TOP_PADDING.
+  const startY = ownsTopPadding ? -topOffset : 0;
   const childX = ownsXPadding ? config.panelPaddingX : 0;
   let cursorY = startY;
   const childEntries: LayoutEntry[] = [];
@@ -829,7 +1009,16 @@ function stackChildrenSimple(
     cursorY -= gap + h;
   }
 
-  const paddingContrib = ownsTopPadding ? config.panelPaddingTop * 2 : 0;
+  // paddingContrib mirrors startY's reservation, plus a matching bottom gap —
+  // but only for true panel-padding containers, which reserve panelPaddingTop
+  // at BOTH top and bottom symmetrically. XRListItem contributes topOffset
+  // (always 0, single not doubled — no bottom label-gap equivalent exists)
+  // rather than the doubled panelPaddingTop the other containers use.
+  const paddingContrib = ownsTopPadding
+    ? parentType === "XRListItem"
+      ? topOffset
+      : topOffset * 2
+    : 0;
   const totalHeight =
     paddingContrib +
     childEntries.reduce((s, e) => s + e.size.height, 0) +
@@ -1351,6 +1540,7 @@ function layoutPrimitive(
           metrics,
           primitive.type,
           resolvedListColumns,
+          primitive.label,
         );
 
         for (let i = 0; i < primitive.children.length; i++) {
@@ -1443,6 +1633,7 @@ function layoutPrimitive(
         metrics,
         primitive.type,
         resolvedListColumns,
+        primitive.label,
       );
 
       const OVERFLOW_TOLERANCE_M = 0.001;
@@ -1598,7 +1789,7 @@ export function computeLayoutPlan(
       diag.slotOverflows,
     );
   }
-
+  console.log(entries);
   return {
     entries,
     template: resolvedTemplate,

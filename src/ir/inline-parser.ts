@@ -12,6 +12,7 @@ export interface InlineRun {
   element?: Element;
   nodeId?: string;
   children?: InlineRun[]; // For recursive processing
+  styleStack?: string[];
 }
 
 export interface InlineContext {
@@ -116,10 +117,32 @@ export function shouldDecomposeContent(
  *   { type: 'text', text: '!' }
  * ]
  */
+// Purely stylistic inline tags — carry no role, just visual/semantic styling
+const STYLE_ONLY_TAGS = new Set([
+  "i",
+  "em",
+  "b",
+  "strong",
+  "s",
+  "u",
+  "mark",
+  "sub",
+  "sup",
+  "small",
+  "code",
+  "kbd",
+  "samp",
+  "var",
+  "q",
+  "abbr",
+  "cite",
+  "dfn",
+]);
 export function decomposeInlineContentRecursive(
   element: Element,
   ctx: InlineContext,
   parentId: string,
+  styleStack: string[] = [],
 ): InlineRun[] {
   const runs: InlineRun[] = [];
   let currentText = "";
@@ -148,6 +171,28 @@ export function decomposeInlineContentRecursive(
       // Check if this is an inline element
       if (ctx.inlineTags.has(tag)) {
         flushText();
+        if (STYLE_ONLY_TAGS.has(tag)) {
+          // Hoist children, accumulating the style stack
+          const childRuns = decomposeInlineContentRecursive(el, ctx, parentId, [
+            ...styleStack,
+            tag,
+          ]);
+          // Inject the style stack onto any leaf text runs produced.
+          // Only stamp runs that don't already carry a styleStack — a run
+          // that already has one was set by a NESTED STYLE_ONLY_TAGS call
+          // (e.g. <b> inside <i>) and its styleStack already includes this
+          // tag's ancestors *and* this tag itself, from its own recursive
+          // call. Overwriting it here with [...styleStack, tag] would drop
+          // everything the inner call accumulated below this level (e.g.
+          // collapsing ["i","b"] back down to just ["i"]).
+          for (const run of childRuns) {
+            if (run.type === "text" && !run.styleStack) {
+              run.styleStack = [...styleStack, tag];
+            }
+          }
+          runs.push(...childRuns);
+          continue;
+        }
 
         // Check if this inline element has rich structure (contains other inline elements)
         const hasInlineChildren = Array.from(el.children).some(
@@ -261,6 +306,7 @@ export function flattenInlineRuns(
           attrs.title = run.element.getAttribute("class") || null;
         }
       }
+      attrs.styleTags = run.styleStack ?? [];
 
       ctx.nodes[id] = {
         id,
@@ -325,9 +371,7 @@ export function flattenInlineRuns(
       }
       // Check if this inline element has children (rich structure)
       if (run.children && run.children.length > 0) {
-        // Create a node for the container inline element
         const el = run.element;
-        const id = `${parentId}-inline-${ctx.counters.node++}`;
         const tag = el.tagName.toLowerCase();
 
         // Determine role
@@ -338,47 +382,92 @@ export function flattenInlineRuns(
         else if (["strong", "b"].includes(tag)) role = "generic";
         else role = "generic";
 
-        // Recursively process children
-        const childResult = flattenInlineRuns(
-          run.children,
-          id,
-          ctx,
-          readingDepth + 1,
+        // FIX: Transparent inline wrappers (non-interactive elements like
+        // <span title="…">, <i>, etc. whose entire purpose is to carry
+        // styling/metadata around an inline run) must not become a separate
+        // IR container node. If they did, the run's text/link children would
+        // sit one IR level deeper than their siblings — invisible to any
+        // code that only inspects the immediate parent's children (e.g. the
+        // renderer's decision of whether a list item / paragraph qualifies
+        // for inline-flow layout). That mismatch is what causes runs like
+        // "<span><a>saingeom</a></span>" to fall out of the prose flow and
+        // get stacked as their own block, overlapping the line above.
+        //
+        // We splice this wrapper's children directly into the current
+        // parent's run instead of wrapping them, as long as:
+        //   1. The wrapper itself isn't independently interactive
+        //      (a/button/summary keep their own node — they're real targets).
+        //   2. Every immediate sub-run is itself a flat inline leaf — plain
+        //      text, or a simple element run with no further `children`.
+        //      decomposeInlineContentRecursive only attaches `children` to a
+        //      run when that element has its own rich/mixed structure, so
+        //      this check is purely structural and doesn't require building
+        //      any IR nodes first. If a sub-run still carries `children`,
+        //      there's a genuine nested container below us and we keep this
+        //      node so that grandchild's position in the tree isn't
+        //      ambiguous.
+        const isInteractive = ["a", "button", "summary"].includes(tag);
+        const allChildRunsAreLeaves = run.children.every(
+          (childRun) => !childRun.children || childRun.children.length === 0,
         );
 
-        const label = shouldHaveLabelForElement(el, role, ctx.config)
-          ? resolveNodeLabel(el, ctx.config, ctx.doc) ||
-            el.textContent?.trim() ||
-            null
-          : null;
+        if (!isInteractive && allChildRunsAreLeaves) {
+          // Transparent splice: build children parented/depthed exactly as
+          // if they were direct siblings of this run, in place of a
+          // wrapper node.
+          const childResult = flattenInlineRuns(
+            run.children,
+            parentId,
+            ctx,
+            readingDepth,
+          );
+          nodeIds.push(...childResult.nodeIds);
+          textRuns.push(...childResult.textRuns);
+        } else {
+          // Genuine container — build a wrapper node as before.
+          const id = `${parentId}-inline-${ctx.counters.node++}`;
+          const childResult = flattenInlineRuns(
+            run.children,
+            id,
+            ctx,
+            readingDepth + 1,
+          );
 
-        ctx.elementToNodeId.set(el, id);
+          const label = shouldHaveLabelForElement(el, role, ctx.config)
+            ? resolveNodeLabel(el, ctx.config, ctx.doc) ||
+              el.textContent?.trim() ||
+              null
+            : null;
 
-        ctx.nodes[id] = {
-          id,
-          role,
-          level: null,
-          label,
-          content: el.textContent?.trim() || null,
-          unlabelledYet: label === null,
-          landmark: false,
-          source: "structural",
-          confidence: ctx.config.sourceConfidence["structural"] || 0.75,
-          readingIndex: ctx.counters.reading++,
-          readingDepth,
-          parent: parentId,
-          children: childResult.nodeIds,
-          relations: createEmptyRelations(),
-          state: createEmptyState(),
-          attributes: {
-            ...createEmptyAttributes(),
-            componentType: tag,
-            href: tag === "a" ? el.getAttribute("href") : null,
-          },
-        };
+          ctx.elementToNodeId.set(el, id);
 
-        nodeIds.push(id);
-        textRuns.push(...childResult.textRuns);
+          ctx.nodes[id] = {
+            id,
+            role,
+            level: null,
+            label,
+            content: el.textContent?.trim() || null,
+            unlabelledYet: label === null,
+            landmark: false,
+            source: "structural",
+            confidence: ctx.config.sourceConfidence["structural"] || 0.75,
+            readingIndex: ctx.counters.reading++,
+            readingDepth,
+            parent: parentId,
+            children: childResult.nodeIds,
+            relations: createEmptyRelations(),
+            state: createEmptyState(),
+            attributes: {
+              ...createEmptyAttributes(),
+              componentType: tag,
+              href: tag === "a" ? el.getAttribute("href") : null,
+              styleTags: run.styleStack ?? [],
+            },
+          };
+
+          nodeIds.push(id);
+          textRuns.push(...childResult.textRuns);
+        }
       } else {
         // Simple inline element - create a single node
         const el = run.element;

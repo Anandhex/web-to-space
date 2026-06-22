@@ -386,6 +386,12 @@ async function createNode(
     }
   }
 
+  const promoted = promoteLinkedImageDeep(element, ctx);
+  if (promoted) {
+    // treat the synthetic figure as the element to process
+    return handleMediaLeaf(promoted, liftedAttrs, parentId, ctx, readingDepth);
+  }
+
   // ── STEP 3: Process children (build the tree) ──────────────────────────
   // This must happen BEFORE AI fallback because AI should only run on
   // nodes that have been fully processed structurally
@@ -916,6 +922,53 @@ async function handleHeadingSection(
   return { id: sectionId, endIndex };
 }
 
+// In createNode, before processing children:
+// Promote figure/a>picture>img → synthetic figure with href + src
+function promoteLinkedImageDeep(
+  element: Element,
+  ctx: BuildContext,
+): Element | null {
+  // Handles: figure > a > picture > img  OR  a > picture > img  OR  a > img
+  const tag = element.tagName.toLowerCase();
+
+  let anchor: Element | null = null;
+  if (tag === "figure" || tag === "div") {
+    // find single <a> child
+    const aChildren = Array.from(element.children).filter(
+      (c) => c.tagName.toLowerCase() === "a",
+    );
+    if (aChildren.length === 1) anchor = aChildren[0];
+  } else if (tag === "a") {
+    anchor = element;
+  }
+  if (!anchor) return null;
+
+  // unwrap picture → img
+  let imgEl: Element | null = null;
+  const anchorChildren = Array.from(anchor.children).filter(
+    (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
+  );
+  if (anchorChildren.length === 1) {
+    const maybeImg = anchorChildren[0];
+    if (maybeImg.tagName.toLowerCase() === "img") {
+      imgEl = maybeImg;
+    } else if (maybeImg.tagName.toLowerCase() === "picture") {
+      const picChildren = Array.from(maybeImg.children).filter(
+        (c) => c.tagName.toLowerCase() === "img",
+      );
+      if (picChildren.length === 1) imgEl = picChildren[0];
+    }
+  }
+  if (!imgEl) return null;
+
+  const fig = anchor.ownerDocument!.createElement("figure");
+  fig.setAttribute("data-ir-figure-href", anchor.getAttribute("href") ?? "");
+  fig.setAttribute("src", imgEl.getAttribute("src") ?? "");
+  const alt = imgEl.getAttribute("alt") ?? "";
+  if (alt) fig.setAttribute("alt", alt);
+  return fig;
+}
+
 // ── Handler 4: homogeneous run → inferred list ───────────────────────────────
 async function createListItem(
   element: Element,
@@ -927,69 +980,84 @@ async function createListItem(
   const id = `${parentId}-item-${ctx.counters.node++}`;
   const readingIndex = ctx.counters.reading++;
 
-  // Pierce through generic wrappers to find the actual content
-  // But preserve the original element for attributes/state
+  // Pierce through generic wrappers to find the actual content.
   function pierceWrappers(el: Element): {
     content: Element;
     wrappers: Element[];
   } {
     const wrappers: Element[] = [];
     let current = el;
-    const tag = current.tagName.toLowerCase();
 
-    while ((tag === "div" || tag === "span") && !current.hasAttribute("role")) {
+    while (true) {
+      // FIX: loop controls re-check
+      const tag = current.tagName.toLowerCase(); // FIX: re-read tag each iteration
+      if (tag !== "div" && tag !== "span") break;
+      if (current.hasAttribute("role")) break;
+
       const children = Array.from(current.children).filter(
         (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
       );
-      if (children.length === 1) {
-        wrappers.push(current);
-        current = children[0];
-      } else {
-        break;
-      }
+      if (children.length !== 1) break;
+
+      wrappers.push(current);
+      current = children[0];
     }
     return { content: current, wrappers };
   }
 
   const { content: contentEl, wrappers } = pierceWrappers(element);
 
-  // Check if this list item contains a nested list
-  // If it does, we need to handle it differently (don't flatten)
+  // FIX: Linked-image promotion at item level, before any child processing.
+  // If the pierced content is a figure/a>picture>img card, emit a media leaf
+  // directly instead of recursing into the subtree with no text label.
+  const promoted = promoteLinkedImageDeep(contentEl, ctx);
+  if (promoted) {
+    // Discard the counters already claimed above and emit a compact media node.
+    ctx.nodes[id] = {
+      id,
+      role: "img",
+      level: null,
+      label: promoted.getAttribute("alt") || null,
+      content: null,
+      unlabelledYet: !promoted.getAttribute("alt"),
+      landmark: false,
+      source: "structural",
+      confidence: confidenceForSource("structural", ctx.config),
+      readingIndex,
+      parent: parentId,
+      children: [],
+      relations: createEmptyRelations(),
+      state: createEmptyState(),
+      attributes: {
+        ...createEmptyAttributes(),
+        href: promoted.getAttribute("data-ir-figure-href") || null,
+        src: promoted.getAttribute("src") || null,
+      },
+      readingDepth,
+    };
+    ctx.elementToNodeId.set(element, id);
+    return id;
+  }
+
   const hasNestedList = Array.from(
     contentEl.querySelectorAll('ul, ol, [role="list"]'),
   ).some((el) => contentEl.contains(el) && el !== contentEl);
 
-  // Process children of the list item
-  let childElements = Array.from(contentEl.children).filter(
+  const childElements = Array.from(contentEl.children).filter(
     (child) => !ctx.skipTags.has(child.tagName.toLowerCase()),
   );
 
-  // If there's a nested list, don't pierce it - let it be processed normally
-  let childIds: string[] = [];
+  // hasNestedList currently takes both branches to the same call —
+  // kept here as a stub for future divergence (e.g. flat vs nested processing).
+  const childIds = await buildChildrenFromSiblings(
+    childElements,
+    id,
+    landmarkParentId,
+    ctx,
+    readingDepth + 1,
+    false,
+  );
 
-  if (hasNestedList) {
-    // Process children normally, without special list item handling
-    childIds = await buildChildrenFromSiblings(
-      childElements,
-      id,
-      landmarkParentId,
-      ctx,
-      readingDepth + 1,
-      false,
-    );
-  } else {
-    // Process children normally
-    childIds = await buildChildrenFromSiblings(
-      childElements,
-      id,
-      landmarkParentId,
-      ctx,
-      readingDepth + 1,
-      false,
-    );
-  }
-
-  // Merge attributes from wrappers onto the content element
   const mergedAttrs = {
     ...readNodeAttributes(contentEl, { sourceUrl: ctx.pageUrl }),
   };
@@ -998,15 +1066,12 @@ async function createListItem(
       sourceUrl: ctx.pageUrl,
     });
     for (const key of Object.keys(wrapperAttrs) as (keyof IRNodeAttributes)[]) {
-      if (wrapperAttrs[key] !== null && wrapperAttrs[key] !== undefined) {
-        if (mergedAttrs[key] === null || mergedAttrs[key] === undefined) {
-          mergedAttrs[key] = wrapperAttrs[key] as any;
-        }
+      if (wrapperAttrs[key] != null && mergedAttrs[key] == null) {
+        mergedAttrs[key] = wrapperAttrs[key] as any;
       }
     }
   }
 
-  // Resolve label from the merged attributes
   const label =
     resolveNodeLabel(contentEl, ctx.config, ctx.doc) ||
     resolveNodeLabel(element, ctx.config, ctx.doc);
@@ -1329,6 +1394,22 @@ async function buildChildrenFromSiblings(
       // }
       // else: heading stands alone — fall through to leaf
     }
+    // <p>-run → article
+    if (ctx.config.useStructuralInference && tag === "p") {
+      const result = await handleParagraphRun(
+        siblings,
+        index,
+        parentId,
+        landmarkParentId,
+        ctx,
+        readingDepth,
+      );
+      if (result) {
+        childIds.push(result.id);
+        index = result.endIndex;
+        continue;
+      }
+    }
 
     // Homogeneous run → list
     if (ctx.config.useStructuralInference) {
@@ -1350,23 +1431,6 @@ async function buildChildrenFromSiblings(
     // <a>-run → navigation
     if (ctx.config.useStructuralInference && tag === "a") {
       const result = await handleLinkRun(
-        siblings,
-        index,
-        parentId,
-        landmarkParentId,
-        ctx,
-        readingDepth,
-      );
-      if (result) {
-        childIds.push(result.id);
-        index = result.endIndex;
-        continue;
-      }
-    }
-
-    // <p>-run → article
-    if (ctx.config.useStructuralInference && tag === "p") {
-      const result = await handleParagraphRun(
         siblings,
         index,
         parentId,
@@ -1433,6 +1497,61 @@ export function collectLandmarkIds(tree: LandmarkTOCNode): string[] {
   return ids;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// UI chrome pruning
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Remove well-known non-content nodes from a parsed Document in place before
+ * the IR traversal starts.
+ *
+ * Why here (not in SKIP_TAGS): SKIP_TAGS operates on tag names, which are too
+ * coarse — we can't skip every <span> just because .mw-editsection is a span.
+ * Class-based selectors are the right tool; a single querySelectorAll pass is
+ * also faster than checking classes during every node visit.
+ *
+ * The selector list is deliberately conservative: only patterns whose content
+ * is never meaningful to a reader (edit links, footnote back-references, jump
+ * links, print-only notices, TOC which we reconstruct ourselves, etc.).
+ */
+function pruneUIChrome(doc: Document): void {
+  const PRUNE_SELECTORS = [
+    // ── MediaWiki / Wikipedia ─────────────────────────────────────────────
+    ".mw-editsection", // "[edit]" section links  ← the main culprit
+    ".mw-editsection-bracket", // the literal "[" and "]" text nodes
+    ".mw-jump-link", // "Jump to navigation / search" skip links
+    ".mw-cite-backlink", // ↑ back-links in reference lists
+    ".reference", // inline [1] footnote superscripts
+    ".noprint", // print-only notices, hidden in screen readers
+    ".mw-ui-button", // UI buttons injected into article wikitext
+    "#toc", // table of contents (we rebuild from headings)
+    "#catlinks", // "Categories: …" footer block
+    ".catlinks",
+    ".navbox", // navigation boxes (huge, low reading value)
+    ".sistersitebox",
+    ".metadata", // hatnotes that are purely administrative
+    // ── Generic accessibility chrome ──────────────────────────────────────
+    // aria-hidden elements that carry no text equivalent — these are safe to
+    // remove wholesale because a screen reader would skip them too.
+    // We only remove LEAF aria-hidden nodes (no meaningful children); nodes
+    // that hide decorative icons inside otherwise meaningful containers need
+    // to stay so the container's text is still reachable.
+    // The selector restricts to elements with no visible child text — we
+    // approximate this by targeting common icon/decorative patterns.
+    "svg[aria-hidden='true']",
+    "img[aria-hidden='true']",
+    "span[aria-hidden='true']:empty",
+  ];
+
+  for (const sel of PRUNE_SELECTORS) {
+    try {
+      doc.querySelectorAll(sel).forEach((el) => el.parentNode?.removeChild(el));
+    } catch {
+      // Malformed selector or DOM error — skip silently
+    }
+  }
+}
+
 export const parsePageToIR = async (
   htmlString: string,
   url: string,
@@ -1441,6 +1560,18 @@ export const parsePageToIR = async (
 ): Promise<PageIR> => {
   const parser = new DOMParser();
   const parsedDoc = parser.parseFromString(htmlString, "text/html");
+
+  // ── UI chrome pruning ───────────────────────────────────────────────────
+  // Remove well-known non-content elements before traversal so they never
+  // enter the IR as stray text/inline nodes.
+  //
+  // Covers:
+  //   Wikipedia / MediaWiki  — .mw-editsection ([edit] brackets + link),
+  //                            .mw-jump-link, .reference (footnote markers),
+  //                            .noprint, .mw-ui-button, .mw-cite-backlink,
+  //                            #toc (parsed separately via landmark), #catlinks
+  //   Generic patterns       — [aria-hidden="true"] leaves with no text
+  pruneUIChrome(parsedDoc);
 
   const inlineTags = new Set(INLINE_TAGS);
 
@@ -1613,7 +1744,7 @@ export const parsePageToIR = async (
     orderedNodes.length > 0 ? analytics.textLength / orderedNodes.length : 0;
 
   const landmarks = buildLandmarkTree(parsedTitle, landmarkRecords);
-
+  console.log(nodes);
   return {
     meta: {
       url,

@@ -519,6 +519,7 @@ export interface XRText extends XRPrimitiveBase {
   componentType: string | null;
   /** Always true for text nodes - they're prose runs */
   isProseRun: boolean;
+  styleTags: string[];
 }
 
 /** Dropdown / context menu. */

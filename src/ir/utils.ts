@@ -212,6 +212,7 @@ export function createEmptyAttributes(): IRNodeAttributes {
     componentType: null,
     autoplay: null,
     content: null,
+    styleTags: [],
   };
 }
 
