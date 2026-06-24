@@ -1646,6 +1646,8 @@ function pruneUIChrome(doc: Document): void {
     "svg[aria-hidden='true']",
     "img[aria-hidden='true']",
     "span[aria-hidden='true']:empty",
+    ".Z3988", // Wikipedia COinS metadata spans (empty, machine-readable only)
+    "span[title^='ctx_ver=']", // fallback selector for same pattern
   ];
 
   for (const sel of PRUNE_SELECTORS) {

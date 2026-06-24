@@ -313,37 +313,43 @@ export function isInlinePrimitive(type: string): boolean {
  * primitives (XRText, XRLink, XRButton). Wrappers with block children
  * (XRImage, sub-lists) are left in place.
  */
+// REPLACE the existing flattenInlineWrappers in utils.ts with:
 export function flattenInlineWrappers<
   T extends { type: string; children?: T[] },
 >(children: T[]): T[] {
-  return children.flatMap((child) => {
-    if (
-      child.type === "XRGenericPanel" &&
-      Array.isArray(child.children) &&
-      child.children.length > 0 &&
-      child.children.every((c) => isInlinePrimitive(c.type))
-    ) {
-      return child.children as T[];
-    }
-    // FIX: recurse into wrappers that don't qualify yet because one of
-    // their own children is itself a still-wrapped wrapper (e.g. a <span>
-    // around an <i> around an <a> — two nested transparent containers
-    // rather than one). Without this, a chain of nested non-interactive
-    // wrappers only unwraps its outermost level, leaving an inner
-    // XRGenericPanel as an opaque block even though its content is
-    // ultimately pure inline text/links once fully unwrapped.
-    if (
-      child.type === "XRGenericPanel" &&
-      Array.isArray(child.children) &&
-      child.children.length > 0
-    ) {
-      const unwrappedDescendants = flattenInlineWrappers(child.children);
-      if (unwrappedDescendants.every((c) => isInlinePrimitive(c.type))) {
-        return unwrappedDescendants;
+  // An empty XRGenericPanel (no children) is a metadata-only node (e.g. the
+  // Wikipedia Z3988 COinS span). It is transparent — drop it entirely and do
+  // not let it block the "are all siblings inline?" check on the parent.
+  const isEmptyPanel = (c: T) =>
+    c.type === "XRGenericPanel" &&
+    (!Array.isArray((c as any).children) || (c as any).children.length === 0);
+
+  return children
+    .filter((child) => !isEmptyPanel(child)) // drop empty metadata panels
+    .flatMap((child) => {
+      if (child.type !== "XRGenericPanel" || !Array.isArray(child.children)) {
+        return [child];
       }
-    }
-    return [child];
-  });
+      // Filter out empty sub-panels before checking inline-ness
+      const meaningfulChildren = child.children.filter(
+        (c) => !isEmptyPanel(c as T),
+      );
+      if (
+        meaningfulChildren.length > 0 &&
+        meaningfulChildren.every((c) => isInlinePrimitive((c as T).type))
+      ) {
+        return meaningfulChildren as T[];
+      }
+      // Recurse: the wrapper may contain nested wrappers that haven't
+      // been unwrapped yet (e.g. <span><i><a>…</a></i></span>).
+      if (meaningfulChildren.length > 0) {
+        const unwrapped = flattenInlineWrappers(meaningfulChildren as T[]);
+        if (unwrapped.every((c) => isInlinePrimitive(c.type))) {
+          return unwrapped;
+        }
+      }
+      return [child];
+    });
 }
 
 /**

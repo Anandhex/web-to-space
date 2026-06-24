@@ -3,21 +3,25 @@
  *
  * Positioning contract
  * ────────────────────
- * The layout engine outputs entry.position in two coordinate spaces:
+ * The layout engine outputs entry.position in ONE coordinate system for
+ * every primitive, at every depth:
  *
- * Top-level landmark panels  → world space (e.g. x=0, y=1.4, z=-1.2)
- * All children               → LOCAL space relative to their parent panel's
- * top-left origin (e.g. x=0.04, y=-0.04, z=0)
+ *   • Top-level landmarks   → world space  (e.g. x=0, y=1.4, z=-1.2)
+ *   • Inside XRContentPanel → panel-absolute space relative to the panel's
+ *                             top-left origin (e.g. x=0.04, y=-0.04, z=0)
  *
- * Because Three.js group transforms compose automatically, the correct
- * rendering strategy is simply:
+ * paginateContentPanel's stampDescendants pass ensures that EVERY descendant
+ * inside a paginated panel — regardless of nesting depth — has its
+ * panel-absolute position written into placedPositionMap before layoutPrimitive
+ * reads it. There is no parent-relative coordinate system to handle.
  *
- * 1. Every primitive gets a <group position={entry.position}> wrapper.
- * 2. Every mesh component receives zeroedEntry() so its internal
- * entryTransform() group is at [0,0,0] — not double-applying position.
- * 3. Children are dispatched INSIDE the parent's <group>, inheriting
- * the parent's world transform. Their local-space entry.position
- * then resolves correctly via Three.js group composition.
+ * The renderer contract is therefore simple and uniform:
+ *   1. Every primitive gets <group position={[ex, ey, ez]}> for its OWN visual.
+ *   2. Every mesh receives zeroedEntry() so it doesn't double-apply position.
+ *   3. Children are dispatched as SIBLINGS of their parent's group (NOT nested
+ *      inside it), because their positions are already panel-absolute.
+ *      Exception: primitives that use renderChild() (XRSectionMesh,
+ *      XRListItemMesh, XRParagraphMesh) handle child positioning internally.
  *
  * Pagination contract
  * ───────────────────
@@ -26,9 +30,8 @@
  *
  * • XRContentPanel sets CurrentPageContext to the user's current page.
  * • Every PrimitiveDispatcher reads CurrentPageContext and returns null
- * if entry.pageIndex is defined and !== currentPage.
- * • No ID lists, no slice maps, no position re-basing needed — the
- * engine assigns correct page-relative positions to every primitive.
+ *   if entry.pageIndex is defined and !== currentPage.
+ * • No ID lists, no slice maps, no position re-basing needed.
  *
  * Clipping
  * ────────
@@ -157,6 +160,108 @@ function zeroedEntry(entry: LayoutEntry): LayoutEntry {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Renderer helpers
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Wraps a mesh in a positioned group using the entry's panel-absolute
+ * coordinates. Every leaf primitive uses this — the mesh itself receives
+ * zeroedEntry() so it never double-applies the translation.
+ */
+function AtPos({
+  entry,
+  children,
+}: {
+  entry: LayoutEntry;
+  children: React.ReactNode;
+}) {
+  const { x, y, z } = entry.position;
+  const rot: [number, number, number] = [
+    entry.rotation.x,
+    entry.rotation.y,
+    entry.rotation.z,
+  ];
+  return (
+    <group position={[x, y, z]} rotation={rot}>
+      {children}
+    </group>
+  );
+}
+
+/**
+ * Dispatches every child primitive as a sibling (panel-absolute coordinates).
+ * Used by containers whose children already carry panel-absolute positions so
+ * nesting them inside a parent group would double-translate them.
+ */
+function DispatchChildren({
+  primitives,
+  plan,
+  pageState,
+  setPage,
+  primitiveMap,
+}: {
+  primitives: XRPrimitive[];
+  plan: LayoutPlan;
+  pageState: PageState;
+  setPage: (id: string, page: number) => void;
+  primitiveMap: Map<string, XRPrimitive>;
+}) {
+  return (
+    <>
+      {primitives.map((child) => (
+        <PrimitiveDispatcher
+          key={child.id}
+          primitive={child}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
+      ))}
+    </>
+  );
+}
+
+/**
+ * Renders a container's own visual (backing/mesh) at its panel-absolute
+ * position, then dispatches its children as siblings so their own
+ * panel-absolute positions aren't compounded with the parent's offset.
+ *
+ * This is the standard pattern for XRSection, XRListItem (block-only),
+ * XRArticle, XRFormPanel, and unknown container types.
+ */
+function WithSiblingChildren({
+  entry,
+  backing,
+  primitives,
+  plan,
+  pageState,
+  setPage,
+  primitiveMap,
+}: {
+  entry: LayoutEntry;
+  backing: React.ReactNode;
+  primitives: XRPrimitive[];
+  plan: LayoutPlan;
+  pageState: PageState;
+  setPage: (id: string, page: number) => void;
+  primitiveMap: Map<string, XRPrimitive>;
+}) {
+  return (
+    <>
+      <AtPos entry={entry}>{backing}</AtPos>
+      <DispatchChildren
+        primitives={primitives}
+        plan={plan}
+        pageState={pageState}
+        setPage={setPage}
+        primitiveMap={primitiveMap}
+      />
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Pipeline hook
 // ─────────────────────────────────────────────────────────────
 
@@ -258,7 +363,6 @@ function XRContentPanelRenderer({
       <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
         <PanelBacking entry={zeroedEntry(entry)} opacity={0.35} />
         <ClipPlanesContext.Provider value={panelClipPlanes}>
-          {/* ✅ Just render children normally - they'll filter themselves via pageIndex */}
           {primitive.children.map((child) => (
             <PrimitiveDispatcher
               key={child.id}
@@ -377,187 +481,165 @@ function PrimitiveDispatcher({
     [primitiveMap, plan, pageState, setPage],
   );
 
-  const ex = entry.position.x;
-  const ey = entry.position.y;
-  const ez = entry.position.z;
-  const rot: [number, number, number] = [
-    entry.rotation.x,
-    entry.rotation.y,
-    entry.rotation.z,
-  ];
-
   switch (primitive.type) {
     case "XRHeading":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRHeadingMesh
             primitive={primitive as XRHeading}
             entry={zeroedEntry(entry)}
             renderChild={renderChild}
           />
-        </group>
+        </AtPos>
       );
     case "XRParagraph":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRParagraphMesh
             primitive={primitive as XRParagraph}
             entry={zeroedEntry(entry)}
             renderChild={renderChild}
             getChildEntry={(childId: string) => plan.entries[childId] ?? null}
           />
-        </group>
+        </AtPos>
       );
     case "XRText":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRTextMesh
             primitive={primitive as import("../mapper/types").XRText}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
-
     case "XRLink":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRLinkMesh
             primitive={primitive as import("../mapper/types").XRLink}
             entry={zeroedEntry(entry)}
             renderChild={renderChild}
           />
-        </group>
+        </AtPos>
       );
     case "XRNavigationBar":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRNavigationMesh
             primitive={primitive as XRNavigationBar}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
     case "XRMediaPlayer":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRMediaMesh
             primitive={primitive as XRMediaPlayer}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
     case "XRCodeBlock":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRCodeBlockMesh
             primitive={primitive as XRCodeBlock}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
     case "XRBlockQuote":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRBlockQuoteMesh
             primitive={primitive as XRBlockQuote}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
     case "XRSeparator":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRSeparatorMesh
             primitive={primitive as XRSeparator}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
     case "XRProgressBar":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRProgressBarMesh
             primitive={primitive as XRProgressBar}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
     case "XRImage":
     case "XRFigure":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRImageMesh
             primitive={primitive as XRImage}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
     case "XRButton":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRButtonMesh
             primitive={primitive as XRButton}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
     case "XRAlert":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRAlertMesh
             primitive={primitive as XRAlert}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
     case "XRFormField":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRFormFieldMesh
             primitive={primitive as XRFormField}
             entry={zeroedEntry(entry)}
           />
-        </group>
+        </AtPos>
       );
 
     case "XRSection": {
-      const hasCrossPageChildren = primitive.children.some((child) => {
-        const childEntry = plan.entries[child.id];
-        return (
-          childEntry?.pageIndex !== undefined &&
-          childEntry.pageIndex !== entry.pageIndex
+      const sectionChildEntries = primitive.children
+        .map((c) => plan.entries[c.id])
+        .filter(
+          (e): e is LayoutEntry =>
+            !!e && (e.pageIndex === undefined || e.pageIndex === currentPage),
         );
-      });
-
-      if (hasCrossPageChildren) {
-        // Render children directly at their own positions
-        return (
-          <>
-            {primitive.children.map((child) => (
-              <PrimitiveDispatcher
-                key={child.id}
-                primitive={child}
-                plan={plan}
-                pageState={pageState}
-                setPage={setPage}
-                primitiveMap={primitiveMap}
-              />
-            ))}
-          </>
-        );
-      }
-
       return (
-        <group key={primitive.id} position={[0, 0, 0]} rotation={rot}>
-          <XRSectionMesh
-            primitive={primitive as XRSection}
-            entry={zeroedEntry(entry)}
-            childEntries={[]}
-            renderChild={renderChild}
-            isContinuation={false}
-            hasMore={false}
-          />
-        </group>
+        <WithSiblingChildren
+          entry={entry}
+          backing={
+            <XRSectionMesh
+              primitive={primitive as XRSection}
+              entry={zeroedEntry(entry)}
+              childEntries={sectionChildEntries}
+              renderChild={() => null}
+              isContinuation={false}
+              hasMore={false}
+            />
+          }
+          primitives={primitive.children}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
       );
     }
 
@@ -579,95 +661,104 @@ function PrimitiveDispatcher({
     case "XRBanner":
     case "XRFooter":
     case "XRComplementary": {
-      // XRArticle and XRFormPanel are spanning wrappers — their children carry
-      // panel-local positions, so this group must be at [0,0,0].
-      // XRBanner/XRFooter/XRComplementary are top-level landmarks placed in
-      // world space by the engine, so they use their own entry position.
-      const isLandmark =
+      if (
         primitive.type === "XRBanner" ||
         primitive.type === "XRFooter" ||
-        primitive.type === "XRComplementary";
-      const wrapperPos: [number, number, number] = isLandmark
-        ? [ex, ey, ez]
-        : [0, 0, 0];
-      const wrapperRot: [number, number, number] = isLandmark ? rot : [0, 0, 0];
-      if (isLandmark) {
+        primitive.type === "XRComplementary"
+      ) {
         return null;
       }
+      // Children have panel-absolute positions — render own backing then
+      // dispatch children as siblings to avoid double-translating offsets.
       return (
-        <group key={primitive.id} position={wrapperPos} rotation={wrapperRot}>
-          <PanelBacking entry={zeroedEntry(entry)} opacity={0.2} />
-          {primitive.children.map((child) => (
-            <PrimitiveDispatcher
-              key={child.id}
-              primitive={child}
-              plan={plan}
-              pageState={pageState}
-              setPage={setPage}
-              primitiveMap={primitiveMap}
-            />
-          ))}
-        </group>
+        <WithSiblingChildren
+          entry={entry}
+          backing={<PanelBacking entry={zeroedEntry(entry)} opacity={0.2} />}
+          primitives={primitive.children}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
       );
     }
 
     case "XRListItem": {
+      const hasOnlyBlockChildren =
+        primitive.children.length > 0 &&
+        primitive.children.every(
+          (c) =>
+            c.type !== "XRText" && c.type !== "XRLink" && c.type !== "XRButton",
+        );
+
+      if (hasOnlyBlockChildren) {
+        // Block-only card: backing at card position, children as siblings.
+        return (
+          <WithSiblingChildren
+            entry={entry}
+            backing={
+              <XRListItemMesh
+                primitive={primitive as XRListItem}
+                entry={zeroedEntry(entry)}
+                renderChild={() => null}
+              />
+            }
+            primitives={primitive.children}
+            plan={plan}
+            pageState={pageState}
+            setPage={setPage}
+            primitiveMap={primitiveMap}
+          />
+        );
+      }
+
+      // Inline-children case: mesh owns child rendering via renderChild.
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRListItemMesh
             primitive={primitive as XRListItem}
             entry={zeroedEntry(entry)}
             renderChild={renderChild}
           />
-        </group>
+        </AtPos>
       );
     }
 
     case "XRList":
     case "XRTableRow":
-    case "XRTableCell": {
-      // XRList children have list-local positions from stackChildrenSimple.
-      // The list group is at [ex,ey,ez]; each XRListItem is offset from the
-      // list's own origin. Three.js group composition resolves this correctly.
+    case "XRTableCell":
+      // Children have panel-absolute positions — dispatch as siblings only.
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
-          {primitive.children.map((child) => (
-            <PrimitiveDispatcher
-              key={child.id}
-              primitive={child}
-              plan={plan}
-              pageState={pageState}
-              setPage={setPage}
-              primitiveMap={primitiveMap}
-            />
-          ))}
-        </group>
+        <DispatchChildren
+          primitives={primitive.children}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
       );
-    }
 
-    case "XRTable": {
+    case "XRTable":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRTableMesh
             primitive={primitive as XRTable}
             entry={zeroedEntry(entry)}
             renderChild={renderChild}
           />
-        </group>
+        </AtPos>
       );
-    }
 
-    case "XRTabGroup": {
+    case "XRTabGroup":
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
+        <AtPos entry={entry}>
           <XRTabGroupMesh
             primitive={primitive as XRTabGroup}
             entry={zeroedEntry(entry)}
             renderChild={renderChild}
           />
-        </group>
+        </AtPos>
       );
-    }
 
     case "XRTab":
     case "XRTabPanel":
@@ -684,7 +775,7 @@ function PrimitiveDispatcher({
     case "XRLink": {
       const w = Math.max(entry.size.width, 0.025);
       return (
-        <group key={primitive.id} position={[ex, ey, ez]}>
+        <AtPos entry={entry}>
           <ClippedText
             font={fontType}
             anchorX="left"
@@ -696,72 +787,41 @@ function PrimitiveDispatcher({
           >
             {primitive.label ?? primitive.type}
           </ClippedText>
-        </group>
+        </AtPos>
       );
     }
 
     default: {
-      // XRGenericPanel should be completely transparent - just render children directly
-      // No group, no padding, no position offset, no visual representation
+      // XRGenericPanel is a transparent wrapper — no visual of its own.
+      // Children already carry panel-absolute positions, so dispatch directly.
       if (primitive.type === "XRGenericPanel") {
         return (
-          <>
-            {primitive.children.map((child) => (
-              <PrimitiveDispatcher
-                key={child.id}
-                primitive={child}
-                plan={plan}
-                pageState={pageState}
-                setPage={setPage}
-                primitiveMap={primitiveMap}
-              />
-            ))}
-          </>
+          <DispatchChildren
+            primitives={primitive.children}
+            plan={plan}
+            pageState={pageState}
+            setPage={setPage}
+            primitiveMap={primitiveMap}
+          />
         );
       }
 
-      // For other generic types, check if this is a cross-page container
-      const hasCrossPageChildren = primitive.children.some((child) => {
-        const childEntry = plan.entries[child.id];
-        return (
-          childEntry?.pageIndex !== undefined &&
-          childEntry.pageIndex !== entry.pageIndex
-        );
-      });
-
-      if (hasCrossPageChildren) {
-        // Render children directly (they'll position themselves correctly)
-        return (
-          <>
-            {primitive.children.map((child) => (
-              <PrimitiveDispatcher
-                key={child.id}
-                primitive={child}
-                plan={plan}
-                pageState={pageState}
-                setPage={setPage}
-                primitiveMap={primitiveMap}
-              />
-            ))}
-          </>
-        );
-      }
-
-      // Normal case: render this container at its position with children inside
+      // Unknown container: render a debug backing, children as siblings.
       return (
-        <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
-          <GenericPanelMesh primitive={primitive} entry={zeroedEntry(entry)} />
-          {primitive.children.map((child) => (
-            <PrimitiveDispatcher
-              key={child.id}
-              primitive={child}
-              plan={plan}
-              pageState={pageState}
-              setPage={setPage}
-              primitiveMap={primitiveMap}
+        <WithSiblingChildren
+          entry={entry}
+          backing={
+            <GenericPanelMesh
+              primitive={primitive}
+              entry={zeroedEntry(entry)}
             />
-          ))}
-        </group>
+          }
+          primitives={primitive.children}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
       );
     }
   }
@@ -979,6 +1039,46 @@ function XRSceneGraph({
     //   withoutPage.map((e) => e.id),
     // );
 
+    // Inline children of inline-owning types (XRParagraph, XRHeading,
+    // XRListItem, XRBlockQuote) are rendered as text runs by the mesh
+    // component and intentionally have no plan entry. Exclude them from
+    // the missing-entries check so the warning stays actionable.
+    const INLINE_OWNING = new Set([
+      "XRParagraph",
+      "XRHeading",
+      "XRListItem",
+      "XRBlockQuote",
+    ]);
+    const INLINE_TYPES = new Set(["XRText", "XRLink", "XRButton"]);
+    const intentionallyAbsent = new Set<string>();
+    const markInlineChildren = (node: XRPrimitive) => {
+      // Standard inline-owning types: their XRText/XRLink/XRButton children
+      // are rendered as prose runs and intentionally have no plan entries.
+      if (INLINE_OWNING.has(node.type)) {
+        for (const child of node.children) {
+          if (INLINE_TYPES.has(child.type)) {
+            intentionallyAbsent.add(child.id);
+          }
+        }
+      }
+      // XRGenericPanel acting as a transparent inline wrapper: when ALL its
+      // children are inline, the parent renders them as a prose flow via
+      // flattenInlineWrappers — so the children have no plan entries and the
+      // XRGenericPanel itself may or may not have one.
+      if (
+        node.type === "XRGenericPanel" &&
+        node.children.length > 0 &&
+        node.children.every((c) => INLINE_TYPES.has(c.type))
+      ) {
+        intentionallyAbsent.add(node.id);
+        for (const child of node.children) {
+          intentionallyAbsent.add(child.id);
+        }
+      }
+      node.children.forEach(markInlineChildren);
+    };
+    markInlineChildren(scene.root);
+
     // Check which primitives in the scene have no entry
     const allPrimitiveIds = new Set<string>();
     const collectIds = (node: XRPrimitive) => {
@@ -988,7 +1088,7 @@ function XRSceneGraph({
     collectIds(scene.root);
 
     const missingEntries = Array.from(allPrimitiveIds).filter(
-      (id) => !plan.entries[id],
+      (id) => !plan.entries[id] && !intentionallyAbsent.has(id),
     );
     if (missingEntries.length > 0) {
       console.warn(`[SCENE] Primitives missing from plan:`, missingEntries);

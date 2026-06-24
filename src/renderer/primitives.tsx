@@ -41,21 +41,6 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { useTexture } from "@react-three/drei";
 
-// In layout/utils.ts
-export function flattenInlineWrappers<
-  T extends { type: string; children?: T[] },
->(children: T[]): T[] {
-  return children.flatMap((child) =>
-    child.type === "XRGenericPanel" &&
-    child.children?.every(
-      (c) =>
-        c.type === "XRText" || c.type === "XRLink" || c.type === "XRButton",
-    )
-      ? child.children!
-      : [child],
-  );
-}
-
 // ─────────────────────────────────────────────────────────────
 // Panel clipping context
 // ─────────────────────────────────────────────────────────────
@@ -94,6 +79,7 @@ import {
   LIST_ITEM_LABEL_TOP_INSET,
   mergeAdjacentTextRuns,
   isInlinePrimitive,
+  flattenInlineWrappers,
 } from "../layout/utils";
 
 // ─────────────────────────────────────────────────────────────
@@ -385,16 +371,28 @@ export function XRHeadingMesh({
       child.type === "XRLink" ||
       child.type === "XRButton",
   );
-  if (hasTextChildren)
+  if (hasTextChildren) {
+    // Inline children (XRText, XRLink) are flowed as a prose run — they are
+    // NOT dispatched through renderChild/PrimitiveDispatcher since the engine
+    // does not stamp plan entries for inline children of inline-owning nodes.
+    const flattened = flattenInlineWrappers(
+      mergeAdjacentTextRuns(primitive.children as any[]) as any[],
+    );
+    const rows = buildInlineRows(flattened);
     return (
       <group position={pos} rotation={rot}>
-        <group position={[0, 0, 0]}>
-          <TextStyleContext.Provider value={headingMetric}>
-            {primitive.children.map((child) => renderChild(child.id))}
-          </TextStyleContext.Provider>
-        </group>
+        <InlineProseRows
+          rows={rows}
+          startY={0}
+          panelWidth={entry.size.width}
+          fontSize={fontSize}
+          lineHeightRatio={headingMetric.lineHeightRatio}
+          xInset={0}
+          renderChild={renderChild}
+        />
       </group>
     );
+  }
 
   return (
     <group position={pos} rotation={rot}>
@@ -1495,7 +1493,11 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
         <Html position={[w / 2, -h / 2, 0]}>
           <img
             src={primitive.src ?? ""}
-            style={{ width: w * 100, height: h * 100 }}
+            style={{
+              width: `${w * 300}px`,
+              height: `${h * 300}px`,
+              objectFit: "cover",
+            }}
           />
         </Html>
       )}

@@ -48,20 +48,20 @@
  *
  *   stackChildrenSimple(children, panelWidth, config, metrics)
  *     Pure vertical stacker. No page awareness whatsoever.
- *     Used by every container that is NOT an XRContentPanel.
- *     Returns page-relative y-positions (always resets to -panelPaddingTop
- *     at the start). Since these nodes live inside a single page slice,
- *     "page-relative" and "panel-relative" mean the same thing here.
+ *     Used internally by paginateContentPanel's stampDescendants pass to
+ *     compute local offsets for nodes not directly placed by the paginator.
+ *     Also used by every container that is NOT an XRContentPanel (outside
+ *     the paginated context entirely).
  *
  *   paginateContentPanel(children, panelWidth, scene, config, metrics, diag)
  *     Section-aware paginator. Only ever called for XRContentPanel nodes.
- *     Emits page-relative y-positions per child — each entry's y is
- *     relative to the TOP of the page it belongs to (resets to
- *     -panelPaddingTop whenever a new page starts).
- *     The renderer therefore needs only:
- *       worldY = entry.position.y          (already page-relative)
- *       worldZ = baseZ + pageIndex * pageZStep
- *     No layout reconstruction on the renderer side.
+ *     After placing top-level children, runs a stampDescendants pass that
+ *     walks the ENTIRE subtree and writes panel-absolute positions for every
+ *     descendant into placedPositionMap. This gives the renderer ONE uniform
+ *     coordinate system: entry.position is always panel-absolute, at any depth.
+ *     The renderer never needs to distinguish "was this placed by the paginator
+ *     directly?" from "was this placed by stackChildrenSimple?" — there is no
+ *     longer a difference from the renderer's perspective.
  *
  */
 
@@ -152,6 +152,7 @@ function sumChildrenHeights(
   return totalHeight;
 }
 
+const LIST_ITEM_PROSE_INSET = 0.014;
 // ─────────────────────────────────────────────────────────────
 // Layout configuration (spatial parameters, not render metrics)
 // ─────────────────────────────────────────────────────────────
@@ -512,13 +513,16 @@ function estimateHeight(
           // block with its own lineH + verticalPadding + childGapY, producing
           // a wildly overestimated card height. We must mirror the renderer:
           // flatten wrappers → merge adjacent text → estimateInlineFlowHeight.
-          const flattened = flattenInlineWrappers(
-            mergeAdjacentTextRuns(primitive.children as any[]) as XRPrimitive[],
+          const flattened = mergeAdjacentTextRuns(
+            flattenInlineWrappers(primitive.children as any[]) as XRPrimitive[],
           );
           const hasAnyInline = flattened.some((c) => isInlinePrimitive(c.type));
           const hasAnyBlock = flattened.some((c) => !isInlinePrimitive(c.type));
           const m = metrics.paragraph;
-          const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
+          const wordsPerLine = computeWordsPerLine(
+            panelUsableWidth - LIST_ITEM_PROSE_INSET,
+            m,
+          );
           const lineH = m.fontSize * m.lineHeightRatio;
 
           let contentHeight: number;
@@ -628,7 +632,7 @@ function estimateHeight(
     );
     const cardUsableWidth = Math.max(
       0.025,
-      panelUsableWidth / Math.max(1, columns),
+      panelUsableWidth / columns - LIST_ITEM_PROSE_INSET,
     );
     const cardHeights =
       primitive.children.length > 0
@@ -918,8 +922,12 @@ function stackChildrenSimple(
     const cardWidth = Math.max(0.025, childWidth / columns);
     const rowCount = Math.ceil(children.length / columns);
     const childEntries: LayoutEntry[] = [];
-    let cursorY = -config.panelPaddingTop;
-    let totalHeight = config.panelPaddingTop;
+    // cursorY starts at 0 (no internal top padding): the XRList container's
+    // own position already accounts for padding contributed by its parent's
+    // stackChildrenSimple call. Adding panelPaddingTop here again would push
+    // all items down by a second padding unit (double-padding bug).
+    let cursorY = 0;
+    let totalHeight = 0;
 
     for (let row = 0; row < rowCount; row++) {
       const rowStart = row * columns;
@@ -967,7 +975,8 @@ function stackChildrenSimple(
       cursorY -= rowGap + rowH;
       totalHeight += rowGap + rowH;
     }
-    totalHeight += config.panelPaddingTop;
+    // No extra panelPaddingTop added here: the list container's height
+    // already includes surrounding padding from its parent's estimateHeight.
 
     return { childEntries, totalHeight };
   }
@@ -1037,17 +1046,14 @@ function stackChildrenSimple(
  * This is the ONLY place in the engine where pages are created. All other
  * containers call stackChildrenSimple instead.
  *
- * Page-relative y-positions
- * ─────────────────────────
- * Every child entry's position.y is relative to the TOP of the page it
- * belongs to, not the top of the panel overall. This means:
- *   - Page 0, first item:  y = -panelPaddingTop
- *   - Page 1, first item:  y = -panelPaddingTop  (reset)
- *   - Page 2, first item:  y = -panelPaddingTop  (reset)
- *
- * The renderer combines (pageRelativeY, pageIndex) to get world position:
- *   worldY = entry.position.y
- *   worldZ = panelBaseZ + entry.pageIndex * pageZStep
+ * Coordinate system
+ * ──────────────────
+ * All positions in placedPositionMap are PANEL-ABSOLUTE: relative to the
+ * XRContentPanel's top-left origin. The stampDescendants pass (run after the
+ * main pagination loop) walks every descendant and converts their
+ * stackChildrenSimple-computed local offsets to panel-absolute before writing
+ * them to the map. The renderer therefore uses entry.position as-is for every
+ * node with no special casing.
  *
  * Section handling
  * ────────────────
@@ -1164,7 +1170,7 @@ function paginateContentPanel(
         pageIndexMap[sc.id] = pageIdx;
         positionMap.set(sc.id, {
           x: config.panelPaddingX,
-          y: -config.panelPaddingTop,
+          y: cursorY - (itemsOnPage > 0 ? config.childGapY : 0),
           z: 0,
         });
 
@@ -1324,6 +1330,162 @@ function paginateContentPanel(
       absoluteY += g + h;
       itemsOnPage += 1;
     }
+  }
+
+  // ── Stamp all descendants with panel-absolute positions ───────────────────
+  // positionMap currently contains only the nodes that the main pagination
+  // loop and splitSection explicitly placed (sections, generic panels, and
+  // direct atomic leaves). Any deeper descendants — e.g. children of XRList,
+  // XRListItem, XRFigure, nested XRGenericPanel inside a list item — are
+  // absent from the map.
+  //
+  // Without this pass, layoutPrimitive would fall back to stackChildrenSimple
+  // for those missing levels and produce PARENT-RELATIVE positions, creating
+  // a second coordinate system that the renderer would have to handle with
+  // special cases. Instead we complete the map here so every descendant has
+  // a PANEL-ABSOLUTE position, giving the renderer one uniform coordinate
+  // system: always use entry.position as-is, always wrap in a group at that
+  // position, never worry about whether a node is "inside" or "outside" the
+  // paginator's direct scope.
+  // Node types that own inline text rendering. Their inline children
+  // (XRText, XRLink, XRButton) are flowed as text runs by the mesh
+  // component — they are NOT positioned as independent 3D nodes. Stamping
+  // panel-absolute positions for them would cause PrimitiveDispatcher to
+  // render them as displaced groups on top of the already-rendered text.
+  // Only non-inline (block) children of these nodes need stamping — those
+  // are dispatched via renderChild as positioned sub-panels (e.g. a sub-list
+  // inside a list item, or an image inside a paragraph).
+  const INLINE_OWNING_TYPES = new Set([
+    "XRParagraph",
+    "XRHeading",
+    "XRListItem",
+    "XRBlockQuote",
+  ]);
+
+  function stampDescendants(
+    node: XRPrimitive,
+    absX: number,
+    absY: number,
+    availableWidth: number,
+  ): void {
+    if (node.children.length === 0) return;
+
+    // If this node owns inline text rendering, skip stamping pure inline
+    // children — they are rendered as text runs by the mesh component, not
+    // as independent positioned 3D nodes. Only recurse into block children
+    // (sub-lists, images, etc.) which ARE dispatched via renderChild.
+    //
+    // XRGenericPanel is also treated as an inline-owning wrapper when ALL of
+    // its children are inline (XRText/XRLink/XRButton). In that case the parent
+    // XRListItemMesh uses flattenInlineWrappers() to see through it and renders
+    // the children as a prose run — so we must NOT stamp them as positioned 3D
+    // nodes. If the XRGenericPanel has mixed or block-only children, fall through
+    // to the normal path so block children get panel-absolute positions.
+    const isInlineWrapper =
+      node.type === "XRGenericPanel" &&
+      node.children.length > 0 &&
+      node.children.every((c) => isInlinePrimitive(c.type));
+
+    const hasOnlyBlockChildren =
+      node.type === "XRListItem" &&
+      node.children.length > 0 &&
+      node.children.every((c) => !isInlinePrimitive(c.type));
+
+    if (
+      (INLINE_OWNING_TYPES.has(node.type) || isInlineWrapper) &&
+      !hasOnlyBlockChildren
+    ) {
+      for (const child of node.children) {
+        if (!isInlinePrimitive(child.type)) {
+          // Block child inside an inline-owning container: it IS dispatched
+          // via renderChild and needs a panel-absolute position.
+          if (!positionMap.has(child.id)) {
+            // Position it immediately below the parent's top edge as a best
+            // estimate — the mesh component controls exact Y via renderChild.
+            const panelAbs: Vec3 = { x: absX, y: absY, z: 0 };
+            positionMap.set(child.id, panelAbs);
+            heightMap.set(
+              child.id,
+              estimateHeight(
+                child,
+                availableWidth,
+                metrics,
+                config,
+                new Set(),
+                scene,
+              ),
+            );
+            if (pageIndexMap[child.id] === undefined) {
+              pageIndexMap[child.id] = pageIndexMap[node.id] ?? pageIdx;
+            }
+          }
+          const childAbs = positionMap.get(child.id)!;
+          stampDescendants(child, childAbs.x, childAbs.y, availableWidth);
+        }
+      }
+      return;
+    }
+
+    // If the children are already in positionMap (stamped by splitSection or
+    // the main loop), just recurse with their known absolute positions.
+    const firstChild = node.children[0];
+    if (firstChild && positionMap.has(firstChild.id)) {
+      for (const child of node.children) {
+        const childAbs = positionMap.get(child.id);
+        if (!childAbs) continue;
+        stampDescendants(child, childAbs.x, childAbs.y, availableWidth);
+      }
+      return;
+    }
+
+    // Children are NOT in the map yet. Run stackChildrenSimple in the context
+    // of this node to get their local-to-parent positions, then convert each
+    // to panel-absolute by adding the parent's known absolute position.
+    const resolvedListColumns =
+      node.type === "XRList"
+        ? resolveListColumns(node as XRList, availableWidth, metrics)
+        : undefined;
+
+    const { childEntries } = stackChildrenSimple(
+      node.children,
+      availableWidth,
+      config,
+      metrics,
+      node.type,
+      resolvedListColumns,
+      node.label,
+    );
+
+    for (let i = 0; i < node.children.length; i++) {
+      const child = node.children[i];
+      const local = childEntries[i];
+      if (!local) continue;
+
+      const panelAbs: Vec3 = {
+        x: absX + local.position.x,
+        y: absY + local.position.y,
+        z: local.position.z,
+      };
+      positionMap.set(child.id, panelAbs);
+      heightMap.set(child.id, local.size.height);
+
+      // Inherit page index from the parent if not already stamped.
+      if (pageIndexMap[child.id] === undefined) {
+        pageIndexMap[child.id] = pageIndexMap[node.id] ?? pageIdx;
+      }
+
+      // Recurse: the child's usable width comes from stackChildrenSimple's
+      // entry, which already accounts for the child's own x-padding.
+      stampDescendants(child, panelAbs.x, panelAbs.y, local.size.width);
+    }
+  }
+
+  // Kick off the pass from each top-level child that was placed by the main
+  // pagination loop. Their absolute positions are already in positionMap.
+  for (const child of children) {
+    const abs = positionMap.get(child.id);
+    if (!abs) continue;
+    stampDescendants(child, abs.x, abs.y, childWidth);
   }
 
   const totalPages = pageIdx + 1;
@@ -1500,113 +1662,49 @@ function layoutPrimitive(
         );
       }
     } else if (placedPositionMap && placedHeightMap) {
-      // ── Inside a paginated panel ──────────────────────────────────────────
-      // Check if this primitive's children were positioned by the paginator
-      // (paginateContentPanel only positions direct children of XRContentPanel,
-      // not grandchildren. So for most primitives, children won't be in the map.)
-      const firstChild = primitive.children[0];
-      const childrenHavePositions = firstChild
-        ? placedPositionMap.has(firstChild.id)
-        : true;
-
-      if (!childrenHavePositions) {
-        // ── Children were NOT positioned by paginator ──────────────────────
-        // This is the common case for any container with children that isn't
-        // a direct child of XRContentPanel (e.g. XRParagraph, XRHeading,
-        // XRSection, XRGenericPanel nested more than one level deep).
-        //
-        // stackChildrenSimple produces positions LOCAL to this container.
-        // The container itself is already world-positioned from its own
-        // placedPositionMap entry; children's positions are relative to it.
-        //
-        // IMPORTANT: we must still forward placedPositionMap, placedHeightMap,
-        // and pageIndexMap into the recursive call. A child at this level may
-        // itself be a container with children that DO have map entries (e.g.
-        // a nested XRSection whose sub-children were stamped by splitSection).
-        // Dropping the maps here would leave those grandchildren unable to
-        // find their page index, producing y=0 / page=0 placements for
-        // everything below this node.
-        //
-        // The child's own pageIndex is inherited from this container — the
-        // paginator's stampSubtree() already wrote the correct page for every
-        // descendant into pageIndexMap, so prefer that over inheritedPageIndex.
-        const resolvedListColumns =
-          primitive.type === "XRList" ? (entry.listColumns ?? 1) : undefined;
-
-        const { childEntries } = stackChildrenSimple(
-          primitive.children,
-          worldSize.width,
-          config,
-          metrics,
-          primitive.type,
-          resolvedListColumns,
-          primitive.label,
-        );
-
-        for (let i = 0; i < primitive.children.length; i++) {
-          const child = primitive.children[i];
-          const childLayoutEntry = childEntries[i];
-          if (!childLayoutEntry) continue;
-
-          // Prefer the page index that stampSubtree wrote for this child;
-          // fall back to what this container inherited.
-          const childPageIndex = pageIndexMap?.[child.id] ?? inheritedPageIndex;
-
-          layoutPrimitive(
-            child,
-            childLayoutEntry.position,
-            childLayoutEntry.rotation,
-            childLayoutEntry.size,
-            0,
-            worldLocked,
-            scene,
-            config,
-            metrics,
-            entries,
-            diag,
-            childPageIndex,
-            // Forward maps so deeper descendants can still resolve their
-            // page indices and placed heights from paginateContentPanel.
-            pageIndexMap,
-            placedPositionMap,
-            placedHeightMap,
-          );
-        }
-      } else {
-        // ── Children WERE positioned by paginator ──────────────────────────
-        // This only happens for direct children of XRContentPanel.
-        // Look up each child's position from the maps.
+      // ── Inside a paginated panel ──────────────────────────────────────────────
+      // paginateContentPanel's stampDescendants pass has written panel-absolute
+      // positions for EVERY descendant into placedPositionMap. There is one
+      // coordinate system: always look up from the map, never call
+      // stackChildrenSimple. The renderer uses entry.position uniformly for
+      // every node with no special cases.
+      //
+      // Inline-owning nodes (XRParagraph, XRHeading, XRListItem, XRBlockQuote)
+      // render their inline children (XRText, XRLink, XRButton) as text runs
+      // internally — those children are NOT independent 3D nodes and must NOT
+      // get LayoutEntries. stampDescendants already skips stamping positions for
+      // them; here we skip producing LayoutEntries for them too.
+      if (
+        primitive.type === "XRParagraph" ||
+        primitive.type === "XRHeading" ||
+        primitive.type === "XRListItem" ||
+        primitive.type === "XRBlockQuote"
+      ) {
+        // Only recurse into block (non-inline) children — e.g. a sub-list or
+        // image inside a list item, which ARE dispatched via renderChild.
         for (const child of primitive.children) {
+          if (isInlinePrimitive(child.type)) continue;
           const childPos = placedPositionMap.get(child.id) ?? {
             x: config.panelPaddingX,
             y: -config.panelPaddingTop,
             z: 0,
           };
           const childPageIndex = pageIndexMap?.[child.id] ?? inheritedPageIndex;
-
-          let childHeight = placedHeightMap.get(child.id);
-          if (childHeight === undefined) {
-            diag.missingHeightMapEntries =
-              (diag.missingHeightMapEntries ?? 0) + 1;
-
-            const usableWidth = Math.max(0.025, worldSize.width);
-            childHeight = estimateHeight(
+          const childHeight =
+            placedHeightMap.get(child.id) ??
+            estimateHeight(
               child,
-              usableWidth,
+              Math.max(0.025, worldSize.width),
               metrics,
               config,
               new Set(),
               scene,
             );
-          }
-
-          const usableWidth = Math.max(0.025, worldSize.width);
-
           layoutPrimitive(
             child,
             childPos,
             zeroRotation(),
-            { width: usableWidth, height: childHeight },
+            { width: worldSize.width, height: childHeight },
             0,
             worldLocked,
             scene,
@@ -1620,6 +1718,67 @@ function layoutPrimitive(
             placedHeightMap,
           );
         }
+        entries[primitive.id] = entry;
+        diag.totalPlaced += 1;
+        return;
+      }
+
+      const listCols =
+        primitive.type === "XRList" && (entry.listColumns ?? 1) > 1
+          ? entry.listColumns!
+          : null;
+
+      const listCardWidth = listCols
+        ? Math.max(
+            0.025,
+            (worldSize.width -
+              config.panelPaddingX * 2 -
+              config.childGapY * (listCols - 1)) /
+              listCols,
+          )
+        : null;
+
+      for (const child of primitive.children) {
+        const childPos = placedPositionMap.get(child.id) ?? {
+          x: config.panelPaddingX,
+          y: -config.panelPaddingTop,
+          z: 0,
+        };
+        const childPageIndex = pageIndexMap?.[child.id] ?? inheritedPageIndex;
+
+        let childHeight = placedHeightMap.get(child.id);
+
+        const childWidth = listCardWidth ?? Math.max(0.025, worldSize.width);
+        if (childHeight === undefined) {
+          diag.missingHeightMapEntries =
+            (diag.missingHeightMapEntries ?? 0) + 1;
+          childHeight = estimateHeight(
+            child,
+            childWidth,
+            metrics,
+            config,
+            new Set(),
+            scene,
+          );
+        }
+
+        layoutPrimitive(
+          child,
+          childPos,
+          zeroRotation(),
+          { width: childWidth, height: childHeight },
+          0,
+          worldLocked,
+          scene,
+          config,
+          metrics,
+          entries,
+          diag,
+          childPageIndex,
+          pageIndexMap,
+          placedPositionMap,
+          placedHeightMap,
+        );
       }
     } else {
       // ── Outside any XRContentPanel — stackChildrenSimple ─────────────────
