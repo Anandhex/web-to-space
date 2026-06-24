@@ -1376,20 +1376,34 @@ function paginateContentPanel(
     // (sub-lists, images, etc.) which ARE dispatched via renderChild.
     //
     // XRGenericPanel is also treated as an inline-owning wrapper when ALL of
-    // its children are inline (XRText/XRLink/XRButton). In that case the parent
-    // XRListItemMesh uses flattenInlineWrappers() to see through it and renders
-    // the children as a prose run — so we must NOT stamp them as positioned 3D
-    // nodes. If the XRGenericPanel has mixed or block-only children, fall through
-    // to the normal path so block children get panel-absolute positions.
+    // its effective children (after flattening nested transparent panels) are
+    // inline. In that case the parent XRListItemMesh uses flattenInlineWrappers()
+    // to see through it and renders the children as a prose run — so we must NOT
+    // stamp them as positioned 3D nodes.
+    //
+    // FIX: use flattenInlineWrappers for transitive check. A panel like
+    // <span><a>link text</a></span> has direct child XRGenericPanel(→XRLink),
+    // which is NOT in INLINE_PRIMITIVE_TYPES, but its effective leaf content IS
+    // all-inline. The old direct-children check missed this case.
+    const flatEffective = flattenInlineWrappers(node.children as any[]);
     const isInlineWrapper =
       node.type === "XRGenericPanel" &&
-      node.children.length > 0 &&
-      node.children.every((c) => isInlinePrimitive(c.type));
+      flatEffective.length > 0 &&
+      flatEffective.every((c: any) => isInlinePrimitive(c.type));
 
+    // For XRListItem: check flattened effective children to decide whether
+    // the item is block-only. A listitem whose only child is an XRGenericPanel
+    // wrapping inline content is NOT block-only — it renders via the prose flow.
+    const flatListItemChildren =
+      node.type === "XRListItem"
+        ? flattenInlineWrappers(node.children as any[])
+        : null;
     const hasOnlyBlockChildren =
       node.type === "XRListItem" &&
       node.children.length > 0 &&
-      node.children.every((c) => !isInlinePrimitive(c.type));
+      (flatListItemChildren ?? []).every(
+        (c: any) => !isInlinePrimitive(c.type),
+      );
 
     if (
       (INLINE_OWNING_TYPES.has(node.type) || isInlineWrapper) &&
@@ -1397,6 +1411,17 @@ function paginateContentPanel(
     ) {
       for (const child of node.children) {
         if (!isInlinePrimitive(child.type)) {
+          // If this child is an XRGenericPanel whose effective leaf content is
+          // all-inline, the mesh renders it via flattenInlineWrappers as part
+          // of the prose run — it is NOT dispatched via renderChild and should
+          // NOT be stamped as a positioned 3D node.
+          if (child.type === "XRGenericPanel") {
+            const flatChild = flattenInlineWrappers(child.children as any[]);
+            const childIsInlineWrapper =
+              flatChild.length > 0 &&
+              flatChild.every((c: any) => isInlinePrimitive(c.type));
+            if (childIsInlineWrapper) continue;
+          }
           // Block child inside an inline-owning container: it IS dispatched
           // via renderChild and needs a panel-absolute position.
           if (!positionMap.has(child.id)) {

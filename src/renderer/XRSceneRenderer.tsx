@@ -122,6 +122,7 @@ import {
   RAY_BAN_META_PROFILE,
   QUEST_3_PROFILE,
 } from "../layout/profiles";
+import { flattenInlineWrappers, isInlinePrimitive } from "../layout/utils";
 
 // ─────────────────────────────────────────────────────────────
 // Contexts
@@ -684,12 +685,26 @@ function PrimitiveDispatcher({
     }
 
     case "XRListItem": {
+      // FIX: flatten transparent XRGenericPanel wrappers (e.g. a <span> or
+      // <cite> node wrapping <a>…</a>) before deciding whether this item
+      // has only block children.  Without flattening, a list item whose
+      // entire prose run is wrapped in one XRGenericPanel (e.g. Wikipedia
+      // citation items: listitem → generic → [XRLink, XRText, …]) reports
+      // hasOnlyBlockChildren=true and goes to the WithSiblingChildren path,
+      // which dispatches the XRGenericPanel via PrimitiveDispatcher.  That
+      // dispatcher renders XRGenericPanel as a transparent container and
+      // dispatches its children at their plan-absolute positions — producing
+      // the overlapping / cascading text seen in the screenshot.
+      //
+      // After flattening, the wrapper is unwrapped and its inline children
+      // surface here, so hasOnlyBlockChildren=false and the item takes the
+      // correct "mesh owns child rendering" path.
+      const flatEffectiveChildren = flattenInlineWrappers(
+        primitive.children as any[],
+      );
       const hasOnlyBlockChildren =
-        primitive.children.length > 0 &&
-        primitive.children.every(
-          (c) =>
-            c.type !== "XRText" && c.type !== "XRLink" && c.type !== "XRButton",
-        );
+        flatEffectiveChildren.length > 0 &&
+        flatEffectiveChildren.every((c: any) => !isInlinePrimitive(c.type));
 
       if (hasOnlyBlockChildren) {
         // Block-only card: backing at card position, children as siblings.
@@ -1054,25 +1069,54 @@ function XRSceneGraph({
     const markInlineChildren = (node: XRPrimitive) => {
       // Standard inline-owning types: their XRText/XRLink/XRButton children
       // are rendered as prose runs and intentionally have no plan entries.
+      // Also mark XRGenericPanel wrappers whose effective leaf content is
+      // all-inline: the mesh (XRListItemMesh, XRParagraphMesh) uses
+      // flattenInlineWrappers to see through them and renders them as prose,
+      // so neither the wrapper nor its descendants need plan entries.
       if (INLINE_OWNING.has(node.type)) {
-        for (const child of node.children) {
-          if (INLINE_TYPES.has(child.type)) {
-            intentionallyAbsent.add(child.id);
+        const flatEffective = flattenInlineWrappers(node.children as any[]);
+        const effectivelyAllInline =
+          flatEffective.length > 0 &&
+          flatEffective.every((c: any) => isInlinePrimitive(c.type));
+        if (effectivelyAllInline) {
+          // Mark the direct children and all their descendants as absent
+          const markAllAbsent = (n: XRPrimitive) => {
+            intentionallyAbsent.add(n.id);
+            n.children.forEach(markAllAbsent);
+          };
+          node.children.forEach(markAllAbsent);
+        } else {
+          // Mixed content: only mark direct inline children as absent
+          for (const child of node.children) {
+            if (INLINE_TYPES.has(child.type)) {
+              intentionallyAbsent.add(child.id);
+            }
           }
         }
       }
       // XRGenericPanel acting as a transparent inline wrapper: when ALL its
-      // children are inline, the parent renders them as a prose flow via
+      // effective children (after flattening nested transparent panels) are
+      // inline, the parent renders them as a prose flow via
       // flattenInlineWrappers — so the children have no plan entries and the
       // XRGenericPanel itself may or may not have one.
-      if (
-        node.type === "XRGenericPanel" &&
-        node.children.length > 0 &&
-        node.children.every((c) => INLINE_TYPES.has(c.type))
-      ) {
-        intentionallyAbsent.add(node.id);
-        for (const child of node.children) {
-          intentionallyAbsent.add(child.id);
+      //
+      // FIX: use flattenInlineWrappers to check transitive inline-ness.
+      // Without this, an XRGenericPanel whose children include another
+      // XRGenericPanel (e.g. <span><a>…</a></span>) is NOT recognized as an
+      // inline wrapper even though its effective leaf content is all-inline.
+      if (node.type === "XRGenericPanel" && node.children.length > 0) {
+        const flatChildren = flattenInlineWrappers(node.children as any[]);
+        const allInline =
+          flatChildren.length > 0 &&
+          flatChildren.every((c: any) => isInlinePrimitive(c.type));
+        if (allInline) {
+          intentionallyAbsent.add(node.id);
+          // Mark the transitive inline descendants as intentionally absent
+          const markAllAbsent = (n: XRPrimitive) => {
+            intentionallyAbsent.add(n.id);
+            n.children.forEach(markAllAbsent);
+          };
+          node.children.forEach(markAllAbsent);
         }
       }
       node.children.forEach(markInlineChildren);

@@ -1648,6 +1648,14 @@ function pruneUIChrome(doc: Document): void {
     "span[aria-hidden='true']:empty",
     ".Z3988", // Wikipedia COinS metadata spans (empty, machine-readable only)
     "span[title^='ctx_ver=']", // fallback selector for same pattern
+    // ── Injected CSS / JS ─────────────────────────────────────────────────
+    // Wikipedia (and other wikis) sometimes inject inline <style> blocks
+    // inside article content (e.g. citation CSS inside the first <li> of the
+    // References section). These produce raw CSS text that ends up in the
+    // IR's `content` field and corrupts the rendered output. Pruning them
+    // here prevents the CSS from ever reaching the IR parser.
+    "style", // inline <style> elements anywhere in the content
+    "script", // inline <script> elements (defensive)
   ];
 
   for (const sel of PRUNE_SELECTORS) {
