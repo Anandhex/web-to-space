@@ -1295,14 +1295,35 @@ export function XRCodeBlockMesh({ primitive, entry }: XRCodeBlockMeshProps) {
 export interface XRBlockQuoteMeshProps {
   primitive: import("../mapper/types").XRBlockQuote;
   entry: LayoutEntry;
+  renderChild: (primitiveId: string) => React.ReactNode;
 }
 
-export function XRBlockQuoteMesh({ primitive, entry }: XRBlockQuoteMeshProps) {
+export function XRBlockQuoteMesh({
+  primitive,
+  entry,
+  renderChild,
+}: XRBlockQuoteMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
+  const metrics = useRenderMetrics();
   const QUOTE_ACCENT = "#d2a679";
+
+  // Hatnotes (role="note" → XRBlockQuote) arrive with inline children:
+  //   [XRText("Main article: "), XRLink("KPop Demon Hunters (soundtrack)")]
+  // Without this path XRBlockQuoteMesh rendered only primitive.label
+  // ("Main article:") and silently discarded all children — exactly the
+  // same leaf-only pattern that bit XRAlertMesh.  Apply the same fix:
+  // flatten wrappers → merge adjacent text → flow via InlineProseRows so
+  // link segments get accent colouring.
+  const flatChildren = flattenInlineWrappers(primitive.children ?? []);
+  const hasAnyInlineChild = flatChildren.some((c) => isInlinePrimitive(c.type));
+  const rows = hasAnyInlineChild
+    ? buildInlineRows(mergeAdjacentTextRuns(flatChildren))
+    : [];
+  const m = metrics.blockQuote ?? metrics.paragraph;
+  const X_INSET = 0.026;
 
   return (
     <group position={pos} rotation={rot}>
@@ -1330,18 +1351,35 @@ export function XRBlockQuoteMesh({ primitive, entry }: XRBlockQuoteMeshProps) {
         />
       </mesh>
 
-      <ClippedText
-        anchorX="left"
-        anchorY="top"
-        position={[0.026, -0.018, PANEL_DEPTH * 0.6]}
-        fontSize={0.024}
-        color="#d4c5a9"
-        maxWidth={w - 0.04}
-        lineHeight={1.5}
-        letterSpacing={0.003}
-      >
-        {primitive.label ?? ""}
-      </ClippedText>
+      {hasAnyInlineChild ? (
+        // Inline flow: "Main article: " (body colour) + link (accent colour)
+        // rendered as a single prose run, matching what the engine measured.
+        <InlineProseRows
+          rows={rows}
+          startY={-0.018}
+          panelWidth={w - X_INSET}
+          fontSize={m.fontSize}
+          lineHeightRatio={m.lineHeightRatio}
+          xInset={X_INSET}
+          renderChild={renderChild}
+        />
+      ) : (
+        // Fallback: plain blockquote with no structured children.
+        // Use content (full visible string) in preference to label (may be
+        // the accessible short-name only, e.g. "Main article:").
+        <ClippedText
+          anchorX="left"
+          anchorY="top"
+          position={[X_INSET, -0.018, PANEL_DEPTH * 0.6]}
+          fontSize={0.024}
+          color="#d4c5a9"
+          maxWidth={w - 0.04}
+          lineHeight={1.5}
+          letterSpacing={0.003}
+        >
+          {primitive.content ?? primitive.label ?? ""}
+        </ClippedText>
+      )}
     </group>
   );
 }
@@ -1680,11 +1718,20 @@ export function XRListItemMesh({
           position in PrimitiveDispatcher, causing sublist items to overlap
           the parent prose text. */}
       {blockChildren.map((child: any) => renderChild(child.id))}
-      {!hasAnyInlineChild && (
-        <group position={[0, -topInset, 0]}>
-          {primitive.children.map((child) => renderChild(child.id))}
-        </group>
-      )}
+      {/* No-inline-children case (e.g. a card whose body is a single block
+          <div>/<section> wrapper, as with the HTML/CSS/JS feature cards):
+          renderChild resolves through PrimitiveDispatcher, which already
+          applies each child's panel-absolute position via AtPos. Wrapping
+          that in an additional <group position={[0, -topInset, 0]}> here
+          double-applies translation — once from this group, once from the
+          plan position — compounding across siblings and producing the
+          rightward/downward drift seen across HTML → CSS → JavaScript
+          cards. Render directly, with no extra offset group, mirroring the
+          blockChildren fix above. topInset only matters for sizing the
+          label block height (used elsewhere); it must not also translate
+          children that aren't positioned relative to a label. */}
+      {!hasAnyInlineChild &&
+        primitive.children.map((child) => renderChild(child.id))}
     </group>
   );
 }
@@ -1746,16 +1793,35 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
 export interface XRAlertMeshProps {
   primitive: import("../mapper/types").XRAlert;
   entry: LayoutEntry;
+  renderChild: (primitiveId: string) => React.ReactNode;
 }
 
-export function XRAlertMesh({ primitive, entry }: XRAlertMeshProps) {
+export function XRAlertMesh({
+  primitive,
+  entry,
+  renderChild,
+}: XRAlertMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
+  const metrics = useRenderMetrics();
   const isAssertive = primitive.liveRegion === "assertive";
   const alertColor = isAssertive ? "#ff4444" : ACCENT_COL;
   const alertBg = isAssertive ? "#1a0a0a" : "#0a1020";
+
+  // If the alert has inline children (e.g. a hatnote whose label is followed
+  // by a link), flow them with InlineProseRows exactly like XRParagraphMesh.
+  // Without this, only primitive.label renders and all link/text children are
+  // silently discarded — the XRAlert case in PrimitiveDispatcher never passed
+  // renderChild, so there was no path for children to appear at all.
+  const flatChildren = flattenInlineWrappers(primitive.children ?? []);
+  const hasAnyInlineChild = flatChildren.some((c) => isInlinePrimitive(c.type));
+  const rows = hasAnyInlineChild
+    ? buildInlineRows(mergeAdjacentTextRuns(flatChildren))
+    : [];
+  const m = metrics.paragraph;
+  const X_INSET = 0.02;
 
   return (
     <group position={pos} rotation={rot}>
@@ -1783,17 +1849,39 @@ export function XRAlertMesh({ primitive, entry }: XRAlertMeshProps) {
         />
       </mesh>
 
-      <ClippedText
-        anchorX="left"
-        anchorY="top"
-        position={[0.02, -0.014, PANEL_DEPTH * 0.6]}
-        fontSize={0.022}
-        color={isAssertive ? "#ff9999" : BODY_COL}
-        maxWidth={w - 0.032}
-        lineHeight={1.4}
-      >
-        {primitive.label ?? ""}
-      </ClippedText>
+      {hasAnyInlineChild ? (
+        // Inline flow: renders "Main article: " (XRText) + link (XRLink) as a
+        // single prose run with correct accent colouring for the link segment.
+        <InlineProseRows
+          rows={rows}
+          startY={-0.014}
+          panelWidth={w - X_INSET}
+          fontSize={m.fontSize}
+          lineHeightRatio={m.lineHeightRatio}
+          xInset={X_INSET}
+          renderChild={renderChild}
+        />
+      ) : (
+        // Fallback: label-only alerts (live regions, status messages, etc.)
+        // Prefer primitive.content over primitive.label — the mapper may set
+        // label to only the accessible short-name (e.g. "Main article:") while
+        // content carries the full visible text (e.g. "Main article: KPop Demon
+        // Hunters (soundtrack)").  This is a stop-gap: link text will appear
+        // but without accent colouring.  The proper fix is for the mapper to
+        // populate primitive.children so the hasAnyInlineChild branch above
+        // fires and InlineProseRows handles link styling correctly.
+        <ClippedText
+          anchorX="left"
+          anchorY="top"
+          position={[X_INSET, -0.014, PANEL_DEPTH * 0.6]}
+          fontSize={0.022}
+          color={isAssertive ? "#ff9999" : BODY_COL}
+          maxWidth={w - 0.032}
+          lineHeight={1.4}
+        >
+          {primitive.content ?? primitive.label ?? ""}
+        </ClippedText>
+      )}
     </group>
   );
 }

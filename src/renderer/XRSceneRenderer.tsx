@@ -556,6 +556,7 @@ function PrimitiveDispatcher({
           <XRBlockQuoteMesh
             primitive={primitive as XRBlockQuote}
             entry={zeroedEntry(entry)}
+            renderChild={renderChild}
           />
         </AtPos>
       );
@@ -602,6 +603,7 @@ function PrimitiveDispatcher({
           <XRAlertMesh
             primitive={primitive as XRAlert}
             entry={zeroedEntry(entry)}
+            renderChild={renderChild}
           />
         </AtPos>
       );
@@ -706,6 +708,15 @@ function PrimitiveDispatcher({
         flatEffectiveChildren.length > 0 &&
         flatEffectiveChildren.every((c: any) => !isInlinePrimitive(c.type));
 
+      // Used by the mixed inline+block branch below: the non-inline subset
+      // of this item's flattened children (e.g. the <div>/<section> wrapper
+      // sitting alongside an inline icon link) — these must be dispatched
+      // as true positioned siblings, never rendered through XRListItemMesh,
+      // to avoid double-applying their already-absolute positions.
+      const blockChildrenForDispatch = flatEffectiveChildren.filter(
+        (c: any) => !isInlinePrimitive(c.type),
+      );
+
       if (hasOnlyBlockChildren) {
         // Block-only card: backing at card position, children as siblings.
         return (
@@ -727,15 +738,49 @@ function PrimitiveDispatcher({
         );
       }
 
-      // Inline-children case: mesh owns child rendering via renderChild.
+      // Inline-children case (e.g. a card whose direct children mix an
+      // inline icon/link with a block wrapper — image+HTML/CSS/JS cards):
+      // mesh draws its own backing/accent/label/inline-prose-row, but block
+      // children must NOT be rendered through it.
+      //
+      // FIX: XRListItemMesh's <group position={pos}> sits at this item's
+      // real absolute coordinates (needed so the backing panel lands in the
+      // right spot). Previously blockChildren were rendered via
+      // renderChild(child.id) called FROM INSIDE that same positioned group
+      // — but renderChild resolves through PrimitiveDispatcher, which wraps
+      // each block child in its OWN <AtPos> using that child's already-
+      // absolute panel-space position. Nesting an absolutely-positioned
+      // child inside an already-absolutely-positioned group double-applies
+      // the translation (this is the same double-translation bug fixed for
+      // XRSection/hasOnlyBlockChildren above, just one level deeper here).
+      // The extra drift was each item's own absolute X added a second time,
+      // so item 2's content landed in item 3's column, item 3's landed off
+      // the grid entirely — reading as a "shift" rather than "exponential"
+      // because the comparison point (each item's OWN slot) moves too.
+      //
+      // Fix mirrors the XRSection/block-only-XRListItem pattern exactly:
+      // XRListItemMesh renders at a ZEROED entry (so it only draws its own
+      // backing/accent/label/inline-icon-row, never anything carrying an
+      // absolute child position), wrapped in a single outer <AtPos> for
+      // the real position, and block children are dispatched as true
+      // siblings via WithSiblingChildren — never nested inside the mesh's
+      // own positioned group.
       return (
-        <AtPos entry={entry}>
-          <XRListItemMesh
-            primitive={primitive as XRListItem}
-            entry={zeroedEntry(entry)}
-            renderChild={renderChild}
-          />
-        </AtPos>
+        <WithSiblingChildren
+          entry={entry}
+          backing={
+            <XRListItemMesh
+              primitive={primitive as XRListItem}
+              entry={zeroedEntry(entry)}
+              renderChild={() => null}
+            />
+          }
+          primitives={blockChildrenForDispatch}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
       );
     }
 

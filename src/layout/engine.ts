@@ -562,12 +562,22 @@ function estimateHeight(
             metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
           return Math.max(lineH2 + 0.02, contentHeight);
         }
+        // No children — label/content is the item's only displayable text
+        // (a plain-text <li> with no element children, e.g. "Danya Jimenez").
+        // Use the same paragraph-line floor as the children-present branch
+        // above (lineH2 + 0.02) instead of metrics.listItem.minHeight.
+        // The card minHeight is appropriate for full card-style list items
+        // that always have children; applying it to bare-text entries
+        // produces 0.22 m slots for single-line names, causing the large
+        // gaps seen in table infobox lists (screenplay writers, cast, etc.).
         const labelBlockHeight = listItemLabelBlockHeight(
           primitive.label,
           metrics,
         );
+        const lineH2 =
+          metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
         return Math.max(
-          metrics.listItem.minHeight,
+          lineH2 + 0.02,
           labelBlockHeight ||
             estimateTextBearingHeight(
               primitive.content ?? primitive.label ?? "",
@@ -576,6 +586,35 @@ function estimateHeight(
               metrics.fallbackElementHeight,
             ),
         );
+      }
+
+      // XRAlert with inline children (e.g. a Wikipedia hatnote: label "Main
+      // article:" followed by an XRLink child): the renderer (XRAlertMesh)
+      // now flows these via InlineProseRows — the same algorithm as
+      // XRParagraphMesh.  The old path (sumChildrenHeights) treated each
+      // fragment as a separate stacked block, producing a wildly overestimated
+      // height. Mirror the renderer exactly: flatten → merge → flow estimate.
+      if (primitive.type === "XRAlert" && primitive.children.length > 0) {
+        const flattened = mergeAdjacentTextRuns(
+          flattenInlineWrappers(primitive.children as any[]) as XRPrimitive[],
+        );
+        const hasAnyInline = flattened.some((c) => isInlinePrimitive(c.type));
+        if (hasAnyInline) {
+          const m = metrics.paragraph;
+          const wordsPerLine = computeWordsPerLine(
+            panelUsableWidth - 0.02, // mirrors XRAlertMesh X_INSET
+            m,
+          );
+          const lineH = m.fontSize * m.lineHeightRatio;
+          return estimateInlineFlowHeight(
+            flattened,
+            wordsPerLine,
+            lineH,
+            m.verticalPadding,
+            () => metrics.fallbackElementHeight,
+            0,
+          );
+        }
       }
 
       // Add child content height if present (e.g. XRAlert with body paragraphs,
@@ -664,11 +703,38 @@ function estimateHeight(
 
   if (primitive.type === "XRTable") {
     const { rowCount } = primitive as XRTable;
-    return (
+    // Fixed-row floor: what a table of uniform, single-line rows would need.
+    // This keeps thin/simple tables (short text cells only) sized exactly as
+    // before — no regression for the common case.
+    const fixedRowsHeight =
       metrics.tableHeaderRowHeight +
       Math.max(0, rowCount - 1) * metrics.tableRowHeight +
-      rowCount * config.childGapY
-    );
+      rowCount * config.childGapY;
+
+    // Real content floor: rows can contain variable-height content (figures,
+    // multi-line cells, nested lists like a "Starring" cast list) that the
+    // fixed per-row formula above has no way to account for. The table's
+    // actual row/cell children are positioned downstream via the same
+    // generic block-stacking pass used for every other container, so their
+    // summed height is what the table will ACTUALLY occupy on screen.
+    // Without this, the table's own background panel (sized from the fixed
+    // formula alone) ends up far shorter than its rendered rows, leaving a
+    // gap with no panel behind the overflow content and causing whatever
+    // sibling comes after the table to be positioned as if the table were
+    // much shorter than it really is — producing visible overlap.
+    const contentHeight =
+      primitive.children.length > 0
+        ? sumChildrenHeights(
+            primitive.children,
+            panelUsableWidth,
+            metrics,
+            config,
+            branchAncestors,
+            scene,
+          )
+        : 0;
+
+    return Math.max(fixedRowsHeight, contentHeight);
   }
 
   // ── Universal fallback: children → label → fixed lookup → fallback ──────────
@@ -1409,6 +1475,52 @@ function paginateContentPanel(
       (INLINE_OWNING_TYPES.has(node.type) || isInlineWrapper) &&
       !hasOnlyBlockChildren
     ) {
+      // For XRListItem with mixed inline+block children (e.g. prose followed
+      // by a nested sub-list), block children must be placed BELOW the inline
+      // prose region, not at the listitem's top edge (absY). Without this
+      // correction the sub-list y === parent y, overlapping the rendered text.
+      //
+      // For other inline-owning types (XRParagraph, XRHeading, XRBlockQuote)
+      // the absY fallback is acceptable: those rarely carry block children and
+      // the mesh's own renderChild call manages exact Y in those cases.
+      let blockCursorY = absY;
+
+      if (node.type === "XRListItem") {
+        // Flatten + merge inline children the same way estimateHeight does for
+        // XRListItem, so the prose height we compute here agrees with the space
+        // already reserved in the layout plan.
+        const flat = mergeAdjacentTextRuns(
+          flattenInlineWrappers(node.children as any[]) as XRPrimitive[],
+        );
+        const m = metrics.paragraph;
+        const itemWidth = Math.max(
+          0.025,
+          availableWidth - LIST_ITEM_PROSE_INSET,
+        );
+        const wordsPerLine = computeWordsPerLine(itemWidth, m);
+        const lineH = m.fontSize * m.lineHeightRatio;
+
+        // Collect the inline prefix: every child before the first block item.
+        const inlinePrefix: typeof flat = [];
+        for (const fc of flat) {
+          if (!isInlinePrimitive((fc as any).type)) break;
+          inlinePrefix.push(fc);
+        }
+
+        if (inlinePrefix.length > 0) {
+          const proseH = estimateInlineFlowHeight(
+            inlinePrefix,
+            wordsPerLine,
+            lineH,
+            0, // no verticalPadding — matches estimateHeight's XRListItem branch
+            () => metrics.fallbackElementHeight,
+            0, // pure-inline prefix: no inter-segment gaps
+          );
+          // First block child starts below the prose, separated by childGapY.
+          blockCursorY = absY - proseH - config.childGapY;
+        }
+      }
+
       for (const child of node.children) {
         if (!isInlinePrimitive(child.type)) {
           // If this child is an XRGenericPanel whose effective leaf content is
@@ -1425,21 +1537,25 @@ function paginateContentPanel(
           // Block child inside an inline-owning container: it IS dispatched
           // via renderChild and needs a panel-absolute position.
           if (!positionMap.has(child.id)) {
-            // Position it immediately below the parent's top edge as a best
-            // estimate — the mesh component controls exact Y via renderChild.
-            const panelAbs: Vec3 = { x: absX, y: absY, z: 0 };
+            const panelAbs: Vec3 = {
+              x: absX,
+              y: node.type === "XRListItem" ? blockCursorY : absY,
+              z: 0,
+            };
             positionMap.set(child.id, panelAbs);
-            heightMap.set(
-              child.id,
-              estimateHeight(
-                child,
-                availableWidth,
-                metrics,
-                config,
-                new Set(),
-                scene,
-              ),
+            const childH = estimateHeight(
+              child,
+              availableWidth,
+              metrics,
+              config,
+              new Set(),
+              scene,
             );
+            heightMap.set(child.id, childH);
+            if (node.type === "XRListItem") {
+              // Advance cursor for any subsequent block children.
+              blockCursorY = panelAbs.y - childH - config.childGapY;
+            }
             if (pageIndexMap[child.id] === undefined) {
               pageIndexMap[child.id] = pageIndexMap[node.id] ?? pageIdx;
             }
