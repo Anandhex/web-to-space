@@ -28,38 +28,33 @@ import {
   resolveRoleFromElement,
   resolveNodeLabel,
   confidenceForSource,
-  createEmptyRelations,
   readNodeState,
   mergeAttributes,
   isAccessibilityHidden,
-  createEmptyState,
   createEmptyAttributes,
   isListCandidate,
   hydrateRelations,
   areStructurallySimilar,
   getSemanticSignature,
+  createBaseNode,
+  getValidChildren,
+  collectSiblingRun,
 } from "./utils";
-
 import {
   shouldDecomposeContent,
   decomposeInlineContentRecursive,
   createInlineNodes,
 } from "./inline-parser";
 
-/**
- * Stub provider — always returns null so the node stays "generic".
- * Replace with a real implementation for Layer 3 classification.
- */
 export class StubAIProvider implements AIFallbackProvider {
   async classify(
     _domSubtree: string,
     _nodeId: string,
   ): Promise<AIFallbackResponse | null> {
-    return null; // ai-fallback-value: no classification attempted
+    return null;
   }
 }
 
-/** Serialise a DOM subtree to a compact string for the AI prompt. */
 function serialiseDOMSubtree(
   element: Element,
   skipTags: Set<string>,
@@ -96,7 +91,6 @@ function resolveSectionLabel(
   doc?: Document,
 ): string {
   const cap = (s: string) => s.slice(0, config.labelMaxChars);
-
   if (config.useAriaLabels && element && doc) {
     const labelledby = element.getAttribute("aria-labelledby")?.trim();
     if (labelledby) {
@@ -110,39 +104,33 @@ function resolveSectionLabel(
     const ariaLabel = element.getAttribute("aria-label")?.trim();
     if (ariaLabel) return cap(ariaLabel);
   }
-  // Heading fallback is structural — active regardless of useAriaLabels.
-  // Only direct children are considered — headings nested inside sub-sections
-  // belong to those sub-sections, not to this one.
-  // A heading level is only used as a label when exactly one direct-child
-  // heading at that level exists — multiple siblings (e.g. h2, h2, h2)
-  // indicate repeated items rather than a section title, so that level is
-  // skipped and the search continues at the next level down.
   if (element) {
     for (let level = 1; level <= 6; level++) {
-      const tag = `h${level}`;
       const headings = Array.from(element.children).filter(
-        (c) => c.tagName.toLowerCase() === tag,
+        (c) => c.tagName.toLowerCase() === `h${level}`,
       );
-      if (headings.length === 1) {
+      const hasExactlyOneHeading = headings.length === 1;
+
+      if (hasExactlyOneHeading) {
         const text = headings[0].textContent?.trim();
         if (text) return cap(text);
       }
-      // headings.length === 0 → no direct-child headings at this level, try next
-      // headings.length > 1  → repeated, not a section title, try next
     }
   }
   return fallbackLabel;
 }
 
 function isInertWrapper(element: Element, ctx: BuildContext): boolean {
-  const tag = element.tagName.toLowerCase();
-  if (!ctx.wrapperTags.has(tag)) return false;
-  if (element.hasAttribute("role")) return false;
-  if (element.hasAttribute("aria-label")) return false;
-  if (element.hasAttribute("id")) return false;
+  const isWrapperTag = ctx.wrapperTags.has(element.tagName.toLowerCase());
+  if (!isWrapperTag) return false;
 
-  // FIX: Protect elements that developers have explicitly made focusable/interactive
-  if (element.hasAttribute("tabindex")) return false;
+  const hasSemanticOrInteractiveIdentity =
+    element.hasAttribute("role") ||
+    element.hasAttribute("aria-label") ||
+    element.hasAttribute("id") ||
+    element.hasAttribute("tabindex");
+
+  if (hasSemanticOrInteractiveIdentity) return false;
 
   const ariaAttrs = [
     "aria-expanded",
@@ -163,121 +151,73 @@ function isInertWrapper(element: Element, ctx: BuildContext): boolean {
     "aria-flowto",
     "aria-haspopup",
   ];
-  for (const attr of ariaAttrs) {
-    if (element.hasAttribute(attr)) return false;
-  }
-  return true;
+  const hasStateOrRelationAriaAttributes = ariaAttrs.some((attr) =>
+    element.hasAttribute(attr),
+  );
+
+  return !hasStateOrRelationAriaAttributes;
 }
 
 function pierceWrapperChain(
   element: Element,
   ctx: BuildContext,
-): {
-  element: Element;
-  liftedAttrs: Partial<IRNodeAttributes>;
-} {
-  // When wrapper piercing is disabled return immediately
-  if (!ctx.config.useWrapperPiercing) {
-    return { element, liftedAttrs: {} };
-  }
+): { element: Element; liftedAttrs: Partial<IRNodeAttributes> } {
+  if (!ctx.config.useWrapperPiercing) return { element, liftedAttrs: {} };
 
   const liftedAttrs: Partial<IRNodeAttributes> = {};
   let current = element;
 
   while (true) {
-    const tag = current.tagName.toLowerCase();
-    if (!ctx.wrapperTags.has(tag)) break;
+    const isWrapperTag = ctx.wrapperTags.has(current.tagName.toLowerCase());
+    if (!isWrapperTag) break;
 
-    if (
+    const hasSemanticIdentity =
       current.hasAttribute("role") ||
       current.hasAttribute("aria-label") ||
-      current.hasAttribute("id")
-    ) {
-      break;
-    }
+      current.hasAttribute("id");
 
-    // Lift any ARIA attributes from this wrapper before piercing it
+    if (hasSemanticIdentity) break;
+
     const snap = readNodeAttributes(current, { sourceUrl: ctx.pageUrl });
     for (const key of Object.keys(snap) as (keyof IRNodeAttributes)[]) {
       assignIfDefined(liftedAttrs, key, snap[key]);
     }
 
-    // FIX: Check if the element contains direct text nodes that would be lost
     const hasText = directTextContent(current).length > 0;
+    const children = getValidChildren(current, ctx.skipTags);
+    const hasMultipleOrZeroChildren = children.length !== 1;
 
-    const children = Array.from(current.children).filter(
-      (child) => !ctx.skipTags.has(child.tagName.toLowerCase()),
-    );
-
-    // Stop piercing if there is text content OR if there isn't exactly one element child
-    if (hasText || children.length !== 1) {
+    if (hasText || hasMultipleOrZeroChildren)
       return { element: current, liftedAttrs };
-    }
-
     current = children[0];
   }
-
   return { element: current, liftedAttrs };
 }
 
-// ---------------------------------------------------------------------------
-// Mixed-content normalisation
-// ---------------------------------------------------------------------------
-
-/**
- * Normalise the direct children of `element` for parser consumption.
- *
- * The DOM distinguishes element nodes from text nodes, but `element.children`
- * only returns the former. This means mixed content like:
- *
- *   "Get up to speed with <a href="/baseline">Baseline</a>."
- *
- * loses the surrounding text entirely when we iterate `element.children`.
- *
- * This function walks `element.childNodes` and:
- * 1. Collects consecutive non-empty text nodes and inline elements into a
- *    "prose run".
- * 2. When a block-level element is encountered it flushes the current prose
- *    run (if any) as a synthetic `<span data-ir-prose>` element, then emits
- *    the block element directly.
- * 3. Any remaining prose run after the last block element is also flushed.
- *
- * The resulting array is a flat list of Elements that `buildChildrenFromSiblings`
- * can process as normal siblings — prose runs become `generic`/`paragraph`
- * nodes whose label resolves from their full text content, and block elements
- * are parsed as usual.
- *
- * If the element has no text nodes and no inline elements mixed with blocks
- * (i.e. pure block content) the output is identical to `Array.from(element.children)`.
- */
 function normaliseChildContent(
   element: Element,
   skipTags: Set<string>,
 ): Element[] {
-  if (element.hasAttribute("data-ir-prose")) {
-    return Array.from(element.children).filter(
-      (child) => !skipTags.has(child.tagName.toLowerCase()),
-    );
+  const isAlreadyNormalised = element.hasAttribute("data-ir-prose");
+  if (isAlreadyNormalised) {
+    return getValidChildren(element, skipTags);
   }
 
   const result: Element[] = [];
   let proseNodes: ChildNode[] = [];
-
-  // FIX: Track if we actually need to split mixed content
   let hasBlockElements = false;
 
   const flushProse = (): void => {
-    const hasContent = proseNodes.some((n) => {
-      if (n.nodeType === Node.TEXT_NODE)
-        return (n.textContent ?? "").trim().length > 0;
-      return true;
-    });
+    const hasVisibleText = proseNodes.some((n) =>
+      n.nodeType === Node.TEXT_NODE
+        ? (n.textContent ?? "").trim().length > 0
+        : true,
+    );
 
-    if (!hasContent) {
+    if (!hasVisibleText) {
       proseNodes = [];
       return;
     }
-
     const wrapper = element.ownerDocument!.createElement("span");
     wrapper.setAttribute("data-ir-prose", "true");
     for (const n of proseNodes) wrapper.appendChild(n.cloneNode(true));
@@ -297,29 +237,19 @@ function normaliseChildContent(
 
     if (skipTags.has(tag)) continue;
 
-    if (INLINE_TAGS.has(tag)) {
+    const isInlineTag = INLINE_TAGS.has(tag);
+    if (isInlineTag) {
       proseNodes.push(el);
     } else {
-      hasBlockElements = true; // Block element found!
+      hasBlockElements = true;
       flushProse();
       result.push(el);
     }
   }
-
   flushProse();
 
-  // FIX: If there are no block elements, the parent itself is the prose container.
-  // Do not emit synthetic wrappers. Just return the standard element children (e.g., inline <a> tags).
-  if (!hasBlockElements) {
-    return Array.from(element.children).filter(
-      (child) => !skipTags.has(child.tagName.toLowerCase()),
-    );
-  }
-
-  return result;
+  return hasBlockElements ? result : getValidChildren(element, skipTags);
 }
-
-// parser.ts - Updated createNode with proper ordering
 
 async function createNode(
   element: Element,
@@ -330,109 +260,69 @@ async function createNode(
   readingDepth = 0,
 ): Promise<string | string[]> {
   const id = `${parentId}-node-${ctx.counters.node++}`;
-  const readingIndex = ctx.counters.reading++;
-
   ctx.elementToNodeId.set(element, id);
 
-  // ── STEP 1: Determine base role from element ──────────────────────────
-  // This includes explicit role attributes and structural tag mapping
   let roleInfo = resolveRoleFromElement(element, ctx.config);
   let resolvedRole = roleInfo.role;
-  let resolvedSource: IRSource = roleInfo.source;
+  let resolvedSource = roleInfo.source;
   let resolvedConfidence = confidenceForSource(roleInfo.source, ctx.config);
 
-  // ── STEP 2: Check if this is a generic div/span with only text ────────
-  // If it's a generic wrapper with only text content, treat it as a text node
   const tag = element.tagName.toLowerCase();
   const isGenericWrapper = tag === "div" || tag === "span";
   const hasOnlyText = hasOnlyTextContent(element, ctx);
 
-  if (isGenericWrapper && hasOnlyText && resolvedRole === "generic") {
-    // This is just a text container - create a text node directly
+  const isPureTextWrapper =
+    isGenericWrapper && hasOnlyText && resolvedRole === "generic";
+
+  if (isPureTextWrapper) {
     const text = element.textContent?.trim() || "";
     if (text) {
       const textId = `${parentId}-text-${ctx.counters.node++}`;
-      ctx.nodes[textId] = {
-        id: textId,
-        role: "text",
-        level: null,
-        label: null,
+      ctx.nodes[textId] = createBaseNode(textId, "text", parentId, ctx, {
         content: text,
-        unlabelledYet: true,
-        landmark: false,
         source: "inline",
-        confidence: ctx.config.sourceConfidence["inline"] || 0.9,
-        readingIndex: ctx.counters.reading++,
+        confidence: ctx.config.sourceConfidence["inline"],
         readingDepth,
-        parent: parentId,
-        children: [],
-        relations: createEmptyRelations(),
-        state: createEmptyState(),
-        attributes: {
-          ...createEmptyAttributes(),
-          componentType: tag,
-        },
-      };
+        attributes: { ...createEmptyAttributes(), componentType: tag },
+      });
       return textId;
     }
   }
 
-  // ── STEP 2b: Generic wrapper with element children but NO block ───────
-  // descendant anywhere in its subtree (e.g. <span><a>Click</a></span>,
-  // <div><b>Bold</b> and <i>italic</i></div>). hasOnlyText above only
-  // catches the all-bare-text case; this catches the mixed inline case
-  // that would otherwise survive into the IR as a `generic` node and
-  // downstream into the scene as an XRGenericPanel — which engine.ts and
-  // primitives.tsx would then each have to flatten at measurement/render
-  // time via flattenInlineWrappers. Splicing it away here means that
-  // utility never has to run for this case at all.
-  //
-  // Skipped when the wrapper carries an attribute (title, lang, id,
-  // aria-*, data-*) we'd otherwise have nowhere to preserve once its
-  // children are spliced directly into the parent.
-  if (
+  const isTransparentInlineContainer =
     isGenericWrapper &&
     !hasOnlyText &&
     resolvedRole === "generic" &&
     !hasPreservableWrapperAttrs(element) &&
-    hasNoBlockDescendant(element, ctx)
-  ) {
-    const spliceChildren = Array.from(element.children).filter(
-      (child) => !ctx.skipTags.has(child.tagName.toLowerCase()),
-    );
+    hasNoBlockDescendant(element, ctx);
 
-    if (spliceChildren.length > 0) {
-      const shouldDecompose = shouldDecomposeContent(element, {
+  if (isTransparentInlineContainer) {
+    const spliceChildren = getValidChildren(element, ctx.skipTags);
+    const hasSpliceableChildren = spliceChildren.length > 0;
+
+    if (hasSpliceableChildren) {
+      const inlineCtx = {
         inlineTags: ctx.inlineTags,
         skipTags: ctx.skipTags,
         config: ctx.config,
         doc: ctx.doc,
         pageUrl: ctx.pageUrl,
-      });
+      };
 
-      if (shouldDecompose) {
-        // Mixed text + inline elements — decompose directly into the
-        // PARENT's reading position instead of wrapping in a node of our
-        // own. This is the same recursive decomposition used for genuine
-        // leaf nodes, just spliced one level up.
+      const requiresInlineDecomposition = shouldDecomposeContent(
+        element,
+        inlineCtx,
+      );
+
+      if (requiresInlineDecomposition) {
         const runs = decomposeInlineContentRecursive(
           element,
-          {
-            inlineTags: ctx.inlineTags,
-            skipTags: ctx.skipTags,
-            config: ctx.config,
-            doc: ctx.doc,
-            pageUrl: ctx.pageUrl,
-          },
+          inlineCtx,
           parentId,
         );
         const result = createInlineNodes(runs, parentId, ctx, readingDepth);
-        if (result.nodeIds.length > 0) {
-          return result.nodeIds;
-        }
+        if (result.nodeIds.length > 0) return result.nodeIds;
       } else {
-        // No bare text alongside the elements — just splice the resolved
-        // children in directly as if they were siblings of this wrapper.
         const childIds = await buildChildrenFromSiblings(
           spliceChildren,
           parentId,
@@ -440,9 +330,7 @@ async function createNode(
           ctx,
           readingDepth,
         );
-        if (childIds.length > 0) {
-          return childIds;
-        }
+        if (childIds.length > 0) return childIds;
       }
     }
   }
@@ -453,126 +341,92 @@ async function createNode(
     ctx,
     readingDepth,
   );
-  if (figureResult) {
-    // The figure and its img child have been created, return the figure id
-    return figureResult;
-  }
+  if (figureResult) return figureResult;
 
-  // ── STEP 3: Process children (build the tree) ──────────────────────────
-  // This must happen BEFORE AI fallback because AI should only run on
-  // nodes that have been fully processed structurally
-
-  // Check if this node has block children
-  const childElements = Array.from(element.children).filter(
-    (child) => !ctx.skipTags.has(child.tagName.toLowerCase()),
-  );
-
+  const childElements = getValidChildren(element, ctx.skipTags);
   const hasBlockChildren = childElements.some(
     (child) => !ctx.inlineTags.has(child.tagName.toLowerCase()),
   );
-
   const children: string[] = [];
   let textNodes: string[] = [];
   let hasBlockChild = false;
 
-  if (!hasBlockChildren && childElements.length > 0) {
-    // Leaf node with only inline children - check for mixed content
-    const shouldDecompose = shouldDecomposeContent(element, {
+  const isPureInlineContainer = !hasBlockChildren && childElements.length > 0;
+
+  if (isPureInlineContainer) {
+    const inlineCtx = {
       inlineTags: ctx.inlineTags,
       skipTags: ctx.skipTags,
       config: ctx.config,
       doc: ctx.doc,
       pageUrl: ctx.pageUrl,
-    });
+    };
 
-    if (shouldDecompose) {
-      // Decompose mixed content
-      const runs = decomposeInlineContentRecursive(
-        element,
-        {
-          inlineTags: ctx.inlineTags,
-          skipTags: ctx.skipTags,
-          config: ctx.config,
-          doc: ctx.doc,
-          pageUrl: ctx.pageUrl,
-        },
-        id,
-      );
+    const requiresInlineDecomposition = shouldDecomposeContent(
+      element,
+      inlineCtx,
+    );
 
+    if (requiresInlineDecomposition) {
+      const runs = decomposeInlineContentRecursive(element, inlineCtx, id);
       const result = createInlineNodes(runs, id, ctx, readingDepth + 1);
       children.push(...result.nodeIds);
       textNodes = result.textRuns;
-      hasBlockChild = false;
     } else {
-      // No mixed content - normal processing
-      const childIds = await buildChildrenFromSiblings(
-        childElements,
+      children.push(
+        ...(await buildChildrenFromSiblings(
+          childElements,
+          id,
+          landmarkParentId,
+          ctx,
+          readingDepth,
+        )),
+      );
+    }
+  } else if (hasBlockChildren) {
+    const normalisedChildren = normaliseChildContent(element, ctx.skipTags);
+    children.push(
+      ...(await buildChildrenFromSiblings(
+        normalisedChildren,
         id,
         landmarkParentId,
         ctx,
         readingDepth,
-      );
-      children.push(...childIds);
-      hasBlockChild = false;
-    }
-  } else if (hasBlockChildren) {
-    // Has block children - process normally
-    const normalisedChildren = normaliseChildContent(element, ctx.skipTags);
-    const childIds = await buildChildrenFromSiblings(
-      normalisedChildren,
-      id,
-      landmarkParentId,
-      ctx,
-      readingDepth,
+      )),
     );
-    children.push(...childIds);
     hasBlockChild = true;
   }
 
-  // ── STEP 4: Label resolution (after structural processing) ─────────────
-  // Only resolve labels for nodes that need them
   const label = resolveNodeLabelSmart(
     element,
     resolvedRole,
     ctx.config,
     ctx.doc,
   );
-
-  // ── STEP 5: AI Fallback (ABSOLUTELY LAST) ──────────────────────────────
-  // Only run AI fallback if:
-  // 1. AI fallback is enabled in config
-  // 2. The node is still 'generic' (or low confidence)
-  // 3. The node has meaningful content (not just a wrapper)
-  // 4. The node has children or content to classify
   const hasContent =
     children.length > 0 || textNodes.length > 0 || element.textContent?.trim();
 
-  if (
+  const needsAIFallback =
     ctx.config.useAIFallback &&
     resolvedConfidence < ctx.config.aiFallbackThreshold &&
     resolvedRole === "generic" &&
     hasContent &&
-    !isGenericWrapper // Don't run AI on generic wrappers - they're just text containers
-  ) {
-    const subtree = serialiseDOMSubtree(element, ctx.skipTags);
-    const tag = element.tagName.toLowerCase();
+    !isGenericWrapper;
 
+  if (needsAIFallback) {
+    const subtree = serialiseDOMSubtree(element, ctx.skipTags);
     try {
       const aiResult = await ctx.fallbackProvider.classify(subtree, id);
-      if (
-        aiResult !== null &&
-        aiResult.confidence >= ctx.config.aiFallbackThreshold
-      ) {
-        // Only apply AI result if it improves the role
-        const currentConfidence = confidenceForSource(
-          resolvedSource,
-          ctx.config,
-        );
-        if (aiResult.confidence > currentConfidence) {
-          resolvedRole = aiResult.role;
-          resolvedSource = "ai";
-          resolvedConfidence = aiResult.confidence;
-        }
+
+      const isAIConfident =
+        aiResult &&
+        aiResult.confidence >= ctx.config.aiFallbackThreshold &&
+        aiResult.confidence > confidenceForSource(resolvedSource, ctx.config);
+
+      if (isAIConfident) {
+        resolvedRole = aiResult.role;
+        resolvedSource = "ai";
+        resolvedConfidence = aiResult.confidence;
       } else {
         ctx.fallbackLog.push({ id, tag, reason: "ai-timeout" });
         resolvedSource = "ai-timeout";
@@ -585,42 +439,27 @@ async function createNode(
     }
   }
 
-  // ── STEP 6: Determine content ────────────────────────────────────────────
-  let content = null;
-  if (!hasBlockChild) {
-    content =
-      textNodes.length > 0
-        ? textNodes.join(" ")
-        : (element.textContent?.trim() ?? null);
-  }
-
-  // ── STEP 7: Store the node ──────────────────────────────────────────────
-  ctx.nodes[id] = {
-    id,
-    role: resolvedRole,
+  ctx.nodes[id] = createBaseNode(id, resolvedRole, parentId, ctx, {
     level: roleInfo.level,
     label,
-    unlabelledYet: label === null,
-    landmark: LANDMARK_ROLES.has(resolvedRole),
+    content: !hasBlockChild
+      ? textNodes.length > 0
+        ? textNodes.join(" ")
+        : (element.textContent?.trim() ?? null)
+      : null,
     source: resolvedSource,
     confidence: resolvedConfidence,
-    readingIndex,
-    parent: parentId,
     children,
-    relations: createEmptyRelations(),
     state: readNodeState(element),
     attributes: mergeAttributes(
       readNodeAttributes(element, { sourceUrl: ctx.pageUrl }),
       liftedAttrs,
     ),
-    content,
     readingDepth,
-  };
+  });
 
   return id;
 }
-
-// parser.ts - Updated smart label resolution
 
 function resolveNodeLabelSmart(
   element: Element,
@@ -628,29 +467,27 @@ function resolveNodeLabelSmart(
   config: ParserConfig,
   doc?: Document,
 ): string | null {
-  // ── Case 1: Generic wrappers with text content ──────────────────────────
-  // Div/span with only text should NOT have labels
   const tag = element.tagName.toLowerCase();
-  const isGenericWrapper = tag === "div" || tag === "span";
-  if (isGenericWrapper && role === "generic") {
-    // Check if it has only text content
-    const hasOnlyText = !Array.from(element.children).some(
+  const isGenericContainer =
+    (tag === "div" || tag === "span") && role === "generic";
+
+  if (isGenericContainer) {
+    const hasVisibleChildren = Array.from(element.children).some(
       (child) =>
         !["script", "style", "noscript"].includes(child.tagName.toLowerCase()),
     );
-    if (hasOnlyText) {
-      return null; // No label for generic text containers
-    }
+    if (!hasVisibleChildren) return null;
   }
 
-  // ── Case 2: Text-bearing nodes ──────────────────────────────────────────
-  const TEXT_BEARING = new Set(["paragraph", "heading", "text", "caption"]);
+  const isTextBearingNode = new Set([
+    "paragraph",
+    "heading",
+    "text",
+    "caption",
+  ]).has(role);
+  const shouldSkipTextLabels = isTextBearingNode && !config.useTextLabels;
+  if (shouldSkipTextLabels) return null;
 
-  if (TEXT_BEARING.has(role) && !config.useTextLabels) {
-    return null;
-  }
-
-  // ── Case 3: Semantic containers ──────────────────────────────────────────
   const SEMANTIC_CONTAINERS = new Set([
     "main",
     "navigation",
@@ -666,182 +503,102 @@ function resolveNodeLabelSmart(
     "tabpanel",
   ]);
 
-  if (SEMANTIC_CONTAINERS.has(role) && config.useSemanticLabels) {
-    // Try to resolve a meaningful label
+  const isSemanticContainerConfiguredForLabels =
+    SEMANTIC_CONTAINERS.has(role) && config.useSemanticLabels;
+
+  if (isSemanticContainerConfiguredForLabels) {
     const label = resolveNodeLabel(element, config, doc);
     if (label) return label;
 
-    // For sections, try to find a heading
-    if (role === "region" || role === "section") {
-      const headings = Array.from(
+    const isHeadingContainer = role === "region" || role === "section";
+    if (isHeadingContainer) {
+      for (const heading of Array.from(
         element.querySelectorAll("h1, h2, h3, h4, h5, h6"),
-      );
-      for (const heading of headings) {
+      )) {
         const headingText = heading.textContent?.trim();
-        if (headingText) {
-          return headingText.slice(0, config.labelMaxChars);
-        }
+        if (headingText) return headingText.slice(0, config.labelMaxChars);
       }
     }
-
-    // Fallback to role-based label
     return `${role}`;
   }
 
-  // ── Case 4: Interactive elements ──────────────────────────────────────────
-  if (config.useAriaLabels) {
-    const INTERACTIVE = new Set([
-      "link",
-      "button",
-      "textbox",
-      "searchbox",
-      "checkbox",
-      "radio",
-      "combobox",
-      "slider",
-      "spinbutton",
-      "switch",
-      "tab",
-      "menuitem",
-      "option",
-    ]);
+  const isInteractiveRequiringAria =
+    config.useAriaLabels && INTERACTIVE_ROLES.has(role);
+  if (isInteractiveRequiringAria) return resolveNodeLabel(element, config, doc);
 
-    if (INTERACTIVE.has(role)) {
-      return resolveNodeLabel(element, config, doc);
-    }
-  }
+  const isGenericLandmark = role === "generic" && LANDMARK_ROLES.has(role);
+  if (isGenericLandmark) return resolveNodeLabel(element, config, doc);
 
-  // ── Case 5: Generic nodes with landmark status ────────────────────────────
-  if (role === "generic" && LANDMARK_ROLES.has(role)) {
-    return resolveNodeLabel(element, config, doc);
-  }
-
-  // ── Case 6: Default - try to resolve but be conservative ──────────────────
-  // Only return label if it's meaningful (not just text content)
   const label = resolveNodeLabel(element, config, doc);
+  const isRedundantGenericLabel =
+    role === "generic" && label === element.textContent?.trim();
 
-  // If the label is just the text content and it's a generic node, skip it
-  if (role === "generic" && label === element.textContent?.trim()) {
-    return null;
-  }
-
+  if (isRedundantGenericLabel) return null;
   return label || null;
 }
 
-// Helper: Check if an element has ONLY text content (no elements)
-/**
- * True when `element` contains no block-level descendant — i.e. every
- * element in its subtree is either a skip tag or an inline tag. Unlike
- * `hasOnlyTextContent`, this does NOT require bare text at the top level,
- * so it also matches wrappers like `<span><a>Click</a></span>` or
- * `<div><b>Bold</b> and <i>italic</i></div>` that contain only inline
- * elements (with or without their own nested text).
- *
- * Used to decide whether a generic `div`/`span` wrapper can be spliced away
- * entirely at parse time instead of surviving into the IR as a `generic`
- * node (and downstream into the scene as an `XRGenericPanel`) that engine.ts
- * and primitives.tsx would otherwise have to flatten via
- * `flattenInlineWrappers` at render/measurement time.
- */
 function hasNoBlockDescendant(element: Element, ctx: BuildContext): boolean {
   for (const child of Array.from(element.childNodes)) {
     if (child.nodeType !== Node.ELEMENT_NODE) continue;
+    const tag = (child as Element).tagName.toLowerCase();
 
-    const el = child as Element;
-    const tag = el.tagName.toLowerCase();
+    const isSkippedElement = ctx.skipTags.has(tag);
+    if (isSkippedElement) continue;
 
-    if (ctx.skipTags.has(tag)) continue;
-
-    if (!ctx.inlineTags.has(tag)) {
-      return false; // Found a block element somewhere in the subtree.
-    }
-
-    // Inline tag — recurse to make sure nothing block-level is nested deeper.
-    if (!hasNoBlockDescendant(el, ctx)) {
-      return false;
-    }
+    const isBlockElementOrHasBlockDescendants =
+      !ctx.inlineTags.has(tag) || !hasNoBlockDescendant(child as Element, ctx);
+    if (isBlockElementOrHasBlockDescendants) return false;
   }
-
   return true;
 }
 
-/**
- * Attributes that justify keeping a node for a generic wrapper even though
- * it has no block descendant — dropping the wrapper would silently lose
- * this metadata, with nowhere left to attach it once the children are
- * spliced into the parent.
- */
 function hasPreservableWrapperAttrs(element: Element): boolean {
-  if (element.hasAttribute("title")) return true;
-  if (element.hasAttribute("lang")) return true;
+  const hasGlobalPreservableAttrs =
+    element.hasAttribute("title") || element.hasAttribute("lang");
+  if (hasGlobalPreservableAttrs) return true;
+
   for (const attr of Array.from(element.attributes)) {
-    if (attr.name === "id" || attr.name.startsWith("aria-")) return true;
-    if (attr.name.startsWith("data-") && attr.name !== "data-ir-prose") {
-      return true;
-    }
+    const isId = attr.name === "id";
+    const isAria = attr.name.startsWith("aria-");
+    const isCustomData =
+      attr.name.startsWith("data-") && attr.name !== "data-ir-prose";
+
+    const shouldPreserve = isId || isAria || isCustomData;
+    if (shouldPreserve) return true;
   }
   return false;
 }
 
 function hasOnlyTextContent(element: Element, ctx: BuildContext): boolean {
   let hasText = false;
-
   for (const child of Array.from(element.childNodes)) {
     if (child.nodeType === Node.TEXT_NODE) {
-      const text = (child.textContent ?? "").trim();
-      if (text) {
-        hasText = true;
-      }
+      const isVisibleText = (child.textContent ?? "").trim().length > 0;
+      if (isVisibleText) hasText = true;
     } else if (child.nodeType === Node.ELEMENT_NODE) {
-      const el = child as Element;
-      const tag = el.tagName.toLowerCase();
-      // If it's not a skip tag and not an inline tag, it's a block element
-      if (!ctx.skipTags.has(tag) && !ctx.inlineTags.has(tag)) {
-        return false; // Has block child
-      }
-      // If it's an inline element, recursively check
-      if (ctx.inlineTags.has(tag)) {
-        // Recursively check if this inline element has only text
-        const hasOnlyTextInInline = hasOnlyTextContent(el, ctx);
-        if (!hasOnlyTextInInline) {
-          return false;
-        }
-      }
+      const tag = (child as Element).tagName.toLowerCase();
+      const isSkippedElement = ctx.skipTags.has(tag);
+
+      const containsBlockOrNonTextElements =
+        !isSkippedElement &&
+        (!ctx.inlineTags.has(tag) ||
+          !hasOnlyTextContent(child as Element, ctx));
+
+      if (containsBlockOrNonTextElements) return false;
     }
   }
-
   return hasText;
 }
-
-// ---------------------------------------------------------------------------
-// buildChildrenFromSiblings — refactored
-//
-// The original single function is split into six focused handlers, each
-// responsible for exactly one pattern-match case. The main loop becomes a
-// dispatcher that tries each handler in priority order.
-//
-// Changes vs original:
-//   1. peelSibling() helper deduplicates the isInertWrapper/pierceWrapperChain
-//      pattern that appeared 8 times inline
-//   2. handleLinkRun: label is now taken from ctx.nodes[parentId]?.label
-//      rather than child.parentElement — the original always resolved to the
-//      grandparent container, not a meaningful nav title
-//   3. handleHeadingSection: uses siblings.slice() + map instead of a manual
-//      index loop — cleaner and eliminates the sectionNodePromises array
-// ---------------------------------------------------------------------------
-
-// ── Shared peel helper ───────────────────────────────────────────────────────
 
 function peelSibling(
   el: Element,
   ctx: BuildContext,
 ): { element: Element; liftedAttrs: Partial<IRNodeAttributes> } {
-  return isInertWrapper(el, ctx)
+  const isWrapper = isInertWrapper(el, ctx);
+  return isWrapper
     ? pierceWrapperChain(el, ctx)
     : { element: el, liftedAttrs: {} };
 }
-
-// ── Handler 1: SVG / canvas → img leaf ──────────────────────────────────────
 
 function handleMediaLeaf(
   child: Element,
@@ -851,34 +608,19 @@ function handleMediaLeaf(
   readingDepth: number,
 ): string {
   const id = `${parentId}-node-${ctx.counters.node++}`;
-  const readingIndex = ctx.counters.reading++;
   const label = resolveNodeLabel(child, ctx.config, ctx.doc);
   ctx.elementToNodeId.set(child, id);
-  ctx.nodes[id] = {
-    id,
-    role: "img",
-    level: null,
+
+  ctx.nodes[id] = createBaseNode(id, "img", parentId, ctx, {
     label,
-    content: null,
-    unlabelledYet: label === null,
-    landmark: false,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
-    readingIndex,
-    parent: parentId,
-    children: [],
-    relations: createEmptyRelations(),
-    state: createEmptyState(),
     attributes: mergeAttributes(
       readNodeAttributes(child, { sourceUrl: ctx.pageUrl }),
       liftedAttrs,
     ),
     readingDepth,
-  };
+  });
   return id;
 }
-
-// ── Handler 2: landmark element → section node ──────────────────────────────
 
 async function handleLandmark(
   child: Element,
@@ -890,22 +632,16 @@ async function handleLandmark(
 ): Promise<string> {
   const roleInfo = resolveRoleFromElement(child, ctx.config);
   const landmarkId = `${parentId}-section-${ctx.counters.section++}`;
-  const readingIndex = ctx.counters.reading++;
-
-  // Register before descending so aria-controls/labelledby can resolve here
   ctx.elementToNodeId.set(child, landmarkId);
 
   const nestedChildren = await buildChildrenFromSiblings(
-    Array.from(child.children).filter(
-      (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
-    ),
+    getValidChildren(child, ctx.skipTags),
     landmarkId,
     landmarkId,
     ctx,
     readingDepth + 1,
     true,
   );
-
   const label =
     resolveNodeLabel(child, ctx.config, ctx.doc) ??
     resolveSectionLabel(landmarkId, ctx.config, child, ctx.doc);
@@ -916,35 +652,28 @@ async function handleLandmark(
     parentId: landmarkParentId,
   });
 
-  ctx.nodes[landmarkId] = {
-    id: landmarkId,
-    role: roleInfo.role,
-    level: roleInfo.level,
-    label,
-    content: child.textContent?.trim() ?? null,
-    unlabelledYet: label === null,
-    landmark: true,
-    source: roleInfo.source,
-    confidence: confidenceForSource(roleInfo.source, ctx.config),
-    readingIndex,
-    parent: parentId,
-    children: nestedChildren,
-    relations: createEmptyRelations(),
-    state: readNodeState(child),
-    attributes: mergeAttributes(
-      readNodeAttributes(child, { sourceUrl: ctx.pageUrl }),
-      liftedAttrs,
-    ),
-    readingDepth,
-  };
-
+  ctx.nodes[landmarkId] = createBaseNode(
+    landmarkId,
+    roleInfo.role,
+    parentId,
+    ctx,
+    {
+      level: roleInfo.level,
+      label,
+      content: child.textContent?.trim() ?? null,
+      landmark: true,
+      source: roleInfo.source,
+      children: nestedChildren,
+      state: readNodeState(child),
+      attributes: mergeAttributes(
+        readNodeAttributes(child, { sourceUrl: ctx.pageUrl }),
+        liftedAttrs,
+      ),
+      readingDepth,
+    },
+  );
   return landmarkId;
 }
-
-// ── Handler 3: heading + following siblings → inferred region ────────────────
-//
-// Returns { id, endIndex } if the heading has content to group, null if it
-// stands alone (falls through to leaf node handling).
 
 async function handleHeadingSection(
   siblings: Element[],
@@ -962,39 +691,39 @@ async function handleHeadingSection(
   while (endIndex < siblings.length) {
     const lookahead = peelSibling(siblings[endIndex], ctx).element;
     const lookaheadRole = resolveRoleFromElement(lookahead, ctx.config);
-    if (
-      lookaheadRole.role === "heading" &&
-      (lookaheadRole.level ?? 0) <= headingLevel
-    )
-      break;
 
-    if (
-      lookahead.tagName.toLowerCase() === "section" ||
-      LANDMARK_ROLES.has(lookaheadRole.role)
-    )
-      break; // ← add this
+    const isSameOrHigherHeading =
+      lookaheadRole.role === "heading" &&
+      (lookaheadRole.level ?? 0) <= headingLevel;
+    const isExplicitSection = lookahead.tagName.toLowerCase() === "section";
+    const isLandmarkBoundary = LANDMARK_ROLES.has(lookaheadRole.role);
+
+    const reachedSectionBoundary =
+      isSameOrHigherHeading || isExplicitSection || isLandmarkBoundary;
+    if (reachedSectionBoundary) break;
 
     endIndex += 1;
   }
 
-  if (endIndex === index + 1) return null; // heading stands alone
+  const noAdditionalSiblingsFound = endIndex === index + 1;
+  if (noAdditionalSiblingsFound) return null;
 
-  const headingCount = siblings.reduce((count, sib) => {
-    const role = resolveRoleFromElement(
-      peelSibling(sib, ctx).element,
-      ctx.config,
+  const headingCount = siblings
+    .slice(index, endIndex)
+    .reduce(
+      (count, sib) =>
+        count +
+        (resolveRoleFromElement(peelSibling(sib, ctx).element, ctx.config)
+          .role === "heading"
+          ? 1
+          : 0),
+      0,
     );
 
-    return count + (role.role === "heading" ? 1 : 0);
-  }, 0);
-
-  if (parentIsLandmark && headingCount <= 1) {
-    return null;
-  }
+  const isInvalidLandmarkSectioning = parentIsLandmark && headingCount <= 1;
+  if (isInvalidLandmarkSectioning) return null;
 
   const sectionId = `${parentId}-section-${ctx.counters.section++}`;
-  const readingIndex = ctx.counters.reading++;
-
   const sectionChildren = (
     await Promise.all(
       siblings.slice(index, endIndex).map((sib) => {
@@ -1015,32 +744,18 @@ async function handleHeadingSection(
     resolveNodeLabel(child, ctx.config, ctx.doc) ??
     child.textContent?.trim() ??
     sectionId;
-
   ctx.landmarkRecords.push({
     id: sectionId,
     label,
     parentId: landmarkParentId,
   });
 
-  ctx.nodes[sectionId] = {
-    id: sectionId,
-    role: "region",
-    level: null,
+  ctx.nodes[sectionId] = createBaseNode(sectionId, "region", parentId, ctx, {
     label,
-    content: null,
-    unlabelledYet: label === null,
     landmark: true,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
-    readingIndex,
-    parent: parentId,
     children: sectionChildren,
-    relations: createEmptyRelations(),
-    state: createEmptyState(),
-    attributes: createEmptyAttributes(),
     readingDepth,
-  };
-
+  });
   return { id: sectionId, endIndex };
 }
 
@@ -1051,175 +766,91 @@ function handleFigureSythenticCreation(
   readingDepth: number,
 ): string | undefined {
   const promoted = promoteLinkedImageDeep(element, ctx);
-  if (promoted) {
-    const figElement = promoted.element;
-    // Use data-ir-src for the image source
-    const src = figElement.getAttribute("data-ir-src") || "";
-    const href = figElement.getAttribute("data-ir-figure-href") || null;
-    const alt = figElement.getAttribute("alt") || null;
+  const isFigurePromotionFailed = !promoted;
+  if (isFigurePromotionFailed) return;
 
-    // Find caption from child elements
-    let caption = null;
-    const captionEl = figElement.querySelector(
-      ".devsite-landing-row-item-description-content, figcaption, .caption",
-    );
-    if (captionEl) {
-      caption = captionEl.textContent?.trim() || null;
-    }
-    if (!caption) {
-      caption = alt;
-    }
+  const figElement = promoted.element;
+  const src = figElement.getAttribute("data-ir-src") || "";
+  const href = figElement.getAttribute("data-ir-figure-href") || null;
+  const alt = figElement.getAttribute("alt") || null;
+  const captionEl = figElement.querySelector(
+    ".devsite-landing-row-item-description-content, figcaption, .caption",
+  );
+  const caption = captionEl?.textContent?.trim() || alt;
 
-    const id = `${parentId}-figure-${ctx.counters.node++}`;
+  const id = `${parentId}-figure-${ctx.counters.node++}`;
+  const imgId = `${id}-img-${ctx.counters.node++}`;
 
-    // Create the img node with the src
-    const imgId = `${id}-img-${ctx.counters.node++}`;
-    ctx.nodes[imgId] = {
-      id: imgId,
-      role: "img",
-      level: null,
-      label: alt,
-      content: null,
-      unlabelledYet: alt === null,
-      landmark: false,
-      source: "structural",
-      confidence: confidenceForSource("structural", ctx.config),
-      readingIndex: ctx.counters.reading++,
-      parent: id,
-      children: [],
-      relations: createEmptyRelations(),
-      state: createEmptyState(),
-      attributes: {
-        ...createEmptyAttributes(),
-        src: src, // Now this will have the actual URL
-        href: href,
-        alt: alt,
-      },
-      readingDepth: readingDepth + 1,
-    };
+  ctx.nodes[imgId] = createBaseNode(imgId, "img", id, ctx, {
+    label: alt,
+    attributes: { ...createEmptyAttributes(), src, href, alt },
+    readingDepth: readingDepth + 1,
+  });
 
-    ctx.nodes[id] = {
-      id,
-      role: "figure",
-      level: null,
-      label: caption,
-      content: null,
-      unlabelledYet: caption === null,
-      landmark: false,
-      source: "structural",
-      confidence: confidenceForSource("structural", ctx.config),
-      readingIndex: ctx.counters.reading++,
-      parent: parentId,
-      children: [imgId],
-      relations: createEmptyRelations(),
-      state: createEmptyState(),
-      attributes: {
-        ...createEmptyAttributes(),
-        src: src,
-        href: href,
-      },
-      readingDepth,
-    };
-    ctx.elementToNodeId.set(element, id);
-    return id;
-  }
+  ctx.nodes[id] = createBaseNode(id, "figure", parentId, ctx, {
+    label: caption,
+    children: [imgId],
+    attributes: { ...createEmptyAttributes(), src, href },
+    readingDepth,
+  });
+
+  ctx.elementToNodeId.set(element, id);
+  return id;
 }
 
-// In createNode, before processing children:
-// Promote figure/a>picture>img → synthetic figure with href + src
 function promoteLinkedImageDeep(
   element: Element,
   ctx: BuildContext,
 ): { element: Element; isFigure: boolean } | null {
   const tag = element.tagName.toLowerCase();
+  const isAlreadyFigure = tag === "figure";
 
-  // Already a figure with an image inside
-  if (tag === "figure") {
-    // Check if it contains an img or picture
+  if (isAlreadyFigure) {
     const img = element.querySelector("img, picture > img");
-    if (img) {
-      // Create a synthetic figure with proper src
-      const fig = element.ownerDocument!.createElement("figure");
-      const src = img.getAttribute("src") || "";
-      const alt = img.getAttribute("alt") || "";
-      const href = element.querySelector("a")?.getAttribute("href") || null;
-
-      fig.setAttribute("data-ir-figure-href", href || "");
-      fig.setAttribute("data-ir-src", src);
-      if (alt) fig.setAttribute("alt", alt);
-
-      // Also copy any caption from the figure
-      const caption = element.querySelector(
-        "figcaption, .caption, .devsite-landing-row-item-description-content",
-      );
-      if (caption) {
-        const captionClone = caption.cloneNode(true) as Element;
-        fig.appendChild(captionClone);
-      }
-
-      return { element: fig, isFigure: true };
-    }
-    return null;
-  }
-
-  let anchor: Element | null = null;
-  if (tag === "div") {
-    // find single <a> child
-    const aChildren = Array.from(element.children).filter(
-      (c) => c.tagName.toLowerCase() === "a",
+    if (!img) return null;
+    const fig = element.ownerDocument!.createElement("figure");
+    fig.setAttribute(
+      "data-ir-figure-href",
+      element.querySelector("a")?.getAttribute("href") || "",
     );
-    if (aChildren.length === 1) anchor = aChildren[0];
-  } else if (tag === "a") {
-    anchor = element;
+    fig.setAttribute("data-ir-src", img.getAttribute("src") || "");
+    if (img.getAttribute("alt"))
+      fig.setAttribute("alt", img.getAttribute("alt")!);
+    const caption = element.querySelector(
+      "figcaption, .caption, .devsite-landing-row-item-description-content",
+    );
+    if (caption) fig.appendChild(caption.cloneNode(true) as Element);
+    return { element: fig, isFigure: true };
   }
+
+  const isWrapperDiv = tag === "div";
+  const isAnchorTag = tag === "a";
+
+  let anchor = isWrapperDiv
+    ? Array.from(element.children).find((c) => c.tagName.toLowerCase() === "a")
+    : isAnchorTag
+      ? element
+      : null;
+
   if (!anchor) return null;
 
-  // unwrap picture → img
-  let imgEl: Element | null = null;
-  const anchorChildren = Array.from(anchor.children).filter(
-    (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
-  );
-
-  // Look for img directly or inside picture
-  for (const child of anchorChildren) {
-    if (child.tagName.toLowerCase() === "img") {
-      imgEl = child;
-      break;
-    } else if (child.tagName.toLowerCase() === "picture") {
-      const picChildren = Array.from(child.children).filter(
-        (c) => c.tagName.toLowerCase() === "img",
-      );
-      if (picChildren.length > 0) {
-        imgEl = picChildren[0];
-        break;
-      }
-    }
-  }
-
+  let imgEl =
+    anchor.querySelector("img") || anchor.querySelector("picture > img");
   if (!imgEl) return null;
 
   const fig = anchor.ownerDocument!.createElement("figure");
-  const src = imgEl.getAttribute("src") || "";
-  const alt = imgEl.getAttribute("alt") || "";
-  const href = anchor.getAttribute("href") || "";
+  fig.setAttribute("data-ir-figure-href", anchor.getAttribute("href") || "");
+  fig.setAttribute("data-ir-src", imgEl.getAttribute("src") || "");
+  if (imgEl.getAttribute("alt"))
+    fig.setAttribute("alt", imgEl.getAttribute("alt")!);
 
-  fig.setAttribute("data-ir-figure-href", href);
-  fig.setAttribute("data-ir-src", src);
-  if (alt) fig.setAttribute("alt", alt);
-
-  // Also copy any caption or description from the original element
   const desc = element.querySelector(
     ".devsite-landing-row-item-description-content, figcaption, .caption",
   );
-  if (desc) {
-    const captionClone = desc.cloneNode(true) as Element;
-    fig.appendChild(captionClone);
-  }
-
+  if (desc) fig.appendChild(desc.cloneNode(true) as Element);
   return { element: fig, isFigure: true };
 }
 
-// ── Handler 4: homogeneous run → inferred list ───────────────────────────────
 async function createListItem(
   element: Element,
   parentId: string,
@@ -1228,26 +859,22 @@ async function createListItem(
   readingDepth: number,
 ): Promise<string> {
   const id = `${parentId}-item-${ctx.counters.node++}`;
-  const readingIndex = ctx.counters.reading++;
 
-  // Pierce through generic wrappers to find the actual content.
   function pierceWrappers(el: Element): {
     content: Element;
     wrappers: Element[];
   } {
     const wrappers: Element[] = [];
     let current = el;
-
     while (true) {
-      // FIX: loop controls re-check
-      const tag = current.tagName.toLowerCase(); // FIX: re-read tag each iteration
-      if (tag !== "div" && tag !== "span") break;
-      if (current.hasAttribute("role")) break;
+      const tag = current.tagName.toLowerCase();
+      const isMeaningfulTagOrHasRole =
+        (tag !== "div" && tag !== "span") || current.hasAttribute("role");
+      if (isMeaningfulTagOrHasRole) break;
 
-      const children = Array.from(current.children).filter(
-        (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
-      );
-      if (children.length !== 1) break;
+      const children = getValidChildren(current, ctx.skipTags);
+      const isNotSingleChildChain = children.length !== 1;
+      if (isNotSingleChildChain) break;
 
       wrappers.push(current);
       current = children[0];
@@ -1256,23 +883,8 @@ async function createListItem(
   }
 
   const { content: contentEl, wrappers } = pierceWrappers(element);
-
-  // FIX: Linked-image promotion at item level, before any child processing.
-  // If the pierced content is a figure/a>picture>img card, emit a media leaf
-  // directly instead of recursing into the subtree with no text label.
-
-  const hasNestedList = Array.from(
-    contentEl.querySelectorAll('ul, ol, [role="list"]'),
-  ).some((el) => contentEl.contains(el) && el !== contentEl);
-
-  const childElements = Array.from(contentEl.children).filter(
-    (child) => !ctx.skipTags.has(child.tagName.toLowerCase()),
-  );
-
-  // hasNestedList currently takes both branches to the same call —
-  // kept here as a stub for future divergence (e.g. flat vs nested processing).
   const childIds = await buildChildrenFromSiblings(
-    childElements,
+    getValidChildren(contentEl, ctx.skipTags),
     id,
     landmarkParentId,
     ctx,
@@ -1280,42 +892,25 @@ async function createListItem(
     false,
   );
 
-  const mergedAttrs = {
-    ...readNodeAttributes(contentEl, { sourceUrl: ctx.pageUrl }),
-  };
+  const mergedAttrs = readNodeAttributes(contentEl, { sourceUrl: ctx.pageUrl });
   for (const wrapper of wrappers) {
     const wrapperAttrs = readNodeAttributes(wrapper, {
       sourceUrl: ctx.pageUrl,
     });
-    for (const key of Object.keys(wrapperAttrs) as (keyof IRNodeAttributes)[]) {
-      if (wrapperAttrs[key] != null && mergedAttrs[key] == null) {
-        mergedAttrs[key] = wrapperAttrs[key] as any;
-      }
-    }
+    for (const key of Object.keys(wrapperAttrs) as (keyof IRNodeAttributes)[])
+      assignIfDefined(mergedAttrs, key, wrapperAttrs[key]);
   }
 
-  const label =
-    resolveNodeLabel(contentEl, ctx.config, ctx.doc) ||
-    resolveNodeLabel(element, ctx.config, ctx.doc);
-
-  ctx.nodes[id] = {
-    id,
-    role: "listitem",
-    level: null,
-    label,
-    unlabelledYet: label === null,
+  ctx.nodes[id] = createBaseNode(id, "listitem", parentId, ctx, {
+    label:
+      resolveNodeLabel(contentEl, ctx.config, ctx.doc) ||
+      resolveNodeLabel(element, ctx.config, ctx.doc),
     content: contentEl.textContent?.trim() || null,
-    landmark: false,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
-    readingIndex,
-    parent: parentId,
     children: childIds,
-    relations: createEmptyRelations(),
     state: readNodeState(contentEl),
     attributes: mergedAttrs,
     readingDepth,
-  };
+  });
 
   ctx.elementToNodeId.set(element, id);
   return id;
@@ -1331,88 +926,56 @@ async function handleListRun(
 ): Promise<{ id: string; endIndex: number } | null> {
   const first = peelSibling(siblings[index], ctx).element;
 
-  // Check if this could be a list item (not landmark, not interactive, not heading)
-  if (!isListCandidate(first, ctx.config)) return null;
+  const isInvalidListCandidate = !isListCandidate(first, ctx.config);
+  if (isInvalidListCandidate) return null;
 
-  // Get semantic signature of the first item
   const firstSig = getSemanticSignature(first, ctx);
+  if (!firstSig) return null;
 
-  // Check if it has meaningful content (not just empty wrappers)
-  if (!firstSig || firstSig === "") return null;
+  const { run, endIndex } = collectSiblingRun(
+    siblings,
+    index,
+    ctx,
+    peelSibling,
+    (candidate) => {
+      const isNotListCandidate = !isListCandidate(candidate, ctx.config);
+      if (isNotListCandidate) return false;
 
-  // Collect all structurally similar items
-  const run: Element[] = [];
-  let scan = index;
-
-  while (scan < siblings.length) {
-    const candidate = peelSibling(siblings[scan], ctx).element;
-    if (!isListCandidate(candidate, ctx.config)) break;
-
-    // Compare semantic structure
-    if (!areStructurallySimilar(first, candidate, ctx)) {
-      // If they're not similar but one is a wrapper that contains the other's structure,
-      // we might still want to include it
-      const candidateSig = getSemanticSignature(candidate, ctx);
-      if (!candidateSig || candidateSig !== firstSig) {
-        break;
+      const isStructurallyDifferent = !areStructurallySimilar(
+        first,
+        candidate,
+        ctx,
+      );
+      if (isStructurallyDifferent) {
+        const candidateSig = getSemanticSignature(candidate, ctx);
+        const signatureMismatch = !candidateSig || candidateSig !== firstSig;
+        if (signatureMismatch) return false;
       }
-    }
 
-    // Check that it has some content
-    const hasContent =
-      candidate.textContent?.trim() || candidate.children.length > 0;
-    if (!hasContent) break;
+      const hasMeaningfulContent = !!(
+        candidate.textContent?.trim() || candidate.children.length > 0
+      );
+      return hasMeaningfulContent;
+    },
+  );
 
-    run.push(candidate);
-    scan += 1;
-  }
+  const isBelowMinimumRunLength = run.length < ctx.config.minListRun;
+  if (isBelowMinimumRunLength) return null;
 
-  if (run.length < ctx.config.minListRun) return null;
-
-  // Create the list node
   const listId = `${parentId}-list-${ctx.counters.section++}`;
-  const readingIndex = ctx.counters.reading++;
-
-  // Create list items - pass the original item (with wrappers) to preserve context
   const listChildren = await Promise.all(
     run.map((item) =>
-      createListItem(
-        item, // Pass the original, not unwrapped
-        listId,
-        landmarkParentId,
-        ctx,
-        readingDepth + 1,
-      ),
+      createListItem(item, listId, landmarkParentId, ctx, readingDepth + 1),
     ),
   );
 
-  // Store the list node
-  ctx.nodes[listId] = {
-    id: listId,
-    role: "list",
-    level: null,
-    label: null,
-    unlabelledYet: true,
-    content: null,
-    landmark: false,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
-    readingIndex,
-    parent: parentId,
+  ctx.nodes[listId] = createBaseNode(listId, "list", parentId, ctx, {
     children: listChildren,
-    relations: createEmptyRelations(),
-    state: createEmptyState(),
     attributes: { ...createEmptyAttributes(), listType: "unordered" },
     readingDepth,
-  };
-
-  return { id: listId, endIndex: scan };
+  });
+  return { id: listId, endIndex };
 }
-// ── Handler 5: <a>-run → inferred navigation landmark ────────────────────────
-//
-// FIX: label is resolved from the already-built parent node's own label rather
-// than child.parentElement. The original used child.parentElement which is the
-// same container element every time — it never contained a meaningful title.
 
 async function handleLinkRun(
   siblings: Element[],
@@ -1422,21 +985,18 @@ async function handleLinkRun(
   ctx: BuildContext,
   readingDepth: number,
 ): Promise<{ id: string; endIndex: number } | null> {
-  const run: Element[] = [];
-  let scan = index;
+  const { run, endIndex } = collectSiblingRun(
+    siblings,
+    index,
+    ctx,
+    peelSibling,
+    (candidate) => candidate.tagName.toLowerCase() === "a",
+  );
 
-  while (scan < siblings.length) {
-    const candidate = peelSibling(siblings[scan], ctx).element;
-    if (candidate.tagName.toLowerCase() !== "a") break;
-    run.push(candidate);
-    scan += 1;
-  }
-
-  if (run.length < ctx.config.minLinkRun) return null;
+  const isBelowMinimumRunLength = run.length < ctx.config.minLinkRun;
+  if (isBelowMinimumRunLength) return null;
 
   const navId = `${parentId}-nav-${ctx.counters.section++}`;
-  const readingIndex = ctx.counters.reading++;
-
   const navChildren = (
     await Promise.all(
       run.map((item) =>
@@ -1444,7 +1004,6 @@ async function handleLinkRun(
       ),
     )
   ).flat();
-
   const inferredLabel = ctx.nodes[parentId]?.label ?? "Navigation";
 
   ctx.landmarkRecords.push({
@@ -1452,30 +1011,16 @@ async function handleLinkRun(
     label: inferredLabel,
     parentId: landmarkParentId,
   });
-
-  ctx.nodes[navId] = {
-    id: navId,
-    role: "navigation",
-    level: null,
+  ctx.nodes[navId] = createBaseNode(navId, "navigation", parentId, ctx, {
     label: inferredLabel,
     unlabelledYet: false,
     landmark: true,
-    content: null,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
-    readingIndex,
-    parent: parentId,
     children: navChildren,
-    relations: createEmptyRelations(),
-    state: createEmptyState(),
-    attributes: createEmptyAttributes(),
     readingDepth,
-  };
+  });
 
-  return { id: navId, endIndex: scan };
+  return { id: navId, endIndex };
 }
-
-// ── Handler 6: <p>-run → inferred article body ───────────────────────────────
 
 async function handleParagraphRun(
   siblings: Element[],
@@ -1485,21 +1030,18 @@ async function handleParagraphRun(
   ctx: BuildContext,
   readingDepth: number,
 ): Promise<{ id: string; endIndex: number } | null> {
-  const run: Element[] = [];
-  let scan = index;
+  const { run, endIndex } = collectSiblingRun(
+    siblings,
+    index,
+    ctx,
+    peelSibling,
+    (candidate) => candidate.tagName.toLowerCase() === "p",
+  );
 
-  while (scan < siblings.length) {
-    const candidate = peelSibling(siblings[scan], ctx).element;
-    if (candidate.tagName.toLowerCase() !== "p") break;
-    run.push(candidate);
-    scan += 1;
-  }
-
-  if (run.length < ctx.config.minParagraphRun) return null;
+  const isBelowMinimumRunLength = run.length < ctx.config.minParagraphRun;
+  if (isBelowMinimumRunLength) return null;
 
   const articleId = `${parentId}-article-${ctx.counters.section++}`;
-  const readingIndex = ctx.counters.reading++;
-
   const articleChildren = (
     await Promise.all(
       run.map((item) =>
@@ -1515,29 +1057,12 @@ async function handleParagraphRun(
     )
   ).flat();
 
-  ctx.nodes[articleId] = {
-    id: articleId,
-    role: "article",
-    level: null,
-    label: null,
-    content: null,
-    unlabelledYet: true,
-    landmark: false,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
-    readingIndex,
-    parent: parentId,
+  ctx.nodes[articleId] = createBaseNode(articleId, "article", parentId, ctx, {
     children: articleChildren,
-    relations: createEmptyRelations(),
-    state: createEmptyState(),
-    attributes: createEmptyAttributes(),
     readingDepth,
-  };
-
-  return { id: articleId, endIndex: scan };
+  });
+  return { id: articleId, endIndex };
 }
-
-// ── Main dispatcher ──────────────────────────────────────────────────────────
 
 async function buildChildrenFromSiblings(
   siblings: Element[],
@@ -1554,17 +1079,18 @@ async function buildChildrenFromSiblings(
     const { element: child, liftedAttrs } = peelSibling(siblings[index], ctx);
     const tag = child.tagName.toLowerCase();
 
-    if (ctx.config.excludeHiddenContent && isAccessibilityHidden(child)) {
-      index += 1;
-      continue;
-    }
-    if (ctx.skipTags.has(tag)) {
+    const isHiddenAndExcluded =
+      ctx.config.excludeHiddenContent && isAccessibilityHidden(child);
+    const isSkippedTag = ctx.skipTags.has(tag);
+
+    const shouldIgnoreNode = isHiddenAndExcluded || isSkippedTag;
+    if (shouldIgnoreNode) {
       index += 1;
       continue;
     }
 
-    // Media short-circuit
-    if (tag === "svg" || tag === "canvas") {
+    const isMediaLeaf = tag === "svg" || tag === "canvas";
+    if (isMediaLeaf) {
       childIds.push(
         handleMediaLeaf(child, liftedAttrs, parentId, ctx, readingDepth),
       );
@@ -1572,42 +1098,34 @@ async function buildChildrenFromSiblings(
       continue;
     }
 
-    // Landmark
     const roleInfo = resolveRoleFromElement(child, ctx.config);
 
-    if (roleInfo.role === "main") {
-      // The <main> element is owned by the synthetic root node in parsePageToIR.
-      // Descend into it transparently without creating a new landmark node.
-      const mainChildren = await buildChildrenFromSiblings(
-        Array.from(child.children).filter(
-          (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
-        ),
-        parentId, // keep current parent context
-        landmarkParentId, // keep current landmark context
-        ctx,
-        readingDepth,
+    const isMainLandmark = roleInfo.role === "main";
+    if (isMainLandmark) {
+      childIds.push(
+        ...(await buildChildrenFromSiblings(
+          getValidChildren(child, ctx.skipTags),
+          parentId,
+          landmarkParentId,
+          ctx,
+          readingDepth,
+        )),
       );
-      childIds.push(...mainChildren);
       index += 1;
       continue;
     }
 
-    if (tag === "section" || LANDMARK_ROLES.has(roleInfo.role)) {
-      // ── Header / footer → skip entirely ───────────────────────────────────
-      // All links from <header> and <footer> elements are collected in a
-      // single "External Links" section appended at the very end of the
-      // document by the post-pass in parsePageToIR. We never recurse into
-      // the raw header/footer subtree here.
-      if (
-        roleInfo.role === "banner" ||
-        roleInfo.role === "contentinfo" ||
-        tag === "header" ||
-        tag === "footer"
-      ) {
+    const isExplicitSectionOrLandmarkRole =
+      tag === "section" || LANDMARK_ROLES.has(roleInfo.role);
+    if (isExplicitSectionOrLandmarkRole) {
+      const isTopLevelPageLandmarkType =
+        ["banner", "contentinfo"].includes(roleInfo.role) ||
+        ["header", "footer"].includes(tag);
+
+      if (isTopLevelPageLandmarkType) {
         index += 1;
         continue;
       }
-
       childIds.push(
         await handleLandmark(
           child,
@@ -1622,53 +1140,46 @@ async function buildChildrenFromSiblings(
       continue;
     }
 
-    // Heading-inferred section
-    if (ctx.config.useStructuralInference && roleInfo.role === "heading") {
-      // if (!parentIsLandmark) {
-      const result = await handleHeadingSection(
-        siblings,
-        index,
-        parentId,
-        landmarkParentId,
-        ctx,
-        readingDepth,
-        parentIsLandmark,
-      );
-      if (result) {
-        childIds.push(result.id);
-        index = result.endIndex;
-        continue;
-      }
-      // }
-      // else: heading stands alone — fall through to leaf
-    }
-    // <p>-run → article
-    if (ctx.config.useStructuralInference && tag === "p") {
-      const result = await handleParagraphRun(
-        siblings,
-        index,
-        parentId,
-        landmarkParentId,
-        ctx,
-        readingDepth,
-      );
-      if (result) {
-        childIds.push(result.id);
-        index = result.endIndex;
-        continue;
-      }
-    }
-
-    // Homogeneous run → list
     if (ctx.config.useStructuralInference) {
-      const result = await handleListRun(
-        siblings,
-        index,
-        parentId,
-        landmarkParentId,
-        ctx,
-        readingDepth,
-      );
+      let result = null;
+      if (roleInfo.role === "heading")
+        result = await handleHeadingSection(
+          siblings,
+          index,
+          parentId,
+          landmarkParentId,
+          ctx,
+          readingDepth,
+          parentIsLandmark,
+        );
+      else if (tag === "p")
+        result = await handleParagraphRun(
+          siblings,
+          index,
+          parentId,
+          landmarkParentId,
+          ctx,
+          readingDepth,
+        );
+      else if (tag === "a")
+        result = await handleLinkRun(
+          siblings,
+          index,
+          parentId,
+          landmarkParentId,
+          ctx,
+          readingDepth,
+        );
+      else
+        result = await handleListRun(
+          siblings,
+          index,
+          parentId,
+          landmarkParentId,
+          ctx,
+          readingDepth,
+        );
+
       if (result) {
         childIds.push(result.id);
         index = result.endIndex;
@@ -1676,24 +1187,6 @@ async function buildChildrenFromSiblings(
       }
     }
 
-    // <a>-run → navigation
-    if (ctx.config.useStructuralInference && tag === "a") {
-      const result = await handleLinkRun(
-        siblings,
-        index,
-        parentId,
-        landmarkParentId,
-        ctx,
-        readingDepth,
-      );
-      if (result) {
-        childIds.push(result.id);
-        index = result.endIndex;
-        continue;
-      }
-    }
-
-    // Leaf
     const createdIds = await createNode(
       child,
       parentId,
@@ -1702,11 +1195,9 @@ async function buildChildrenFromSiblings(
       liftedAttrs,
       readingDepth,
     );
-    if (Array.isArray(createdIds)) {
-      childIds.push(...createdIds);
-    } else {
-      childIds.push(createdIds);
-    }
+    Array.isArray(createdIds)
+      ? childIds.push(...createdIds)
+      : childIds.push(createdIds);
     index += 1;
   }
 
@@ -1748,170 +1239,93 @@ export function collectLandmarkIds(tree: LandmarkTOCNode): string[] {
   return ids;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// UI chrome pruning
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Remove well-known non-content nodes from a parsed Document in place before
- * the IR traversal starts.
- *
- * Why here (not in SKIP_TAGS): SKIP_TAGS operates on tag names, which are too
- * coarse — we can't skip every <span> just because .mw-editsection is a span.
- * Class-based selectors are the right tool; a single querySelectorAll pass is
- * also faster than checking classes during every node visit.
- *
- * The selector list is deliberately conservative: only patterns whose content
- * is never meaningful to a reader (edit links, footnote back-references, jump
- * links, print-only notices, TOC which we reconstruct ourselves, etc.).
- */
 function pruneUIChrome(doc: Document): void {
   const PRUNE_SELECTORS = [
-    // ── MediaWiki / Wikipedia ─────────────────────────────────────────────
-    ".mw-editsection", // "[edit]" section links  ← the main culprit
-    ".mw-editsection-bracket", // the literal "[" and "]" text nodes
-    ".mw-jump-link", // "Jump to navigation / search" skip links
-    ".mw-cite-backlink", // ↑ back-links in reference lists
-    ".reference", // inline [1] footnote superscripts
-    ".noprint", // print-only notices, hidden in screen readers
-    ".mw-ui-button", // UI buttons injected into article wikitext
-    "#toc", // table of contents (we rebuild from headings)
-    "#catlinks", // "Categories: …" footer block
+    ".mw-editsection",
+    ".mw-editsection-bracket",
+    ".mw-jump-link",
+    ".mw-cite-backlink",
+    ".reference",
+    ".noprint",
+    ".mw-ui-button",
+    "#toc",
+    "#catlinks",
     ".catlinks",
-    ".navbox", // navigation boxes (huge, low reading value)
+    ".navbox",
     ".sistersitebox",
-    ".metadata", // hatnotes that are purely administrative
-    // ── Generic accessibility chrome ──────────────────────────────────────
-    // aria-hidden elements that carry no text equivalent — these are safe to
-    // remove wholesale because a screen reader would skip them too.
-    // We only remove LEAF aria-hidden nodes (no meaningful children); nodes
-    // that hide decorative icons inside otherwise meaningful containers need
-    // to stay so the container's text is still reachable.
-    // The selector restricts to elements with no visible child text — we
-    // approximate this by targeting common icon/decorative patterns.
+    ".metadata",
     "svg[aria-hidden='true']",
     "img[aria-hidden='true']",
     "span[aria-hidden='true']:empty",
-    ".Z3988", // Wikipedia COinS metadata spans (empty, machine-readable only)
-    "span[title^='ctx_ver=']", // fallback selector for same pattern
-    // ── Injected CSS / JS ─────────────────────────────────────────────────
-    // Wikipedia (and other wikis) sometimes inject inline <style> blocks
-    // inside article content (e.g. citation CSS inside the first <li> of the
-    // References section). These produce raw CSS text that ends up in the
-    // IR's `content` field and corrupts the rendered output. Pruning them
-    // here prevents the CSS from ever reaching the IR parser.
-    "style", // inline <style> elements anywhere in the content
-    "script", // inline <script> elements (defensive)
+    ".Z3988",
+    "span[title^='ctx_ver=']",
+    "style",
+    "script",
   ];
-
   for (const sel of PRUNE_SELECTORS) {
     try {
       doc.querySelectorAll(sel).forEach((el) => el.parentNode?.removeChild(el));
-    } catch {
-      // Malformed selector or DOM error — skip silently
-    }
+    } catch {}
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Skip-to-main detection
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Scans the first few anchors in `doc` looking for a "skip to main content"
- * pattern. Returns the fragment id the link points to (without the `#`), or
- * `null` if none is found.
- *
- * Matched by:
- *  - Text content matching common skip-link phrases (case-insensitive)
- *  - A `class` attribute containing "skip" + "link/nav/content"
- *
- * Only the first 8 anchors are checked — skip links are always near the top
- * of the document and checking further is wasteful.
- */
 function findSkipToMainTarget(doc: Document): string | null {
   const SKIP_TEXT = [
     /skip\s+(to\s+)?(main\s+)?content/i,
     /skip\s+navigation/i,
     /jump\s+to\s+(main\s+)?content/i,
   ];
-
   const candidates = Array.from(doc.querySelectorAll('a[href^="#"]')).slice(
     0,
     8,
   );
 
   for (const a of candidates) {
-    const text = a.textContent?.trim() ?? "";
-    const cls = a.getAttribute("class") ?? "";
-    const href = a.getAttribute("href") ?? "";
+    const hasSkipText = SKIP_TEXT.some((p) =>
+      p.test(a.textContent?.trim() ?? ""),
+    );
+    const hasSkipClass = /skip[-_]?(link|nav|to|content)/i.test(
+      a.getAttribute("class") ?? "",
+    );
 
-    const textMatch = SKIP_TEXT.some((p) => p.test(text));
-    const classMatch = /skip[-_]?(link|nav|to|content)/i.test(cls);
-
-    if (textMatch || classMatch) {
-      const id = href.slice(1); // strip leading '#'
-      return id || null;
+    const isMainSkipLinkTarget = hasSkipText || hasSkipClass;
+    if (isMainSkipLinkTarget) {
+      return (a.getAttribute("href") ?? "").slice(1) || null;
     }
   }
-
   return null;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// External Links post-pass
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * After the main IR traversal is complete, collect every `<a href>` descendant
- * from all `<header>` / `<footer>` elements (and their ARIA equivalents) found
- * in the parsed document.
- *
- * If any links with non-empty text are found, a single `region` node labelled
- * "External Links" is created and appended to `mainChildIds` so that it lands
- * as the very last section inside the `main` landmark — well after all page
- * content, clearly separated from it in both reading order and the scene graph.
- *
- * Deduplication: the same anchor element may appear inside a nested
- * `<header><nav><header>…` structure. We deduplicate by `href + text` so the
- * section doesn't list the same link twice.
- */
 async function buildExternalLinksSection(
   doc: Document,
   mainChildIds: string[],
   ctx: BuildContext,
 ): Promise<void> {
-  // Collect all header/footer containers still in the DOM (pruneUIChrome does
-  // not remove them — only the traversal skips them).
   const containers = Array.from(
     doc.querySelectorAll(
       'header, footer, [role="banner"], [role="contentinfo"]',
     ),
   );
-
   if (containers.length === 0) return;
 
-  // Deduplicate links by "href|text" key.
   const seen = new Set<string>();
   const links: Element[] = [];
 
   for (const container of containers) {
     for (const a of Array.from(container.querySelectorAll("a[href]"))) {
       const text = a.textContent?.trim() ?? "";
-      if (!text) continue;
       const href = a.getAttribute("href") ?? "";
       const key = `${href}|${text}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      links.push(a as Element);
+      if (text && !seen.has(key)) {
+        seen.add(key);
+        links.push(a as Element);
+      }
     }
   }
 
   if (links.length === 0) return;
 
   const sectionId = `main-section-${ctx.counters.section++}`;
-  const readingIndex = ctx.counters.reading++;
-
   const linkChildren = (
     await Promise.all(
       links.map((link) => createNode(link, sectionId, "main", ctx, {}, 1)),
@@ -1923,27 +1337,13 @@ async function buildExternalLinksSection(
     label: "External Links",
     parentId: "main",
   });
-
-  ctx.nodes[sectionId] = {
-    id: sectionId,
-    role: "region",
-    level: null,
+  ctx.nodes[sectionId] = createBaseNode(sectionId, "region", "main", ctx, {
     label: "External Links",
-    content: null,
     unlabelledYet: false,
     landmark: true,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
-    readingIndex,
-    parent: "main",
     children: linkChildren,
-    relations: createEmptyRelations(),
-    state: createEmptyState(),
-    attributes: createEmptyAttributes(),
-    readingDepth: 0,
-  };
+  });
 
-  // Append last so it always appears after all main content.
   mainChildIds.push(sectionId);
 }
 
@@ -1956,21 +1356,8 @@ export const parsePageToIR = async (
   const parser = new DOMParser();
   const parsedDoc = parser.parseFromString(htmlString, "text/html");
 
-  // ── UI chrome pruning ───────────────────────────────────────────────────
-  // Remove well-known non-content elements before traversal so they never
-  // enter the IR as stray text/inline nodes.
-  //
-  // Covers:
-  //   Wikipedia / MediaWiki  — .mw-editsection ([edit] brackets + link),
-  //                            .mw-jump-link, .reference (footnote markers),
-  //                            .noprint, .mw-ui-button, .mw-cite-backlink,
-  //                            #toc (parsed separately via landmark), #catlinks
-  //   Generic patterns       — [aria-hidden="true"] leaves with no text
   pruneUIChrome(parsedDoc);
 
-  const inlineTags = new Set(INLINE_TAGS);
-
-  // Build effective skip/wrapper sets from config
   const skipTags = new Set(SKIP_TAGS);
   if (config.includeSvg) skipTags.delete("svg");
   if (config.includeCanvas) skipTags.delete("canvas");
@@ -1979,57 +1366,34 @@ export const parsePageToIR = async (
     ...WRAPPER_TAGS,
     ...config.extraWrapperTags.map((t) => t.toLowerCase()),
   ]);
-
-  // ── Skip-to-main-content handling ───────────────────────────────────────
-  // If the page opens with a "Skip to main content" anchor we honour it:
-  // detect the anchor, resolve its href target, and start the IR traversal
-  // from that element instead of from the very first body child.  Everything
-  // before the skip target (site header, top-nav, cookie banners …) is
-  // silently discarded — it will never reach the IR or the XR scene.
-  //
-  // Fallback chain:
-  //   1. Skip link with a valid #id that exists in the DOM          → slice from that element
-  //   2. Skip link with an id that points into the body top level   → slice from its body ancestor
-  //   3. A <main> / [role="main"] element that is a direct body child → slice from there
-  //   4. None of the above                                          → process all body children
-  const allBodyChildren = Array.from(parsedDoc.body.children).filter(
-    (child) => !skipTags.has(child.tagName.toLowerCase()),
-  );
+  const allBodyChildren = getValidChildren(parsedDoc.body, skipTags);
 
   let bodyChildren: Element[] = allBodyChildren;
-
   const skipTargetId = findSkipToMainTarget(parsedDoc);
 
   if (skipTargetId) {
     const skipTarget = parsedDoc.getElementById(skipTargetId);
     if (skipTarget) {
-      // Walk up to find which direct body child contains the skip target.
       let ancestor: Element | null = skipTarget;
-      while (ancestor && ancestor.parentElement !== parsedDoc.body) {
+      while (ancestor && ancestor.parentElement !== parsedDoc.body)
         ancestor = ancestor.parentElement;
-      }
-      const bodyLevelAncestor = ancestor ?? skipTarget;
-      const sliceIndex = allBodyChildren.indexOf(bodyLevelAncestor as Element);
-      if (sliceIndex >= 0) {
-        bodyChildren = allBodyChildren.slice(sliceIndex);
-      }
+      const sliceIndex = allBodyChildren.indexOf(
+        (ancestor ?? skipTarget) as Element,
+      );
+      if (sliceIndex >= 0) bodyChildren = allBodyChildren.slice(sliceIndex);
     }
   } else {
-    // No skip link found — try to find a <main> element and start there.
     const mainEl = parsedDoc.querySelector('main, [role="main"]');
     if (mainEl && mainEl.parentElement === parsedDoc.body) {
       const sliceIndex = allBodyChildren.indexOf(mainEl as Element);
-      if (sliceIndex >= 0) {
-        bodyChildren = allBodyChildren.slice(sliceIndex);
-      }
+      if (sliceIndex >= 0) bodyChildren = allBodyChildren.slice(sliceIndex);
     }
   }
+
   const nodes: Record<string, IRNode> = {};
   const fallbackLog: IRFallbackEntry[] = [];
   const landmarkRecords: LandmarkRecord[] = [];
-  // Reserve reading indices for the fixed structural nodes:
-  // 0 = body, 1 = toc, 2 = main
-  // Traversal-generated nodes start at 3.
+
   const READING_BODY = 0;
   const READING_TOC = 1;
   const READING_MAIN = 2;
@@ -2045,117 +1409,74 @@ export const parsePageToIR = async (
     config,
     skipTags,
     wrapperTags,
-    inlineTags,
+    inlineTags: new Set(INLINE_TAGS),
     pageUrl: url,
   };
 
-  // Register body so aria refs pointing at it can resolve
   ctx.elementToNodeId.set(parsedDoc.body, "main");
-
   const mainChildIds = await buildChildrenFromSiblings(
     bodyChildren,
     "main",
     "main",
     ctx,
   );
-
-  // ── External Links post-pass ─────────────────────────────────────────────
-  // Collect all <a href> links from <header> and <footer> elements and emit
-  // them as a single "External Links" region appended after all main content.
-  // The DOM elements are still present (buildChildrenFromSiblings skips them
-  // without removing them), so the querySelectorAll below finds them fine.
   await buildExternalLinksSection(parsedDoc, mainChildIds, ctx);
 
   const parsedTitle = parsedDoc.title?.trim() || null;
-
   landmarkRecords.push({
     id: "main",
     label: parsedTitle ?? "main",
     parentId: "landmarks",
   });
 
-  nodes["toc"] = {
-    id: "toc",
-    role: "navigation",
-    level: null,
+  nodes["toc"] = createBaseNode("toc", "navigation", "main", ctx, {
     label: "Table of contents",
-    content: null,
     unlabelledYet: false,
     landmark: true,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
     readingIndex: READING_TOC,
-    parent: "main", // toc lives inside main, not at landmark root level
-    children: [], // no generated link items — TOC is a structural shell
-    relations: createEmptyRelations(),
-    state: createEmptyState(),
-    attributes: createEmptyAttributes(),
-    readingDepth: 0,
-  };
+  });
 
-  nodes["main"] = {
-    id: "main",
-    role: "main",
-    level: null,
+  nodes["main"] = createBaseNode("main", "main", "landmarks", ctx, {
     label: parsedTitle ?? "main",
-    content: null,
     unlabelledYet: parsedTitle === null,
     landmark: true,
-    source: "structural",
-    confidence: confidenceForSource("structural", ctx.config),
     readingIndex: READING_MAIN,
-    parent: "landmarks",
     children: ["toc", ...mainChildIds],
-    relations: createEmptyRelations(),
-    state: createEmptyState(),
-    attributes: createEmptyAttributes(),
-    readingDepth: 0,
-  };
+  });
 
   hydrateRelations(nodes, parsedDoc, ctx.elementToNodeId);
 
   const allNodes = Object.values(nodes);
-
   let orderedNodes: IRNode[];
+
   if (config.readingOrderStrategy === "landmark-first") {
-    // Landmarks sorted before non-landmarks within each DOM-order tier.
-    // Within each tier, DOM order (readingIndex) is preserved.
-    const landmarks = allNodes
-      .filter((n) => n.landmark)
-      .sort((a, b) => a.readingIndex - b.readingIndex);
-    const content = allNodes
-      .filter((n) => !n.landmark)
-      .sort((a, b) => a.readingIndex - b.readingIndex);
-    orderedNodes = [...landmarks, ...content];
+    orderedNodes = [
+      ...allNodes
+        .filter((n) => n.landmark)
+        .sort((a, b) => a.readingIndex - b.readingIndex),
+      ...allNodes
+        .filter((n) => !n.landmark)
+        .sort((a, b) => a.readingIndex - b.readingIndex),
+    ];
   } else if (config.readingOrderStrategy === "flowto-aware") {
-    // Graph traversal following aria-flowto edges where present.
-    const nodeMap = new Map(Object.values(nodes).map((n) => [n.id, n]));
-    const domOrdered = [...allNodes].sort(
-      (a, b) => a.readingIndex - b.readingIndex,
-    );
+    const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
     const visited = new Set<string>();
     const result: IRNode[] = [];
-
     const visit = (node: IRNode): void => {
       if (visited.has(node.id)) return;
       visited.add(node.id);
       result.push(node);
-      for (const targetId of node.relations.flowTo) {
-        const target = nodeMap.get(targetId);
-        if (target) visit(target);
-      }
+      node.relations.flowTo.forEach((id) => {
+        if (nodeMap.get(id)) visit(nodeMap.get(id)!);
+      });
     };
-
-    for (const node of domOrdered) {
-      visit(node);
-    }
+    [...allNodes]
+      .sort((a, b) => a.readingIndex - b.readingIndex)
+      .forEach(visit);
     orderedNodes = result;
   } else {
-    // "dom" — strict DOM traversal order
     orderedNodes = allNodes.sort((a, b) => a.readingIndex - b.readingIndex);
   }
-
-  const readingOrder = orderedNodes.map((node) => node.id);
 
   const analytics: IRAnalytics = {
     headingCount: 0,
@@ -2174,20 +1495,15 @@ export const parsePageToIR = async (
     if (node.landmark) analytics.landmarkCount += 1;
     if (INTERACTIVE_ROLES.has(node.role)) analytics.controlCount += 1;
     if (node.role === "region") analytics.sectionCount += 1;
-
     const text = node.label ?? "";
     analytics.textLength += text.length;
     analytics.wordCount += text ? text.split(/\s+/).filter(Boolean).length : 0;
     analytics.childCount += node.children.length;
-
     if (node.attributes.live) analytics.liveRegionCount += 1;
   }
-
   analytics.textDensity =
     orderedNodes.length > 0 ? analytics.textLength / orderedNodes.length : 0;
 
-  const landmarks = buildLandmarkTree(parsedTitle, landmarkRecords);
-  console.log(nodes);
   return {
     meta: {
       url,
@@ -2196,11 +1512,11 @@ export const parsePageToIR = async (
       parsedAt: new Date().toISOString(),
       config,
     },
-    landmarks,
+    landmarks: buildLandmarkTree(parsedTitle, landmarkRecords),
     root: "main",
     fallbackLog,
     analytics,
-    readingOrder,
+    readingOrder: orderedNodes.map((node) => node.id),
     nodes,
   };
 };

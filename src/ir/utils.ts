@@ -11,6 +11,64 @@ import type {
   BuildContext,
 } from "./types";
 
+export function getValidChildren(
+  element: Element,
+  skipTags: Set<string>,
+): Element[] {
+  return Array.from(element.children).filter(
+    (c) => !skipTags.has(c.tagName.toLowerCase()),
+  );
+}
+
+export function createBaseNode(
+  id: string,
+  role: IRRole,
+  parentId: string | null,
+  ctx: BuildContext,
+  overrides: Partial<IRNode> = {},
+): IRNode {
+  const source = overrides.source || "structural";
+  return {
+    id,
+    role,
+    level: overrides.level ?? null,
+    label: overrides.label ?? null,
+    content: overrides.content ?? null,
+    unlabelledYet: overrides.label === undefined || overrides.label === null,
+    landmark: overrides.landmark ?? false,
+    source,
+    confidence: overrides.confidence ?? confidenceForSource(source, ctx.config),
+    readingIndex: overrides.readingIndex ?? ctx.counters.reading++,
+    readingDepth: overrides.readingDepth ?? 0,
+    parent: parentId,
+    children: overrides.children ?? [],
+    relations: overrides.relations ?? createEmptyRelations(),
+    state: overrides.state ?? createEmptyState(),
+    attributes: overrides.attributes ?? createEmptyAttributes(),
+    ...overrides,
+  };
+}
+
+export function collectSiblingRun(
+  siblings: Element[],
+  startIndex: number,
+  ctx: BuildContext,
+  peelWrapper: (el: Element, ctx: BuildContext) => { element: Element },
+  predicate: (el: Element) => boolean,
+): { run: Element[]; endIndex: number } {
+  const run: Element[] = [];
+  let scan = startIndex;
+
+  while (scan < siblings.length) {
+    const candidate = peelWrapper(siblings[scan], ctx).element;
+    if (!predicate(candidate)) break;
+    run.push(candidate);
+    scan += 1;
+  }
+
+  return { run, endIndex: scan };
+}
+
 export function readNodeState(element: Element): IRNodeState {
   return {
     expanded: element.getAttribute("aria-expanded") ?? null,
@@ -43,9 +101,6 @@ export function readNodeAttributes(
   context?: ParseContext,
 ): IRNodeAttributes {
   const resolveUrl = (url: string | null) => {
-    if (url) {
-      // console.log("Resolving URL:", url, "with context:", context?.sourceUrl);
-    }
     if (!url) return null;
     if (!context?.sourceUrl) return url;
     return new URL(url, context.sourceUrl).href;
@@ -104,6 +159,7 @@ export function readNodeAttributes(
     componentType: null,
     autoplay: element.getAttribute("autoplay") ?? null,
     content: element.textContent?.trim() ?? null,
+    styleTags: [],
   };
 }
 
@@ -253,12 +309,6 @@ export function createEmptyRelations(): IRNodeRelations {
   };
 }
 
-/**
- * Assign `value` into `target[key]` only when `value` is defined
- * (not `undefined` or `null`) and the target slot is currently empty
- * (`null` or `undefined`). Centralises the repeated pattern used by
- * `pierceWrapperChain` and `mergeAttributes`.
- */
 export function assignIfDefined<T extends Record<string, any>>(
   target: T,
   key: keyof T,
@@ -357,7 +407,6 @@ export function resolveNodeLabel(
       if (legend) return cap(legend);
     }
 
-    // FIX: Extract native HTML label for figures
     if (tag === "figure") {
       const figcaption = element
         .querySelector("figcaption")
@@ -365,37 +414,25 @@ export function resolveNodeLabel(
       if (figcaption) return cap(figcaption);
     }
 
-    // SVG: extract label from <title> child when includeSvg is on
     if (tag === "svg" && config.includeSvg) {
       const title = element.querySelector("title")?.textContent?.trim();
       if (title) return cap(title);
     }
 
-    // button / role=button: full text content of all descendants
-    // (handles icon buttons with nested <span> text, <img alt>, etc.)
-    if (tag === "button" || tag === "summary") {
+    if (tag === "button" || tag === "summary" || tag === "a") {
       const text = element.textContent?.trim() ?? "";
       if (text) return cap(text);
     }
 
-    // <a>: full text content (may contain nested <span> or <img alt>)
-    if (tag === "a") {
-      const text = element.textContent?.trim() ?? "";
-      if (text) return cap(text);
-    }
-
-    // title attribute: last-resort native fallback before text content
     const titleAttr = element.getAttribute("title")?.trim();
     if (titleAttr) return cap(titleAttr);
 
-    // placeholder: label of last resort for unlabelled inputs
     if (tag === "input" || tag === "textarea") {
       const placeholder = element.getAttribute("placeholder")?.trim();
       if (placeholder) return cap(placeholder);
     }
   }
 
-  // Text-content fallback — always active regardless of config
   const hasElementChildren = Array.from(element.children).some(
     (child) => !SKIP_TAGS.has(child.tagName.toLowerCase()),
   );
@@ -455,39 +492,25 @@ export function resolveRoleFromElement(
     tagResolved.role === "generic" &&
     element.getAttribute("tabindex") === "0"
   ) {
-    tagResolved = {
-      role: "button",
-      level: null,
-    };
+    tagResolved = { role: "button", level: null };
   }
 
   return { ...tagResolved, source: "structural" };
 }
+
 export function resolveRoleFromTag(
   tag: string,
   element?: Element,
 ): { role: IRRole; level: number | null } {
   if (tag === "main") return { role: "main", level: null };
   if (tag === "header") {
-    // A header is only a true page banner if we can confirm it is NOT scoped
-    // to a sectioning element. If `element` is unavailable, we cannot make
-    // that determination — fail closed toward "generic" rather than
-    // defaulting to "banner". Promoting an unverified header to banner risks
-    // shoving arbitrary section-level content into a fixed-height slot that
-    // has no pagination, causing severe layout overflow (seen in practice:
-    // a banner-classified node needing 1.475m against a 0.16m slot).
-    if (!element) return { role: "generic", level: null };
-    if (element.closest(LANDMARK_SCOPE_SELECTOR)) {
+    if (!element || element.closest(LANDMARK_SCOPE_SELECTOR))
       return { role: "generic", level: null };
-    }
     return { role: "banner", level: null };
   }
   if (tag === "footer") {
-    // Same reasoning as header above.
-    if (!element) return { role: "generic", level: null };
-    if (element.closest(LANDMARK_SCOPE_SELECTOR)) {
+    if (!element || element.closest(LANDMARK_SCOPE_SELECTOR))
       return { role: "generic", level: null };
-    }
     return { role: "contentinfo", level: null };
   }
   if (tag === "aside") return { role: "complementary", level: null };
@@ -503,12 +526,11 @@ export function resolveRoleFromTag(
   if (tag === "a") return { role: "link", level: null };
   if (tag === "dialog") return { role: "dialog", level: null };
   if (tag === "details") return { role: "group", level: null };
-  if (tag === "summary") return { role: "button", level: null };
-  if (tag === "progress") return { role: "progressbar", level: null };
-  if (tag === "meter") return { role: "progressbar", level: null };
+  if (tag === "summary" || tag === "button")
+    return { role: "button", level: null };
+  if (tag === "progress" || tag === "meter")
+    return { role: "progressbar", level: null };
   if (tag === "output") return { role: "status", level: null };
-
-  if (tag === "button") return { role: "button", level: null };
 
   if (tag === "input") {
     const type = element?.getAttribute("type")?.toLowerCase() ?? "text";
@@ -517,19 +539,15 @@ export function resolveRoleFromTag(
     if (type === "range") return { role: "slider", level: null };
     if (type === "number") return { role: "spinbutton", level: null };
     if (type === "search") return { role: "searchbox", level: null };
-    if (["button", "submit", "reset", "image"].includes(type)) {
+    if (["button", "submit", "reset", "image"].includes(type))
       return { role: "button", level: null };
-    }
     return { role: "textbox", level: null };
   }
 
   if (tag === "textarea") return { role: "textbox", level: null };
   if (tag === "select") return { role: "combobox", level: null };
-
   if (tag === "figure") return { role: "figure", level: null };
-
   if (tag === "figcaption") return { role: "caption", level: null };
-
   if (tag === "blockquote") return { role: "blockquote", level: null };
   if (tag === "code" || tag === "pre") return { role: "code", level: null };
   if (tag === "hr") return { role: "separator", level: null };
@@ -544,10 +562,14 @@ export function resolveRoleFromTag(
       level: null,
     };
   }
-  if (tag === "thead" || tag === "tbody" || tag === "tfoot") {
+  if (
+    tag === "thead" ||
+    tag === "tbody" ||
+    tag === "tfoot" ||
+    tag === "fieldset"
+  ) {
     return { role: "group", level: null };
   }
-  if (tag === "fieldset") return { role: "group", level: null };
 
   if (tag.length === 2 && tag[0] === "h") {
     const parsed = Number.parseInt(tag[1], 10);
@@ -556,7 +578,6 @@ export function resolveRoleFromTag(
     }
   }
   if (tag === "video") return { role: "video", level: null };
-
   if (tag === "audio") return { role: "audio", level: null };
 
   return { role: "generic", level: null };
@@ -566,22 +587,18 @@ export function isListCandidate(
   element: Element,
   config: ParserConfig,
 ): boolean {
-  // Pierce through generic wrappers to check the actual content
   function unwrap(el: Element): Element {
     const tag = el.tagName.toLowerCase();
-    if (tag === "div" || tag === "span") {
-      const hasAttributes =
-        el.hasAttribute("role") ||
-        el.hasAttribute("aria-label") ||
-        el.hasAttribute("id");
-      if (!hasAttributes) {
-        const children = Array.from(el.children).filter(
-          (c) => !SKIP_TAGS.has(c.tagName.toLowerCase()),
-        );
-        if (children.length === 1) {
-          return unwrap(children[0]);
-        }
-      }
+    if (
+      (tag === "div" || tag === "span") &&
+      !el.hasAttribute("role") &&
+      !el.hasAttribute("aria-label") &&
+      !el.hasAttribute("id")
+    ) {
+      const children = Array.from(el.children).filter(
+        (c) => !SKIP_TAGS.has(c.tagName.toLowerCase()),
+      );
+      if (children.length === 1) return unwrap(children[0]);
     }
     return el;
   }
@@ -589,12 +606,13 @@ export function isListCandidate(
   const unwrapped = unwrap(element);
   const role = resolveRoleFromElement(unwrapped, config).role;
 
-  // A list item candidate should not be a landmark, interactive, or heading
-  if (LANDMARK_ROLES.has(role)) return false;
-  if (INTERACTIVE_ROLES.has(role)) return false;
-  if (role === "heading") return false;
+  if (
+    LANDMARK_ROLES.has(role) ||
+    INTERACTIVE_ROLES.has(role) ||
+    role === "heading"
+  )
+    return false;
 
-  // Check if it has content (text or elements)
   const hasContent =
     unwrapped.textContent?.trim() || unwrapped.children.length > 0;
   if (!hasContent) return false;
@@ -603,7 +621,6 @@ export function isListCandidate(
   return tag !== "ul" && tag !== "ol" && tag !== "li";
 }
 
-/** Resolve space-separated ID refs to node IDs, skipping missing refs silently. */
 export function relationTargets(
   raw: string | null,
   doc: Document | undefined,
@@ -613,9 +630,10 @@ export function relationTargets(
   const ids: string[] = [];
   for (const ref of parseIdRefs(raw)) {
     const element = doc.getElementById(ref);
-    if (!element) continue;
-    const nodeId = elementToNodeId.get(element);
-    if (nodeId) ids.push(nodeId);
+    if (element) {
+      const nodeId = elementToNodeId.get(element);
+      if (nodeId) ids.push(nodeId);
+    }
   }
   return ids;
 }
@@ -625,7 +643,6 @@ export function hydrateRelations(
   doc: Document | undefined,
   elementToNodeId: WeakMap<Element, string>,
 ): void {
-  // ── ARIA ID-ref relations ────────────────────────────────────────────────
   for (const node of Object.values(nodes)) {
     node.relations.controls = relationTargets(
       node.attributes.controls,
@@ -662,10 +679,7 @@ export function hydrateRelations(
       doc,
       elementToNodeId,
     );
-  }
 
-  // ── figureCaption: IDs of caption children of figure nodes ──────────────
-  for (const node of Object.values(nodes)) {
     if (node.role === "figure") {
       node.relations.figureCaption = node.children.filter(
         (id) => nodes[id]?.role === "caption",
@@ -673,10 +687,6 @@ export function hydrateRelations(
     }
   }
 
-  // ── Form label association: <label for="id"> → input.relations.labelledBy
-  // Supplements aria-labelledby for native HTML form controls.
-  // We walk every label element, resolve its `for` target, and add the
-  // label's node ID to that input's labelledBy array (deduplicating).
   if (doc) {
     for (const labelEl of Array.from(doc.querySelectorAll("label[for]"))) {
       const forId = labelEl.getAttribute("for");
@@ -687,28 +697,15 @@ export function hydrateRelations(
       const targetNodeId = elementToNodeId.get(targetEl);
       if (!labelNodeId || !targetNodeId) continue;
       const targetNode = nodes[targetNodeId];
-      if (!targetNode) continue;
-      if (!targetNode.relations.labelledBy.includes(labelNodeId)) {
+      if (
+        targetNode &&
+        !targetNode.relations.labelledBy.includes(labelNodeId)
+      ) {
         targetNode.relations.labelledBy.push(labelNodeId);
       }
     }
-  }
 
-  // ── Table header association: cell.relations.headers ────────────────────
-  // Two strategies are combined:
-  //
-  // 1. Explicit `headers=""` attribute on <td>/<th> — direct ID refs to header
-  //    cells, honoured exactly.
-  //
-  // 2. Implicit scope-based association when `headers` is absent:
-  //    - `scope="col"` (or th in thead without scope) → associated with every
-  //      cell in the same column index.
-  //    - `scope="row"` → associated with every cell in the same row.
-  //
-  // The result is stored as string[] of header node IDs on each data cell.
-  if (doc) {
     for (const tableEl of Array.from(doc.querySelectorAll("table"))) {
-      // Pass 1: explicit headers= attribute
       for (const cellEl of Array.from(tableEl.querySelectorAll("td, th"))) {
         const headersAttr = cellEl.getAttribute("headers");
         if (!headersAttr?.trim()) continue;
@@ -722,11 +719,9 @@ export function hydrateRelations(
         }
       }
 
-      // Pass 2: scope-based implicit association
-      // Build a column-index → header node ID map from scope="col" headers.
       const rows = Array.from(tableEl.querySelectorAll("tr"));
-      const colHeaders: Map<number, string> = new Map(); // colIndex → nodeId
-      const rowHeadersByRow: Map<Element, string[]> = new Map(); // tr → nodeIds
+      const colHeaders: Map<number, string> = new Map();
+      const rowHeadersByRow: Map<Element, string[]> = new Map();
 
       for (const rowEl of rows) {
         const cells = Array.from(rowEl.children).filter(
@@ -740,7 +735,6 @@ export function hydrateRelations(
           const nodeId = elementToNodeId.get(cellEl);
           if (!nodeId) return;
 
-          // Treat th in thead without scope as col header
           const inThead = !!cellEl.closest("thead");
           if (scope === "col" || (!scope && inThead)) {
             colHeaders.set(colIndex, nodeId);
@@ -752,7 +746,6 @@ export function hydrateRelations(
         if (rowScopeIds.length) rowHeadersByRow.set(rowEl, rowScopeIds);
       }
 
-      // Apply implicit associations to data cells that have no explicit headers=
       for (const rowEl of rows) {
         const cells = Array.from(rowEl.children).filter(
           (c) => c.tagName === "TD" || c.tagName === "TH",
@@ -760,7 +753,7 @@ export function hydrateRelations(
         const rowScopeIds = rowHeadersByRow.get(rowEl) ?? [];
 
         cells.forEach((cellEl, colIndex) => {
-          if (cellEl.getAttribute("headers")?.trim()) return; // already handled in pass 1
+          if (cellEl.getAttribute("headers")?.trim()) return;
           const cellNodeId = elementToNodeId.get(cellEl);
           if (!cellNodeId || !nodes[cellNodeId]) return;
 
@@ -782,9 +775,6 @@ export function hydrateRelations(
   }
 }
 
-/**
- * Checks if an element has both text and inline element children
- */
 export function hasTextAndInlineChildren(
   element: Element,
   inlineTags: Set<string>,
@@ -794,33 +784,21 @@ export function hasTextAndInlineChildren(
 
   for (const child of Array.from(element.childNodes)) {
     if (child.nodeType === Node.TEXT_NODE) {
-      const text = (child.textContent ?? "").trim();
-      if (text) {
-        hasText = true;
-      }
+      if ((child.textContent ?? "").trim()) hasText = true;
     } else if (child.nodeType === Node.ELEMENT_NODE) {
       const tag = (child as Element).tagName.toLowerCase();
-      if (inlineTags.has(tag) && !SKIP_TAGS.has(tag)) {
-        hasInlineChild = true;
-      }
+      if (inlineTags.has(tag) && !SKIP_TAGS.has(tag)) hasInlineChild = true;
     }
   }
-
   return hasText && hasInlineChild;
 }
 
-/**
- * Determines if an element is a leaf node in the semantic tree
- * A leaf node has no block children - only text and/or inline elements
- */
 export function isLeafNode(
   element: Element,
   inlineTags: Set<string>,
   skipTags: Set<string>,
 ): boolean {
   const tag = element.tagName.toLowerCase();
-
-  // These are always leaves if they have content
   const LEAF_TAGS = new Set([
     "p",
     "h1",
@@ -835,73 +813,47 @@ export function isLeafNode(
     "label",
     "li",
   ]);
+
   if (LEAF_TAGS.has(tag)) {
-    let hasContent = false;
     for (const child of Array.from(element.childNodes)) {
-      if (child.nodeType === Node.TEXT_NODE) {
-        const text = (child.textContent ?? "").trim();
-        if (text) {
-          hasContent = true;
-          break;
-        }
-      }
-      if (child.nodeType === Node.ELEMENT_NODE) {
-        const childTag = (child as Element).tagName.toLowerCase();
-        if (!skipTags.has(childTag)) {
-          hasContent = true;
-          break;
-        }
-      }
-    }
-    return hasContent;
-  }
-
-  // Check for block children
-  for (const child of Array.from(element.children)) {
-    const childTag = child.tagName.toLowerCase();
-    if (skipTags.has(childTag)) continue;
-    if (!inlineTags.has(childTag)) {
-      return false;
-    }
-  }
-
-  // No block children found - this is a leaf if it has content
-  const hasContent = Array.from(element.childNodes).some((node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      return (node.textContent ?? "").trim().length > 0;
-    }
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      const tag = (node as Element).tagName.toLowerCase();
-      return !skipTags.has(tag);
+      if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim())
+        return true;
+      if (
+        child.nodeType === Node.ELEMENT_NODE &&
+        !skipTags.has((child as Element).tagName.toLowerCase())
+      )
+        return true;
     }
     return false;
+  }
+
+  for (const child of Array.from(element.children)) {
+    const childTag = child.tagName.toLowerCase();
+    if (!skipTags.has(childTag) && !inlineTags.has(childTag)) return false;
+  }
+
+  return Array.from(element.childNodes).some((node) => {
+    if (node.nodeType === Node.TEXT_NODE)
+      return (node.textContent ?? "").trim().length > 0;
+    if (node.nodeType === Node.ELEMENT_NODE)
+      return !skipTags.has((node as Element).tagName.toLowerCase());
+    return false;
   });
-
-  return hasContent;
 }
-
-// ── Helper to get semantic signature (pierces generic wrappers) ──────────
 
 export function getSemanticSignature(
   element: Element,
   ctx: BuildContext,
 ): string {
-  // Pierce through generic wrappers to find actual content
   function pierceWrappers(el: Element): Element[] {
     const result: Element[] = [];
     const tag = el.tagName.toLowerCase();
 
     if ((tag === "div" || tag === "span") && !el.hasAttribute("role")) {
-      const children = Array.from(el.children).filter(
-        (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
-      );
-      if (children.length === 1) {
-        return pierceWrappers(children[0]);
-      } else if (children.length > 1) {
-        // Multiple children - use all of them
-        for (const child of children) {
-          result.push(...pierceWrappers(child));
-        }
+      const children = getValidChildren(el, ctx.skipTags);
+      if (children.length === 1) return pierceWrappers(children[0]);
+      if (children.length > 1) {
+        for (const child of children) result.push(...pierceWrappers(child));
         return result;
       }
     }
@@ -918,61 +870,42 @@ export function getSemanticSignature(
     const roleInfo = resolveRoleFromElement(el, ctx.config);
     if (roleInfo.role !== "generic") {
       roles.push(roleInfo.role);
-      // Add level for headings
-      if (roleInfo.level !== null) {
-        roles.push(`h${roleInfo.level}`);
-      }
+      if (roleInfo.level !== null) roles.push(`h${roleInfo.level}`);
     } else {
-      // For generic, use tag name
       roles.push(tag);
     }
 
-    // Also check children for important structures
     for (const child of Array.from(el.children)) {
       const childTag = child.tagName.toLowerCase();
       if (ctx.skipTags.has(childTag)) continue;
       const childRole = resolveRoleFromElement(child, ctx.config);
-      if (childRole.role !== "generic") {
-        roles.push(childRole.role);
-      }
+      if (childRole.role !== "generic") roles.push(childRole.role);
     }
   }
 
-  // Deduplicate and sort for consistent signatures
-  const uniqueRoles = Array.from(new Set(roles));
-  return uniqueRoles.sort().join("|");
+  return Array.from(new Set(roles)).sort().join("|");
 }
+
 export function areStructurallySimilar(
   el1: Element,
   el2: Element,
   ctx: BuildContext,
 ): boolean {
-  // Compare semantic signatures
-  const sig1 = getSemanticSignature(el1, ctx);
-  const sig2 = getSemanticSignature(el2, ctx);
+  if (getSemanticSignature(el1, ctx) !== getSemanticSignature(el2, ctx))
+    return false;
 
-  if (sig1 !== sig2) return false;
-
-  // Also check if both have similar depth/nesting
   function getContentDepth(el: Element): number {
     let depth = 0;
     let current = el;
     while (current.children.length === 1) {
-      const child = current.children[0];
-      const tag = child.tagName.toLowerCase();
+      const tag = current.children[0].tagName.toLowerCase();
       if (tag === "div" || tag === "span") {
         depth++;
-        current = child;
-      } else {
-        break;
-      }
+        current = current.children[0];
+      } else break;
     }
     return depth;
   }
 
-  const depth1 = getContentDepth(el1);
-  const depth2 = getContentDepth(el2);
-
-  // Allow depth difference of up to 1 (some items might have extra wrappers)
-  return Math.abs(depth1 - depth2) <= 1;
+  return Math.abs(getContentDepth(el1) - getContentDepth(el2)) <= 1;
 }
