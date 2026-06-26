@@ -758,6 +758,7 @@ export type MappingRule =
   | "generic→XRGenericPanel"
   | "none→(elided)"
   | "text→XRText"
+  | "leaf-text-fallback→XRText"
   | "presentation→(elided)";
 
 // ============================================================

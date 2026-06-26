@@ -65,6 +65,8 @@ import {
 import { parsePageToIR } from "../ir/parser";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../mapper/mapper";
 import { computeLayoutPlan } from "../layout/engine";
+import { DEFAULT_CONFIG } from "../ir/defaults";
+import type { ParserConfig } from "../ir/types";
 
 import { useXRSession } from "./useXRSession";
 import {
@@ -147,6 +149,7 @@ export interface XRSceneRendererProps {
   background?: string;
   deviceType?: XRDeviceType;
   fontType?: string;
+  parserConfig?: Partial<ParserConfig>;
   onPlanReady?: (plan: LayoutPlan) => void;
 }
 
@@ -272,6 +275,7 @@ function usePipeline(
   url: string | undefined,
   deviceProfile: DeviceProfile,
   layoutConfig: Partial<LayoutConfig>,
+  parserConfig: Partial<ParserConfig>,
 ) {
   const [result, setResult] = useState({
     scene: null as SemanticScene | null,
@@ -281,6 +285,8 @@ function usePipeline(
 
   const configHash = JSON.stringify(layoutConfig);
   const stableConfig = useMemo(() => layoutConfig, [configHash]);
+  const parserConfigHash = JSON.stringify(parserConfig);
+  const stableParserConfig = useMemo(() => parserConfig, [parserConfigHash]);
 
   useEffect(() => {
     let cancelled = false;
@@ -291,7 +297,8 @@ function usePipeline(
         if (sceneIn) {
           scene = sceneIn;
         } else if (html) {
-          const ir = await parsePageToIR(html, url!);
+          const resolvedParserConfig = { ...DEFAULT_CONFIG, ...stableParserConfig };
+          const ir = await parsePageToIR(html, url!, undefined, resolvedParserConfig);
           scene = mapIRToScene(ir, DEFAULT_MAPPER_CONFIG);
         } else {
           if (!cancelled)
@@ -325,7 +332,7 @@ function usePipeline(
     return () => {
       cancelled = true;
     };
-  }, [html, sceneIn, url, deviceProfile, stableConfig]); // <-- Depend on stableConfig
+  }, [html, sceneIn, url, deviceProfile, stableConfig, stableParserConfig]);
 
   return result;
 }
@@ -513,16 +520,40 @@ function PrimitiveDispatcher({
           />
         </AtPos>
       );
-    case "XRLink":
+    case "XRLink": {
+      const linkPrimitive = primitive as import("../mapper/types").XRLink;
+      const isRichLink = linkPrimitive.children.some(
+        (child) => child.type === "XRText",
+      );
+      if (isRichLink) {
+        // Rich link: render with no chrome of its own at this position —
+        // children (e.g. a synthesised XRText leaf) already carry their
+        // own panel-absolute positions and must be dispatched as siblings,
+        // exactly like XRTableCell/XRSection/XRGenericPanel. Wrapping them
+        // inside XRLinkMesh's own <AtPos> here would stack two absolute
+        // translations (this link's position AND its child's identical-
+        // looking but independently absolute position), roughly doubling
+        // the effective offset — see XRLinkMesh's removed rich-link branch.
+        return (
+          <DispatchChildren
+            primitives={primitive.children}
+            plan={plan}
+            pageState={pageState}
+            setPage={setPage}
+            primitiveMap={primitiveMap}
+          />
+        );
+      }
       return (
         <AtPos entry={entry}>
           <XRLinkMesh
-            primitive={primitive as import("../mapper/types").XRLink}
+            primitive={linkPrimitive}
             entry={zeroedEntry(entry)}
             renderChild={renderChild}
           />
         </AtPos>
       );
+    }
     case "XRNavigationBar":
       return (
         <AtPos entry={entry}>
@@ -831,8 +862,7 @@ function PrimitiveDispatcher({
     case "XRSearchBox":
     case "XRSlider":
     case "XRToggle":
-    case "XRComboBox":
-    case "XRLink": {
+    case "XRComboBox": {
       const w = Math.max(entry.size.width, 0.025);
       return (
         <AtPos entry={entry}>
@@ -1256,6 +1286,7 @@ export function XRSceneRenderer({
   background = "#050a10",
   deviceType = "QUEST_3",
   fontType = undefined,
+  parserConfig = {},
   onPlanReady,
 }: XRSceneRendererProps) {
   // 1. Resolve Device Profile locally
@@ -1278,7 +1309,7 @@ export function XRSceneRenderer({
   } = usePipeline(html, sceneIn, url, deviceProfile, {
     ...layoutConfig,
     // sectionStartsOnNewPage: false,
-  });
+  }, parserConfig);
 
   const {
     sessionState,
@@ -1432,7 +1463,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "8px",
     overflow: "hidden",
     border: "1px solid #1e2d3d",
-    marginTop: "4rem",
   },
   vrButtonRow: {
     display: "flex",

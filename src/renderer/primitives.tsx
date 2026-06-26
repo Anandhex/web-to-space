@@ -1671,7 +1671,7 @@ export function XRListItemMesh({
         />
       </RoundedBox>
 
-      <mesh position={[w / 2, -ACCENT_H / 2, 0.001]}>
+      <mesh position={[w / 2, -(ACCENT_H / 2 + 0.001), 0.001]}>
         <planeGeometry args={[w, ACCENT_H]} />
         <meshBasicMaterial
           color={ACCENT_COL}
@@ -1937,17 +1937,19 @@ export function XRTableMesh({
         />
       </RoundedBox>
 
-      <ClippedText
-        anchorX="left"
-        anchorY="middle"
-        position={[0.014, -HEADER_H / 2, PANEL_DEPTH]}
-        fontSize={0.018}
-        color={HEADING_COL}
-        fontWeight="600"
-        maxWidth={w - 0.12}
-      >
-        {primitive.label ?? "Table"}
-      </ClippedText>
+      {primitive.label && (
+        <ClippedText
+          anchorX="left"
+          anchorY="middle"
+          position={[0.014, -HEADER_H / 2, PANEL_DEPTH]}
+          fontSize={0.018}
+          color={HEADING_COL}
+          fontWeight="600"
+          maxWidth={w - 0.12}
+        >
+          {primitive.label}
+        </ClippedText>
+      )}
 
       <ClippedText
         anchorX="right"
@@ -2182,16 +2184,19 @@ export interface XRLinkMeshProps {
 }
 
 /**
- * XRLinkMesh renders a link with optional rich content.
+ * XRLinkMesh renders a simple link as a single line of accent-coloured text.
  *
- * If the link has text children, they are rendered inline.
- * If not, the label is rendered as text.
+ * Rich links (links with XRText/other children) never reach this component —
+ * XRSceneRenderer's case "XRLink" dispatches those directly via
+ * DispatchChildren so each child's panel-absolute position applies once,
+ * not once here AND once via this component's own AtPos wrapper (the
+ * previous combination double-translated rich-link content, e.g. sending
+ * "Sony Pictures Animation" / "Netflix" / "Marcelo Zarvos" to roughly double
+ * their intended offset and landing them outside their table cell).
  */
-export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
+export function XRLinkMesh({ primitive, entry }: XRLinkMeshProps) {
   const { pos, rot } = entryTransform(entry);
-  const clips = useClipPlanes();
   const w = safeDim(entry.size.width);
-  const h = safeDim(entry.size.height);
   const metrics = useRenderMetrics();
   // Inherit the ancestor heading's metric if this link sits inside one
   // (e.g. a heading wrapping an <a>), otherwise fall back to metrics.link —
@@ -2199,36 +2204,23 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
   const styleOverride = useContext(TextStyleContext);
   const linkMetric = styleOverride ?? metrics.link.font;
 
-  // Check if link has text children (rich link)
-  const hasTextChildren = primitive.children.some(
-    (child) => child.type === "XRText",
-  );
-
   // Hover effect
   const { ref, handlers } = useHoverScale(1.0, 1.02);
 
   return (
     <group ref={ref} position={pos} rotation={rot} {...handlers}>
-      {hasTextChildren ? (
-        // Rich link - render children inline with link styling
-        <group position={[0, 0, 0]}>
-          {primitive.children.map((child) => renderChild(child.id))}
-        </group>
-      ) : (
-        // Simple link - render label as text
-        <ClippedText
-          anchorX="left"
-          anchorY="top"
-          position={[0, 0, 0.002]}
-          fontSize={linkMetric.fontSize}
-          color={primitive.isCurrent ? "#ffffff" : ACCENT_COL}
-          fontWeight={primitive.isCurrent ? "700" : "500"}
-          maxWidth={w}
-          lineHeight={linkMetric.lineHeightRatio}
-        >
-          {primitive.label ?? primitive.href ?? ""}
-        </ClippedText>
-      )}
+      <ClippedText
+        anchorX="left"
+        anchorY="top"
+        position={[0, 0, 0.002]}
+        fontSize={linkMetric.fontSize}
+        color={primitive.isCurrent ? "#ffffff" : ACCENT_COL}
+        fontWeight={primitive.isCurrent ? "700" : "500"}
+        maxWidth={w}
+        lineHeight={linkMetric.lineHeightRatio}
+      >
+        {primitive.label ?? primitive.href ?? ""}
+      </ClippedText>
     </group>
   );
 }

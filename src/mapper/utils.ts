@@ -83,6 +83,68 @@ export function resolveChildren(
     const child = mapNode(childNode, ctx);
     if (child) children.push(child);
   }
+
+  // Leaf-text fallback: table cell nodes (`cell`, `columnheader`, `rowheader`)
+  // whose text was never decomposed into inline children by the parser would
+  // otherwise resolve to children: [] here, silently dropping their only text.
+  // Synthesise a single XRText leaf so XRTableCell.children always has
+  // something to render via DispatchChildren.
+  //
+  // This fallback is intentionally restricted to table cell roles. Other
+  // text-bearing nodes (XRHeading, XRParagraph, XRLink, XRListItem, etc.) each
+  // have their own "no-children" rendering path (ClippedText with label/content)
+  // and do NOT need synthesised children. Firing the fallback for them changes
+  // their rendering path from direct ClippedText (using their own metrics) to
+  // InlineProseRows, while the layout engine still measures the synthesised
+  // XRText with paragraph metrics — causing a size mismatch that makes content
+  // visually overflow into the next element and appear doubled.
+  //
+  // CRITICAL: the synthesised primitive must use a derived id, never
+  // node.id verbatim. node.id is already claimed by the primitive this
+  // function was called to fill in (e.g. an XRTableCell built via
+  // baseFrom(node, ...) one frame up the call stack). Both ctx.primitives
+  // and the layout plan's entries map are keyed by id — reusing node.id here
+  // overwrites the parent's own registry entry and makes renderChild(child.id)
+  // re-resolve to a colliding/independently laid-out node.
+  const TABLE_CELL_ROLES = new Set(["cell", "columnheader", "rowheader"]);
+  const text = node.content ?? node.label ?? "";
+  if (children.length === 0 && text.trim() !== "" && TABLE_CELL_ROLES.has(node.role)) {
+    const textId = `${node.id}__leaftext`;
+    const textPrimitive: XRPrimitive = {
+      id: textId,
+      type: "XRText",
+      label: node.label,
+      content: node.content,
+      sourceIds: [node.id],
+      confidence: node.confidence,
+      depth: node.readingDepth,
+      children: [],
+      relations: {
+        controls: node.relations.controls,
+        labelledBy: node.relations.labelledBy,
+        describedBy: node.relations.describedBy,
+        details: node.relations.details,
+        errorMessage: node.relations.errorMessage,
+      },
+      text,
+      // Preserve link accent styling: node.attributes.componentType reflects
+      // the original HTML tag (often null), not the ARIA role, so a 'link'
+      // role node would otherwise lose its accent color once funnelled
+      // through this fallback instead of XRLinkMesh's own styling.
+      componentType:
+        node.role === "link"
+          ? "link"
+          : (node.attributes?.componentType ?? null),
+      styleTags: node.attributes?.styleTags ?? [],
+      isProseRun: true,
+    } as XRPrimitive;
+    registerPrimitive(ctx, textPrimitive, "leaf-text-fallback→XRText", {
+      sourceNodeIds: [node.id],
+      heuristic: "resolveChildren-leaf-text-fallback",
+    });
+    children.push(textPrimitive);
+  }
+
   return children;
 }
 

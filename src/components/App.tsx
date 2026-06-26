@@ -1,28 +1,26 @@
-import React, { useCallback } from "react";
-import { useState } from "react";
+import React, { useCallback, useState } from "react";
 import { XRSceneRenderer, type XRSceneRendererProps } from "../renderer";
+import { HomeScreen, type HomeSettings, DEFAULT_HOME_SETTINGS } from "./HomeScreen";
 
 export default function App() {
-  const [url, setUrl] = useState("https://web.dev/");
-
+  const [url, setUrl] = useState("");
   const [html, setHtml] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [activeSettings, setActiveSettings] = useState<HomeSettings>(DEFAULT_HOME_SETTINGS);
 
-  async function fetchHTML(url: string) {
-    const res = await fetch(`/proxy?url=${encodeURIComponent(url)}`);
-
-    if (!res.ok) {
-      throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
-    }
-
-    return res.text();
-  }
-
-  async function handleLoad() {
+  async function loadUrl(targetUrl: string, settings: HomeSettings) {
+    setLoading(true);
+    setActiveSettings(settings);
     try {
-      const pageHtml = await fetchHTML(url);
+      const res = await fetch(`/proxy?url=${encodeURIComponent(targetUrl)}`);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const pageHtml = await res.text();
+      setUrl(targetUrl);
       setHtml(pageHtml);
     } catch (err) {
-      console.error(err);
+      console.error("Failed to load:", err);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -33,35 +31,74 @@ export default function App() {
     [],
   );
 
+  if (!html) {
+    return <HomeScreen onLoad={loadUrl} loading={loading} />;
+  }
+
   return (
-    <>
+    <div
+      style={{ width: "100vw", height: "100vh", position: "relative", overflow: "hidden" }}
+    >
+      {/* Back to home */}
+      <button
+        onClick={() => {
+          setHtml("");
+          setUrl("");
+        }}
+        style={{
+          position: "fixed",
+          top: 14,
+          left: 14,
+          padding: "7px 14px",
+          background: "rgba(8, 14, 24, 0.92)",
+          border: "1px solid rgba(88, 166, 255, 0.25)",
+          color: "#58a6ff",
+          borderRadius: "8px",
+          cursor: "pointer",
+          fontSize: "13px",
+          zIndex: 9999,
+          fontFamily: "system-ui, sans-serif",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+        }}
+      >
+        ← Home
+      </button>
+
+      {/* Active URL indicator */}
       <div
         style={{
           position: "fixed",
-          left: 12,
-          top: 12,
-          padding: 8,
-          background: "rgba(0,0,0,0.6)",
-          color: "#fff",
-          borderRadius: 6,
+          top: 14,
+          left: 100,
+          padding: "7px 14px",
+          background: "rgba(8, 14, 24, 0.8)",
+          border: "1px solid rgba(30, 45, 61, 0.4)",
+          color: "#7a8a9a",
+          borderRadius: "8px",
+          fontSize: "12px",
           zIndex: 9999,
+          fontFamily: "monospace",
+          maxWidth: "55vw",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
         }}
       >
-        <input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          style={{ width: 260, marginRight: 8 }}
-        />
-
-        <button onClick={handleLoad}>Load</button>
+        {url}
       </div>
 
       <XRSceneRenderer
         html={html}
         url={url}
-        height="700px"
+        width="100%"
+        height="100vh"
+        deviceType={activeSettings.deviceType}
+        parserConfig={activeSettings.parserConfig}
         onPlanReady={onPlanReady}
       />
-    </>
+    </div>
   );
 }

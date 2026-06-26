@@ -529,11 +529,22 @@ function estimateHeight(
           if (hasAnyInline) {
             // Inline flow — all XRText/XRLink segments measured as one prose run,
             // block children (sub-lists, images) measured individually and stacked.
+            //
+            // FIX: pass m.verticalPadding (not 0) as the vertPad argument so the
+            // parent card height includes the same vertical padding that XRText
+            // children add to their own individual height estimates.  Without this,
+            // a list item whose only child is a single XRText node gets
+            //   contentHeight = 1 × lineH + 0 ≈ 0.023
+            //   return = Max(lineH2 + 0.02, 0.023) ≈ 0.043
+            // but the XRText child alone estimates at lineH + verticalPadding ≈ 0.076.
+            // The parent card (0.043 m) is shorter than the text it renders (0.076 m),
+            // so the text visually overflows into the next element below it (e.g. the
+            // "Production company" rowheader text bleeding over the cell value row).
             contentHeight = estimateInlineFlowHeight(
               flattened,
               wordsPerLine,
               lineH,
-              0,
+              m.verticalPadding,
               (child) =>
                 estimateHeight(
                   child as XRPrimitive,
@@ -698,7 +709,13 @@ function estimateHeight(
       totalCardH += rowH;
     }
     const gaps = config.childGapY * Math.max(0, rowCount - 1);
-    return totalCardH + gaps;
+    // FIX: stackChildrenSimple single-column default path adds paddingContrib
+    // = panelPaddingTop * 2 (top + bottom padding). Multi-column grid path
+    // adds none (cursorY starts at 0). Match that here so the list height
+    // estimate equals what stackChildrenSimple actually produces, preventing
+    // the last list item from overflowing into the next row's elements.
+    const padding = columns === 1 ? config.panelPaddingTop * 2 : 0;
+    return totalCardH + gaps + padding;
   }
 
   if (primitive.type === "XRTable") {
@@ -803,11 +820,19 @@ function estimateHeight(
       const m = metrics.paragraph;
       const wordsPerLine = computeWordsPerLine(childEstimateWidth, m);
       const lineH = m.fontSize * m.lineHeightRatio;
+      // FIX: pass m.verticalPadding (not 0) so the container's estimated
+      // height matches what each XRText child estimates independently
+      // (lineH + verticalPadding). Without this, a generic container whose
+      // only child is a short XRText (e.g. a "rowheader" / "cell" node)
+      // gets height ≈ lineH ≈ 0.040 m while the child alone estimates
+      // lineH + verticalPadding ≈ 0.076 m — causing the text to visually
+      // bleed into the next element (e.g. "Production company" overlapping
+      // "Distributed by" in the infobox table).
       const contentHeight = estimateInlineFlowHeight(
         merged,
         wordsPerLine,
         lineH,
-        0,
+        m.verticalPadding,
         (c) =>
           estimateHeight(
             c as XRPrimitive,

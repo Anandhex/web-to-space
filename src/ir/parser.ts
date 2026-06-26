@@ -15,7 +15,6 @@ import type {
   IRNode,
   IRNodeAttributes,
   IRRole,
-  IRSource,
   LandmarkRecord,
   LandmarkTOCNode,
   PageIR,
@@ -510,7 +509,7 @@ function resolveNodeLabelSmart(
     const label = resolveNodeLabel(element, config, doc);
     if (label) return label;
 
-    const isHeadingContainer = role === "region" || role === "section";
+    const isHeadingContainer = role === "region";
     if (isHeadingContainer) {
       for (const heading of Array.from(
         element.querySelectorAll("h1, h2, h3, h4, h5, h6"),
@@ -1326,11 +1325,16 @@ async function buildExternalLinksSection(
   if (links.length === 0) return;
 
   const sectionId = `main-section-${ctx.counters.section++}`;
-  const linkChildren = (
-    await Promise.all(
-      links.map((link) => createNode(link, sectionId, "main", ctx, {}, 1)),
-    )
-  ).flat();
+  const listId = `${sectionId}-list-${ctx.counters.section++}`;
+  const listChildren = await Promise.all(
+    links.map((link) => createListItem(link, listId, "main", ctx, 2)),
+  );
+  ctx.nodes[listId] = createBaseNode(listId, "list", sectionId, ctx, {
+    children: listChildren,
+    attributes: { ...createEmptyAttributes(), listType: "unordered" },
+    readingDepth: 1,
+  });
+  const linkChildren = [listId];
 
   ctx.landmarkRecords.push({
     id: sectionId,
@@ -1503,7 +1507,7 @@ export const parsePageToIR = async (
   }
   analytics.textDensity =
     orderedNodes.length > 0 ? analytics.textLength / orderedNodes.length : 0;
-
+  console.log(nodes);
   return {
     meta: {
       url,
