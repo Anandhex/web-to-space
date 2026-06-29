@@ -73,7 +73,6 @@ import type {
   XRHeading,
   XRParagraph,
   XRTable,
-  XRList,
   XRMediaPlayer,
   SemanticScene,
   XRText,
@@ -675,11 +674,7 @@ function estimateHeight(
   // estimateHeight(item, ...) guarantees this grid path and a standalone
   // estimateHeight(someListItem, ...) call always agree.
   if (primitive.type === "XRList") {
-    const columns = resolveListColumns(
-      primitive as XRList,
-      panelUsableWidth,
-      metrics,
-    );
+    const columns = resolveListColumns(panelUsableWidth, metrics);
     const cardUsableWidth = Math.max(
       0.025,
       panelUsableWidth / columns - LIST_ITEM_PROSE_INSET,
@@ -1198,6 +1193,7 @@ function paginateContentPanel(
       pageIndexMap: {},
       placedPositionMap: new Map(),
       placedHeightMap: new Map(),
+      syntheticPrimitives: [],
     };
   }
 
@@ -1208,12 +1204,17 @@ function paginateContentPanel(
   const heightMap: Map<string, number> = new Map();
   const pageIndexMap: Record<string, number> = {};
   const pageYOffsets: number[] = [0];
+  const syntheticPrimitives: XRPrimitive[] = [];
 
   let pageIdx = 0;
   let pageHeight = config.panelPaddingTop;
   let itemsOnPage = 0;
   let cursorY = -config.panelPaddingTop;
   let absoluteY = config.panelPaddingTop;
+  // Tracks the type of the last item placed directly by the main pagination
+  // loop (not inside splitSection). Used for the "keep heading with next
+  // content" rule in the main loop's atomic leaf path.
+  let lastPlacedType: string | null = null;
 
   function nextPage(absolutePageStart: number): void {
     pageYOffsets.push(absolutePageStart);
@@ -1221,6 +1222,7 @@ function paginateContentPanel(
     pageHeight = config.panelPaddingTop;
     itemsOnPage = 0;
     cursorY = -config.panelPaddingTop;
+    lastPlacedType = null;
   }
 
   function stampSubtree(node: XRPrimitive, page: number): void {
@@ -1235,6 +1237,276 @@ function paginateContentPanel(
       p.type === "XRFormPanel" ||
       p.type === "XRFormField"
     );
+  }
+
+  /**
+   * When an XRParagraph overflows one or more pages, create synthetic
+   * continuation nodes — one per overflow page — so each page shows the words
+   * that would otherwise be invisible behind the clip plane.
+   *
+   * Works for both pure-text paragraphs and paragraphs with inline children
+   * (XRText, XRLink, XRButton). Inline children are split at the word boundary
+   * so link formatting is preserved in continuation pages. XRText nodes that
+   * straddle a page boundary are split exactly; XRLink nodes that straddle are
+   * included in full in the continuation (the link label may re-show a few
+   * words visible on the previous page, but the link itself is not broken).
+   *
+   * Paragraphs that contain block-level children are skipped — those cannot be
+   * meaningfully split across pages.
+   *
+   * @param sc                   The paragraph that overflowed.
+   * @param pageHeightBefore     pageHeight value before this paragraph was added.
+   * @param gapBefore            Gap applied before placing sc.
+   * @param firstOverflowPage    Page index of the first overflow page.
+   * @param extraPages           Number of overflow pages created.
+   * @param bleed                Height used on the final overflow page.
+   */
+  function createParagraphContinuations(
+    sc: XRPrimitive,
+    pageHeightBefore: number,
+    gapBefore: number,
+    firstOverflowPage: number,
+    extraPages: number,
+    bleed: number,
+  ): { pageHeight: number; cursorY: number } | null {
+    if (sc.type !== "XRParagraph") return null;
+
+    const para = sc as XRParagraph;
+    const m = metrics.paragraph;
+    const lineH = m.fontSize * m.lineHeightRatio;
+    const wpl = Math.max(1, computeWordsPerLine(childWidth, m));
+
+    // Flatten inline wrappers exactly as the renderer does so word counts match.
+    const flatChildren =
+      sc.children.length > 0
+        ? (flattenInlineWrappers(sc.children as any[]) as XRPrimitive[])
+        : [];
+
+    // Skip if any flattened child is block-level — can't split those.
+    if (flatChildren.some((c) => !isInlinePrimitive(c.type))) return null;
+
+    // Per-child word count (mirrors estimateInlineFlowHeight).
+    const childWC = (c: XRPrimitive): number => {
+      if (c.type === "XRText") return countWords((c as unknown as XRText).text ?? "");
+      const wc = (c as unknown as { wordCount?: number }).wordCount;
+      if (wc != null && wc > 0) return wc;
+      return countWords(c.label ?? c.content ?? "");
+    };
+
+    const totalWords =
+      flatChildren.length === 0
+        ? countWords(para.content ?? para.label ?? "")
+        : flatChildren.reduce((s, c) => s + childWC(c), 0);
+
+    if (totalWords === 0) return null;
+
+    // Words already visible on the original page (above the clip plane).
+    // The renderer places paragraph text at y=-verticalPadding/2 (top padding only),
+    // so subtract only half of verticalPadding — not the full value — to avoid
+    // under-counting visible lines and duplicating content on the continuation page.
+    const firstPageAvailH = Math.max(
+      0,
+      VIEWPORT - pageHeightBefore - gapBefore - m.verticalPadding / 2,
+    );
+    // Round (not floor) so a line that's >50% visible on the original page is
+    // counted as seen — its words are skipped in the continuation rather than
+    // duplicated.
+    const firstPageLines = Math.round(firstPageAvailH / lineH);
+    let wordOffset = Math.max(0, firstPageLines * wpl);
+
+    // Less than half a line was visible on the original page — move the whole
+    // paragraph to the first overflow page rather than creating a continuation
+    // that starts at word 0 and duplicates the full text.
+    if (wordOffset === 0) {
+      stampSubtree(sc, firstOverflowPage);
+      positionMap.set(sc.id, {
+        x: config.panelPaddingX,
+        y: -config.panelPaddingTop,
+        z: 0,
+      });
+      const movedH = Math.ceil(totalWords / wpl) * lineH + m.verticalPadding;
+      const corrH = config.panelPaddingTop + movedH;
+      return { pageHeight: corrH, cursorY: -corrH };
+    }
+
+    /**
+     * Return the continuation children (and plain-text fallback) that begin at
+     * `fromWord` words into the original paragraph.
+     *
+     * For pure-text paragraphs the children array is empty and `content` holds
+     * the remaining text. For inline-children paragraphs the returned children
+     * start at (or just before, for straddling XRLink nodes) `fromWord`.
+     */
+    function buildContFrom(fromWord: number): {
+      children: XRPrimitive[];
+      content: string | null;
+      label: string | null;
+      wordCount: number;
+    } {
+      const remaining = totalWords - fromWord;
+
+      if (flatChildren.length === 0) {
+        // Pure-text paragraph.
+        const text = para.content ?? para.label ?? "";
+        const allWords = text.split(/\s+/).filter(Boolean);
+        const slice = allWords.slice(fromWord).join(" ");
+        return { children: [], content: slice, label: slice, wordCount: remaining };
+      }
+
+      // Inline-children paragraph: collect children from `fromWord` onwards.
+      const result: XRPrimitive[] = [];
+      let seen = 0;
+
+      for (const child of flatChildren) {
+        const wc = childWC(child);
+
+        if (seen + wc <= fromWord) {
+          // Entirely before the split — skip.
+          seen += wc;
+          continue;
+        }
+
+        if (seen >= fromWord) {
+          // Entirely after the split — keep as-is.
+          result.push(child);
+        } else {
+          // Straddles the split point.
+          const wordsBeforeSplit = fromWord - seen;
+          if (child.type === "XRText") {
+            // Split the text node at the exact word boundary.
+            const text = (child as unknown as XRText).text ?? "";
+            const tw = text.split(/\s+/).filter(Boolean);
+            const tail = tw.slice(wordsBeforeSplit).join(" ");
+            if (tail) {
+              result.push({
+                ...(child as unknown as XRText),
+                id: `${child.id}__cpart_${fromWord}`,
+                text: tail,
+              } as unknown as XRPrimitive);
+            }
+          } else {
+            // XRLink or other inline: include the whole node so the link is
+            // not broken. The first few words may re-appear from the previous
+            // page but the link label stays intact.
+            result.push(child);
+          }
+        }
+
+        seen += wc;
+      }
+
+      return {
+        children: result,
+        content: para.content,
+        label: para.label,
+        wordCount: remaining,
+      };
+    }
+
+    // Head-side mirror of buildContFrom: returns the inline children that
+    // cover words 0..toWord-1 so the original node can be trimmed.
+    function buildOrigTo(toWord: number): XRPrimitive[] {
+      const result: XRPrimitive[] = [];
+      let seen = 0;
+      for (const child of flatChildren) {
+        if (seen >= toWord) break;
+        const wc = childWC(child);
+        if (seen + wc <= toWord) {
+          result.push(child);
+        } else {
+          const wordsToKeep = toWord - seen;
+          if (child.type === "XRText") {
+            const text = (child as unknown as XRText).text ?? "";
+            const tw = text.split(/\s+/).filter(Boolean);
+            const head = tw.slice(0, wordsToKeep).join(" ");
+            if (head) {
+              result.push({
+                ...(child as unknown as XRText),
+                id: `${child.id}__opart_${toWord}`,
+                text: head,
+              } as unknown as XRPrimitive);
+            }
+          } else {
+            // XRLink: keep the whole node to avoid breaking the link.
+            result.push(child);
+          }
+        }
+        seen += wc;
+      }
+      return result;
+    }
+
+    // Capture before the loop modifies wordOffset, so we can trim the
+    // original after continuations are built.
+    const initialWordOffset = wordOffset;
+
+    let lastContH = bleed - config.panelPaddingTop;
+
+    for (let p = 0; p < extraPages; p++) {
+      if (wordOffset >= totalWords) break;
+
+      const contPageIdx = firstOverflowPage + p;
+      const isLastOverflow = p === extraPages - 1;
+      const thisPageCapacity = isLastOverflow ? bleed : VIEWPORT;
+
+      const contAvailH = Math.max(
+        0,
+        thisPageCapacity - config.panelPaddingTop - m.verticalPadding / 2,
+      );
+      const thisPageLines = Math.max(0, Math.floor(contAvailH / lineH));
+      const wordsThisPage = Math.max(1, thisPageLines * wpl);
+
+      const contId = `${sc.id}__cont_${contPageIdx}`;
+      const { children: contChildren, content, label, wordCount } =
+        buildContFrom(wordOffset);
+
+      const contNode = {
+        ...(sc as XRParagraph),
+        id: contId,
+        content,
+        label,
+        wordCount,
+        children: contChildren,
+      } as unknown as XRPrimitive;
+
+      // Compute the continuation's actual rendered height from its word count
+      // rather than the mathematical `bleed` value, which is often smaller
+      // because it doesn't account for per-paragraph vertical padding.
+      const contActualH = Math.ceil(wordCount / wpl) * lineH + m.verticalPadding;
+
+      syntheticPrimitives.push(contNode);
+      pageIndexMap[contId] = contPageIdx;
+      positionMap.set(contId, {
+        x: config.panelPaddingX,
+        y: -config.panelPaddingTop,
+        z: 0,
+      });
+      heightMap.set(
+        contId,
+        isLastOverflow ? contActualH : VIEWPORT - config.panelPaddingTop,
+      );
+
+      if (isLastOverflow) lastContH = contActualH;
+
+      wordOffset += wordsThisPage;
+    }
+
+    // Trim the original paragraph AFTER all continuations are built so that
+    // buildContFrom reads the full original content, not the trimmed version.
+    // For inline paragraphs this trims sc.children; for pure-text it trims
+    // para.content / para.label.
+    if (flatChildren.length > 0) {
+      (sc as { children: XRPrimitive[] }).children = buildOrigTo(initialWordOffset);
+    } else {
+      const text = para.content ?? para.label ?? "";
+      const allWords = text.split(/\s+/).filter(Boolean);
+      const trimmed = allWords.slice(0, initialWordOffset).join(" ");
+      (para as unknown as { content: string | null }).content = trimmed;
+      (para as unknown as { label: string | null }).label = trimmed;
+    }
+
+    const corrH = config.panelPaddingTop + lastContH;
+    return { pageHeight: corrH, cursorY: -corrH };
   }
 
   // ── Simplified splitSection ───────────────────────────────────────────────
@@ -1256,6 +1528,7 @@ function paginateContentPanel(
           pageHeight = config.panelPaddingTop;
           itemsOnPage = 0;
           cursorY = -config.panelPaddingTop;
+          lastPlacedType = null;
         }
 
         pageIndexMap[sc.id] = pageIdx;
@@ -1303,7 +1576,9 @@ function paginateContentPanel(
       }
 
       // ── Leaf child (atomic) ──────────────────────────────────────────────
-      // No paragraph splitting - the child is measured as a whole
+      // Within a section we place the child at the current cursor position.
+      // If it overflows the page, paragraphs get continuation nodes so the
+      // remaining text appears on the next page(s) rather than being clipped.
       const sch = estimateHeight(
         sc,
         childWidth,
@@ -1312,20 +1587,8 @@ function paginateContentPanel(
         new Set(),
         scene,
       );
-      const scGap = itemsOnPage > 0 ? config.childGapY : 0;
-
-      // If the child doesn't fit on the current page, move to next page
-      if (pageHeight + scGap + sch > VIEWPORT && itemsOnPage > 0) {
-        const absOffsetBase = pageYOffsets[pageIdx] ?? 0;
-        pageYOffsets.push(absOffsetBase + VIEWPORT);
-        pageIdx += 1;
-        cursorY = -config.panelPaddingTop;
-        pageHeight = config.panelPaddingTop;
-        itemsOnPage = 0;
-      }
-
-      // Place the child on the current page
       const g = itemsOnPage > 0 ? config.childGapY : 0;
+      const pageHeightBeforePlacement = pageHeight;
       stampSubtree(sc, pageIdx);
       positionMap.set(sc.id, {
         x: config.panelPaddingX,
@@ -1336,6 +1599,33 @@ function paginateContentPanel(
       cursorY -= g + sch;
       pageHeight += g + sch;
       itemsOnPage += 1;
+
+      // If this item's height exceeds the viewport, advance pageIdx so the
+      // next sibling starts on the correct page. For paragraphs, also create
+      // continuation nodes that fill the overflow pages with the remaining text.
+      if (pageHeight > VIEWPORT) {
+        const extraPages = Math.ceil(pageHeight / VIEWPORT) - 1;
+        for (let p = 0; p < extraPages; p++) {
+          pageYOffsets.push((pageYOffsets[pageYOffsets.length - 1] ?? 0) + VIEWPORT);
+        }
+        const firstOverflowPage = pageIdx + 1;
+        pageIdx += extraPages;
+        const bleed = pageHeight % VIEWPORT || VIEWPORT;
+        pageHeight = bleed;
+        cursorY = -bleed;
+        const corrected = createParagraphContinuations(
+          sc,
+          pageHeightBeforePlacement,
+          g,
+          firstOverflowPage,
+          extraPages,
+          bleed,
+        );
+        if (corrected !== null) {
+          pageHeight = corrected.pageHeight;
+          cursorY = corrected.cursorY;
+        }
+      }
     }
   }
 
@@ -1402,13 +1692,18 @@ function paginateContentPanel(
       // Atomic leaf child
       const gap = itemsOnPage === 0 ? 0 : config.childGapY;
 
+      // Keep-with-next: same as splitSection — don't strand a heading alone.
+      const wouldStrandHeading =
+        lastPlacedType === "XRHeading" && itemsOnPage === 1;
+
       // If child doesn't fit, move to next page
-      if (pageHeight + gap + h > VIEWPORT && itemsOnPage > 0) {
+      if (pageHeight + gap + h > VIEWPORT && itemsOnPage > 0 && !wouldStrandHeading) {
         nextPage(absoluteY);
         absoluteY = config.panelPaddingTop;
       }
 
       const g = itemsOnPage === 0 ? 0 : config.childGapY;
+      const pageHeightBeforePlacement = pageHeight;
       stampSubtree(child, pageIdx);
       positionMap.set(child.id, {
         x: config.panelPaddingX,
@@ -1420,6 +1715,37 @@ function paginateContentPanel(
       pageHeight += g + h;
       absoluteY += g + h;
       itemsOnPage += 1;
+      lastPlacedType = child.type;
+
+      // If this item's height exceeds the viewport, it bleeds into subsequent
+      // pages via overflowCorrect in stampDescendants. Advance pageIdx so the
+      // next sibling starts on the correct page and doesn't overlap the tail.
+      // For paragraphs, also create continuation nodes for the overflow pages.
+      if (pageHeight > VIEWPORT) {
+        const extraPages = Math.ceil(pageHeight / VIEWPORT) - 1;
+        for (let p = 0; p < extraPages; p++) {
+          pageYOffsets.push((pageYOffsets[pageYOffsets.length - 1] ?? 0) + VIEWPORT);
+        }
+        const firstOverflowPage = pageIdx + 1;
+        pageIdx += extraPages;
+        const bleed = pageHeight % VIEWPORT || VIEWPORT;
+        pageHeight = bleed;
+        cursorY = -bleed;
+        absoluteY = bleed;
+        const corrected = createParagraphContinuations(
+          child,
+          pageHeightBeforePlacement,
+          g,
+          firstOverflowPage,
+          extraPages,
+          bleed,
+        );
+        if (corrected !== null) {
+          pageHeight = corrected.pageHeight;
+          cursorY = corrected.cursorY;
+          absoluteY = corrected.pageHeight;
+        }
+      }
     }
   }
 
@@ -1429,6 +1755,28 @@ function paginateContentPanel(
   // direct atomic leaves). Any deeper descendants — e.g. children of XRList,
   // XRListItem, XRFigure, nested XRGenericPanel inside a list item — are
   // absent from the map.
+
+  // Convert a page-relative Y that may extend below the viewport into the
+  // correct page and page-relative Y. Extends pageYOffsets and increments
+  // pageIdx for any overflow pages so totalPages at the end of paginateContentPanel
+  // correctly reflects the real page count (including pages synthesised here
+  // for tall containers like XRList whose total item height exceeds VIEWPORT).
+  function overflowCorrect(
+    relY: number,
+    parentPage: number,
+  ): { page: number; y: number } {
+    let page = parentPage;
+    let y = relY;
+    while (y < -VIEWPORT) {
+      y += VIEWPORT;
+      page += 1;
+      if (page >= pageYOffsets.length) {
+        pageYOffsets.push((pageYOffsets[pageYOffsets.length - 1] ?? 0) + VIEWPORT);
+        pageIdx = Math.max(pageIdx, page);
+      }
+    }
+    return { page, y };
+  }
   //
   // Without this pass, layoutPrimitive would fall back to stackChildrenSimple
   // for those missing levels and produce PARENT-RELATIVE positions, creating
@@ -1562,11 +1910,14 @@ function paginateContentPanel(
           // Block child inside an inline-owning container: it IS dispatched
           // via renderChild and needs a panel-absolute position.
           if (!positionMap.has(child.id)) {
-            const panelAbs: Vec3 = {
-              x: absX,
-              y: node.type === "XRListItem" ? blockCursorY : absY,
-              z: 0,
-            };
+            const rawBlockY =
+              node.type === "XRListItem" ? blockCursorY : absY;
+            const parentPage = pageIndexMap[node.id] ?? 0;
+            const { page: childPage, y: childRelY } = overflowCorrect(
+              rawBlockY,
+              parentPage,
+            );
+            const panelAbs: Vec3 = { x: absX, y: childRelY, z: 0 };
             positionMap.set(child.id, panelAbs);
             const childH = estimateHeight(
               child,
@@ -1577,12 +1928,10 @@ function paginateContentPanel(
               scene,
             );
             heightMap.set(child.id, childH);
+            pageIndexMap[child.id] = childPage;
             if (node.type === "XRListItem") {
               // Advance cursor for any subsequent block children.
               blockCursorY = panelAbs.y - childH - config.childGapY;
-            }
-            if (pageIndexMap[child.id] === undefined) {
-              pageIndexMap[child.id] = pageIndexMap[node.id] ?? pageIdx;
             }
           }
           const childAbs = positionMap.get(child.id)!;
@@ -1609,7 +1958,7 @@ function paginateContentPanel(
     // to panel-absolute by adding the parent's known absolute position.
     const resolvedListColumns =
       node.type === "XRList"
-        ? resolveListColumns(node as XRList, availableWidth, metrics)
+        ? resolveListColumns(availableWidth, metrics)
         : undefined;
 
     const { childEntries } = stackChildrenSimple(
@@ -1627,18 +1976,24 @@ function paginateContentPanel(
       const local = childEntries[i];
       if (!local) continue;
 
+      // Compute page-relative Y, correcting for overflow into subsequent pages.
+      // stampSubtree already stamped all descendants with the parent's page index,
+      // but children of a tall container (e.g. XRList with many XRListItems) can
+      // extend past the viewport boundary. overflowCorrect derives the correct
+      // page and page-relative Y, extending pageYOffsets as needed so totalPages
+      // reflects the true page count.
+      const rawY = absY + local.position.y;
+      const parentPage = pageIndexMap[node.id] ?? 0;
+      const { page: childPage, y: childRelY } = overflowCorrect(rawY, parentPage);
+
       const panelAbs: Vec3 = {
         x: absX + local.position.x,
-        y: absY + local.position.y,
+        y: childRelY,
         z: local.position.z,
       };
       positionMap.set(child.id, panelAbs);
       heightMap.set(child.id, local.size.height);
-
-      // Inherit page index from the parent if not already stamped.
-      if (pageIndexMap[child.id] === undefined) {
-        pageIndexMap[child.id] = pageIndexMap[node.id] ?? pageIdx;
-      }
+      pageIndexMap[child.id] = childPage;
 
       // Recurse: the child's usable width comes from stackChildrenSimple's
       // entry, which already accounts for the child's own x-padding.
@@ -1665,6 +2020,7 @@ function paginateContentPanel(
     pageIndexMap,
     placedPositionMap: positionMap,
     placedHeightMap: heightMap,
+    syntheticPrimitives,
   };
 }
 // ─────────────────────────────────────────────────────────────
@@ -1688,11 +2044,7 @@ function attachResolvedStrategies(
     );
   }
   if (primitive.type === "XRList") {
-    entry.listColumns = resolveListColumns(
-      primitive as XRList,
-      panelUsableWidth,
-      metrics,
-    );
+    entry.listColumns = resolveListColumns(panelUsableWidth, metrics);
   }
 }
 
@@ -1757,14 +2109,34 @@ function layoutPrimitive(
     metrics,
   );
 
+  // Container types that call paginateContentPanel when at the top level
+  // (not already inside another paginated panel). XRNavigationBar and
+  // XRComplementary are excluded because they are fixed-height landmark
+  // fixtures that must not scroll. XRBanner and XRFooter are intentionally
+  // hidden in XR, so pagination is irrelevant for them.
+  const PAGINATING_CONTAINER_TYPES = new Set([
+    "XRContentPanel",
+    "XRSection",
+    "XRArticle",
+    "XRFormPanel",
+    "XRGenericPanel",
+  ]);
+
   if (primitive.children.length > 0) {
-    if (primitive.type === "XRContentPanel") {
+    if (PAGINATING_CONTAINER_TYPES.has(primitive.type) && !placedPositionMap) {
       // ── Paginating path ──────────────────────────────────────────────────
+      // Called for XRContentPanel (unchanged) AND for XRSection, XRArticle,
+      // XRFormPanel, XRGenericPanel when they appear at the top level (not
+      // already inside a paginated container). Children receive panel-absolute
+      // positions; the renderer wraps them in a group at this primitive's
+      // world position.
+      entry.paginatedByEngine = true;
       const {
         pagination,
         pageIndexMap: newPageIndexMap,
         placedPositionMap: newPlacedPositionMap,
         placedHeightMap: newPlacedHeightMap,
+        syntheticPrimitives: newSyntheticPrimitives,
       } = paginateContentPanel(
         primitive.children,
         worldSize.width,
@@ -1773,6 +2145,14 @@ function layoutPrimitive(
         metrics,
         diag,
       );
+
+      // Inject paragraph continuation nodes into the scene registry and the
+      // panel's children list so the renderer dispatches them as positioned
+      // siblings with their own LayoutEntries.
+      for (const synth of newSyntheticPrimitives) {
+        (scene.primitives as Record<string, XRPrimitive>)[synth.id] = synth;
+        (primitive.children as XRPrimitive[]).push(synth);
+      }
 
       if (pagination) {
         entry.pagination = pagination;
@@ -2079,6 +2459,35 @@ export function computeLayoutPlan(
       entries,
       diag,
     );
+  }
+
+  // Extract any XRComplementary nodes that were paginated inside a content
+  // panel and re-layout them at the complementary slot with world-space
+  // coordinates. Their pageIndex is preserved so the renderer gates
+  // visibility to the page where the parent section lives.
+  const compSlot = slots.complementary;
+  if (compSlot) {
+    for (const prim of Object.values(scene.primitives)) {
+      if (prim.type !== "XRComplementary") continue;
+      const existing = entries[prim.id];
+      if (existing?.pageIndex === undefined) continue;
+      const savedPageIndex = existing.pageIndex;
+      layoutPrimitive(
+        prim,
+        compSlot.position,
+        compSlot.rotation,
+        compSlot.size,
+        compSlot.curveRadius,
+        compSlot.worldLocked,
+        scene,
+        config,
+        metrics,
+        entries,
+        diag,
+        savedPageIndex,
+      );
+      if (entries[prim.id]) entries[prim.id].pageIndex = savedPageIndex;
+    }
   }
 
   // XRScene root entry.

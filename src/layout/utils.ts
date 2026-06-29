@@ -5,7 +5,6 @@
 import type {
   Rotation3,
   Vec3,
-  XRList,
   XRParagraph,
   XRPrimitiveType,
   XRTable,
@@ -239,7 +238,6 @@ export function listItemLabelBlockHeight(
  * floor(panelUsableWidth / minCardWidth), clamped to [1, maxCardColumns].
  */
 export function resolveListColumns(
-  grid: XRList,
   panelUsableWidth: number,
   metrics: RenderMetrics,
 ): number {

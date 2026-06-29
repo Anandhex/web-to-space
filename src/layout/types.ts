@@ -1,4 +1,4 @@
-import type { Vec3, Rotation3, Size2, XRPrimitiveType } from "../mapper/types";
+import type { Vec3, Rotation3, Size2, XRPrimitive, XRPrimitiveType } from "../mapper/types";
 
 // ─────────────────────────────────────────────────────────────
 // Re-exported template type (was previously in mapper.ts)
@@ -62,6 +62,14 @@ export interface LayoutEntry {
    * Present only on XRList entries.
    */
   listColumns?: number;
+
+  /**
+   * Set to true when the engine called paginateContentPanel for this primitive,
+   * even if the content fits on a single page. The renderer uses this to decide
+   * whether to render children inside a positioned group (panel-absolute coords)
+   * or as world-space siblings.
+   */
+  paginatedByEngine?: boolean;
 }
 
 /**
@@ -366,4 +374,12 @@ export interface PaginateResult {
    * primitiveId → final placed height after pagination, covers every descendant.
    */
   placedHeightMap: Map<string, number>;
+
+  /**
+   * Synthetic XRParagraph continuation nodes created during paragraph splitting.
+   * Each carries the remaining text of an overflowed paragraph and is placed at
+   * the top of its overflow page. layoutPrimitive injects these into
+   * scene.primitives and the panel's children so the renderer dispatches them.
+   */
+  syntheticPrimitives: XRPrimitive[];
 }

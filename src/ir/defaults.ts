@@ -14,7 +14,7 @@ export const SKIP_TAGS = new Set([
   "template",
 ]);
 
-export const WRAPPER_TAGS = new Set(["div", "span", "picture"]);
+export const WRAPPER_TAGS = new Set(["div", "span", "picture", "center"]);
 
 export const LANDMARK_ROLES = new Set([
   "main",

@@ -599,6 +599,104 @@ function peelSibling(
     : { element: el, liftedAttrs: {} };
 }
 
+// ─────────────────────────────────────────────────────────────
+// Layout table detection
+// ─────────────────────────────────────────────────────────────
+
+function getTableMaxColumnCount(table: Element): number {
+  let max = 0;
+  for (const child of Array.from(table.children)) {
+    const tag = child.tagName.toLowerCase();
+    const rows =
+      tag === "tbody" || tag === "thead" || tag === "tfoot"
+        ? Array.from(child.children)
+        : tag === "tr"
+          ? [child]
+          : [];
+    for (const row of rows) {
+      if (row.tagName.toLowerCase() !== "tr") continue;
+      const count = Array.from(row.children).filter(
+        (c) =>
+          c.tagName.toLowerCase() === "td" || c.tagName.toLowerCase() === "th",
+      ).length;
+      max = Math.max(max, count);
+    }
+  }
+  return max;
+}
+
+/**
+ * Returns true for tables that are purely presentational layout containers:
+ * - explicit role="presentation" or role="none"
+ * - OR: no semantic data-table signals (no caption, thead, th) AND single column
+ *
+ * Single-column tables are overwhelmingly used as page-layout wrappers
+ * (e.g. HN's outer table, email-style layouts) where the entire page
+ * content lives in one <td> per row. Piercing them lets the parser see
+ * the actual semantic content inside.
+ */
+function isLayoutTable(table: Element): boolean {
+  const role = table.getAttribute("role")?.toLowerCase();
+  if (role === "presentation" || role === "none") return true;
+
+  // Explicit data-table signals — never pierce these
+  if (
+    table.getAttribute("summary") ||
+    table.getAttribute("aria-label") ||
+    table.getAttribute("aria-labelledby")
+  )
+    return false;
+
+  // Check for caption / thead / any th in the first two levels
+  for (const child of Array.from(table.children)) {
+    const tag = child.tagName.toLowerCase();
+    if (tag === "caption" || tag === "thead") return false;
+    const rows =
+      tag === "tbody" || tag === "tfoot"
+        ? Array.from(child.children)
+        : tag === "tr"
+          ? [child]
+          : [];
+    for (const row of rows) {
+      if (row.tagName.toLowerCase() !== "tr") continue;
+      for (const cell of Array.from(row.children)) {
+        if (cell.tagName.toLowerCase() === "th") return false;
+      }
+    }
+  }
+
+  return getTableMaxColumnCount(table) <= 1;
+}
+
+/**
+ * Collect the direct element children from every <td>/<th> in the table.
+ * Used to "pierce" a layout table and treat its cell content as flat siblings.
+ */
+function getLayoutTableCellContents(
+  table: Element,
+  skipTags: Set<string>,
+): Element[] {
+  const contents: Element[] = [];
+  for (const child of Array.from(table.children)) {
+    const tag = child.tagName.toLowerCase();
+    const rows =
+      tag === "tbody" || tag === "tfoot"
+        ? Array.from(child.children)
+        : tag === "tr"
+          ? [child]
+          : [];
+    for (const row of rows) {
+      if (row.tagName.toLowerCase() !== "tr") continue;
+      for (const cell of Array.from(row.children)) {
+        const cellTag = cell.tagName.toLowerCase();
+        if (cellTag !== "td" && cellTag !== "th") continue;
+        contents.push(...getValidChildren(cell as Element, skipTags));
+      }
+    }
+  }
+  return contents;
+}
+
 function handleMediaLeaf(
   child: Element,
   liftedAttrs: Partial<IRNodeAttributes>,
@@ -947,8 +1045,21 @@ async function handleListRun(
       );
       if (isStructurallyDifferent) {
         const candidateSig = getSemanticSignature(candidate, ctx);
-        const signatureMismatch = !candidateSig || candidateSig !== firstSig;
-        if (signatureMismatch) return false;
+        if (!candidateSig) return false;
+        if (candidateSig !== firstSig) {
+          // Allow signatures that differ by at most one optional role —
+          // e.g. "article" vs "article|paragraph" when some cards lack a
+          // description paragraph. Symmetric difference > 1 means the
+          // elements are genuinely different content types.
+          const firstParts = firstSig.split("|");
+          const candidateParts = candidateSig.split("|");
+          const firstSet = new Set(firstParts);
+          const candidateSet = new Set(candidateParts);
+          const symmetricDiff =
+            firstParts.filter((r) => !candidateSet.has(r)).length +
+            candidateParts.filter((r) => !firstSet.has(r)).length;
+          if (symmetricDiff > 1) return false;
+        }
       }
 
       const hasMeaningfulContent = !!(
@@ -994,6 +1105,15 @@ async function handleLinkRun(
 
   const isBelowMinimumRunLength = run.length < ctx.config.minLinkRun;
   if (isBelowMinimumRunLength) return null;
+
+  // Same-page anchor runs (href="#section") are in-article TOC fragments, not
+  // site navigation. Grouping them into an XRNavigationBar causes them to land
+  // inside the content panel at its full width and render as a horizontal chip
+  // strip. Return null so each <a> falls through to individual XRLink nodes.
+  const allSamePageAnchors = run.every(
+    (el) => (el.getAttribute("href") ?? "").startsWith("#"),
+  );
+  if (allSamePageAnchors) return null;
 
   const navId = `${parentId}-nav-${ctx.counters.section++}`;
   const navChildren = (
@@ -1182,6 +1302,25 @@ async function buildChildrenFromSiblings(
       if (result) {
         childIds.push(result.id);
         index = result.endIndex;
+        continue;
+      }
+    }
+
+    // Layout table: pierce the table and process its cell contents as flat
+    // block siblings. This handles pages (e.g. HN) that use single-column
+    // <table> elements as page-layout wrappers rather than data tables.
+    if (tag === "table" && isLayoutTable(child)) {
+      const cellContents = getLayoutTableCellContents(child, ctx.skipTags);
+      if (cellContents.length > 0) {
+        const innerIds = await buildChildrenFromSiblings(
+          cellContents,
+          parentId,
+          landmarkParentId,
+          ctx,
+          readingDepth,
+        );
+        childIds.push(...innerIds);
+        index += 1;
         continue;
       }
     }

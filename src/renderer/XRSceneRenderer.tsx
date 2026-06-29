@@ -192,11 +192,54 @@ function AtPos({
   );
 }
 
+function hasDescendant(node: XRPrimitive, targetId: string): boolean {
+  for (const child of node.children) {
+    if (child.id === targetId || hasDescendant(child, targetId)) return true;
+  }
+  return false;
+}
+
 /**
  * Dispatches every child primitive as a sibling (panel-absolute coordinates).
  * Used by containers whose children already carry panel-absolute positions so
  * nesting them inside a parent group would double-translate them.
  */
+/**
+ * Returns true for an XRComplementary that the engine has extracted to a
+ * world-space slot (it carries a pageIndex even though it's not inside the
+ * content panel group). These must be dispatched from XRContentPanelRenderer
+ * outside the panel's <group>, NOT via the normal sibling dispatch chain.
+ */
+function isExtractedComplementary(p: XRPrimitive, plan: LayoutPlan): boolean {
+  return (
+    p.type === "XRComplementary" &&
+    plan.entries[p.id]?.pageIndex !== undefined
+  );
+}
+
+/**
+ * Walk the primitive subtree and collect every XRComplementary that has been
+ * extracted to a world-space slot (identified by having a pageIndex).
+ * Does NOT recurse into XRComplementary itself.
+ */
+function collectExtractedComplementaries(
+  root: XRPrimitive,
+  plan: LayoutPlan,
+): XRPrimitive[] {
+  const result: XRPrimitive[] = [];
+  function walk(p: XRPrimitive) {
+    for (const child of p.children) {
+      if (isExtractedComplementary(child, plan)) {
+        result.push(child);
+      } else {
+        walk(child);
+      }
+    }
+  }
+  walk(root);
+  return result;
+}
+
 function DispatchChildren({
   primitives,
   plan,
@@ -212,16 +255,18 @@ function DispatchChildren({
 }) {
   return (
     <>
-      {primitives.map((child) => (
-        <PrimitiveDispatcher
-          key={child.id}
-          primitive={child}
-          plan={plan}
-          pageState={pageState}
-          setPage={setPage}
-          primitiveMap={primitiveMap}
-        />
-      ))}
+      {primitives
+        .filter((child) => !isExtractedComplementary(child, plan))
+        .map((child) => (
+          <PrimitiveDispatcher
+            key={child.id}
+            primitive={child}
+            plan={plan}
+            pageState={pageState}
+            setPage={setPage}
+            primitiveMap={primitiveMap}
+          />
+        ))}
     </>
   );
 }
@@ -341,7 +386,16 @@ function usePipeline(
 // Primitive dispatcher
 // ─────────────────────────────────────────────────────────────
 
-function XRContentPanelRenderer({
+/**
+ * Renders any primitive that was paginated by the engine (entry.paginatedByEngine).
+ *
+ * Handles XRContentPanel (the original paginating type) and any other container
+ * type that paginateContentPanel was called on — XRSection, XRArticle,
+ * XRFormPanel, XRGenericPanel. All of these receive panel-absolute child
+ * positions from the engine, so children must render INSIDE the container's
+ * positioned group rather than as world-space siblings.
+ */
+function PaginatingPanelRenderer({
   primitive,
   plan,
   pageState,
@@ -366,21 +420,49 @@ function XRContentPanelRenderer({
     [ey, entry.size.height],
   );
 
+  // XRComplementary nodes extracted to the world-space slot by the engine.
+  // Only ever present inside XRContentPanel; other container types never have
+  // them. They render OUTSIDE the panel group so their world-space slot
+  // positions apply directly, but inside CurrentPageContext so gating works.
+  const extractedComps = useMemo(
+    () =>
+      primitive.type === "XRContentPanel"
+        ? collectExtractedComplementaries(primitive, plan)
+        : [],
+    [primitive, plan],
+  );
+
+  // XRContentPanel uses a more opaque backing (it IS the main content surface).
+  // All other containers use a lighter backing so nesting levels remain legible.
+  const backingOpacity = primitive.type === "XRContentPanel" ? 0.35 : 0.2;
+
   return (
     <CurrentPageContext.Provider value={currentPage}>
+      {extractedComps.map((comp) => (
+        <PrimitiveDispatcher
+          key={comp.id}
+          primitive={comp}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
+      ))}
       <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
-        <PanelBacking entry={zeroedEntry(entry)} opacity={0.35} />
+        <PanelBacking entry={zeroedEntry(entry)} opacity={backingOpacity} />
         <ClipPlanesContext.Provider value={panelClipPlanes}>
-          {primitive.children.map((child) => (
-            <PrimitiveDispatcher
-              key={child.id}
-              primitive={child}
-              plan={plan}
-              pageState={pageState}
-              setPage={setPage}
-              primitiveMap={primitiveMap}
-            />
-          ))}
+          {primitive.children
+            .filter((child) => !isExtractedComplementary(child, plan))
+            .map((child) => (
+              <PrimitiveDispatcher
+                key={child.id}
+                primitive={child}
+                plan={plan}
+                pageState={pageState}
+                setPage={setPage}
+                primitiveMap={primitiveMap}
+              />
+            ))}
         </ClipPlanesContext.Provider>
         {pagination && pagination.pageCount > 1 && (
           <PaginationControls
@@ -464,6 +546,22 @@ function PrimitiveDispatcher({
 
   // ✅ If we get here, render this node
   // console.log(primitive.type, primitive, "on page", entry.pageIndex ?? "N/A");
+
+  // Any container the engine paginated (XRContentPanel, XRSection, XRArticle,
+  // XRFormPanel, XRGenericPanel at the top level) has panel-absolute child
+  // positions and must render children inside its own positioned group.
+  if (entry.paginatedByEngine) {
+    return (
+      <PaginatingPanelRenderer
+        primitive={primitive}
+        plan={plan}
+        pageState={pageState}
+        setPage={setPage}
+        primitiveMap={primitiveMap}
+        entry={entry}
+      />
+    );
+  }
 
   const renderChild = useCallback(
     (childId: string) => {
@@ -554,15 +652,28 @@ function PrimitiveDispatcher({
         </AtPos>
       );
     }
-    case "XRNavigationBar":
+    case "XRNavigationBar": {
+      const onNavigate = (href: string) => {
+        const sectionId = href.startsWith("#") ? href.slice(1) : href;
+        const sectionEntry = plan.entries[sectionId];
+        if (!sectionEntry || sectionEntry.pageIndex === undefined) return;
+        for (const [, p] of primitiveMap) {
+          if (p.type === "XRContentPanel" && hasDescendant(p, sectionId)) {
+            setPage(p.id, sectionEntry.pageIndex);
+            return;
+          }
+        }
+      };
       return (
         <AtPos entry={entry}>
           <XRNavigationMesh
             primitive={primitive as XRNavigationBar}
             entry={zeroedEntry(entry)}
+            onNavigate={onNavigate}
           />
         </AtPos>
       );
+    }
     case "XRMediaPlayer":
       return (
         <AtPos entry={entry}>
@@ -677,31 +788,14 @@ function PrimitiveDispatcher({
       );
     }
 
-    case "XRContentPanel":
-      return (
-        <XRContentPanelRenderer
-          key={primitive.id}
-          primitive={primitive}
-          plan={plan}
-          pageState={pageState}
-          setPage={setPage}
-          primitiveMap={primitiveMap}
-          entry={entry}
-        />
-      );
-
-    case "XRArticle":
-    case "XRFormPanel":
     case "XRBanner":
     case "XRFooter":
-    case "XRComplementary": {
-      if (
-        primitive.type === "XRBanner" ||
-        primitive.type === "XRFooter" ||
-        primitive.type === "XRComplementary"
-      ) {
-        return null;
-      }
+      // Intentionally hidden from the XR view — header/footer chrome is
+      // not useful in an immersive spatial context.
+      return null;
+
+    case "XRArticle":
+    case "XRFormPanel": {
       // Children have panel-absolute positions — render own backing then
       // dispatch children as siblings to avoid double-translating offsets.
       return (
@@ -714,6 +808,26 @@ function PrimitiveDispatcher({
           setPage={setPage}
           primitiveMap={primitiveMap}
         />
+      );
+    }
+
+    case "XRComplementary": {
+      // Both hoisted (no pageIndex) and extracted (pageIndex set) complementaries
+      // share the same rendering: backing + children wrapped in <AtPos> at the
+      // slot's world position. Children carry LOCAL positions from stackChildrenSimple
+      // relative to the complementary slot's top-left, so they must render INSIDE
+      // this group — not as world-space siblings — for the slot offset to compose.
+      return (
+        <AtPos entry={entry}>
+          <PanelBacking entry={zeroedEntry(entry)} opacity={0.2} />
+          <DispatchChildren
+            primitives={primitive.children}
+            plan={plan}
+            pageState={pageState}
+            setPage={setPage}
+            primitiveMap={primitiveMap}
+          />
+        </AtPos>
       );
     }
 

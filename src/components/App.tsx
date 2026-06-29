@@ -1,12 +1,18 @@
 import React, { useCallback, useState } from "react";
 import { XRSceneRenderer, type XRSceneRendererProps } from "../renderer";
-import { HomeScreen, type HomeSettings, DEFAULT_HOME_SETTINGS } from "./HomeScreen";
+import {
+  HomeScreen,
+  type HomeSettings,
+  DEFAULT_HOME_SETTINGS,
+} from "./HomeScreen";
 
 export default function App() {
   const [url, setUrl] = useState("");
   const [html, setHtml] = useState("");
   const [loading, setLoading] = useState(false);
-  const [activeSettings, setActiveSettings] = useState<HomeSettings>(DEFAULT_HOME_SETTINGS);
+  const [activeSettings, setActiveSettings] = useState<HomeSettings>(
+    DEFAULT_HOME_SETTINGS,
+  );
 
   async function loadUrl(targetUrl: string, settings: HomeSettings) {
     setLoading(true);
@@ -37,7 +43,12 @@ export default function App() {
 
   return (
     <div
-      style={{ width: "100vw", height: "100vh", position: "relative", overflow: "hidden" }}
+      style={{
+        width: "100vw",
+        height: "100vh",
+        position: "relative",
+        overflow: "hidden",
+      }}
     >
       {/* Back to home */}
       <button

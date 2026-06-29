@@ -688,6 +688,7 @@ export interface TransformationRecord {
 export type MappingRule =
   | "landmark:main→XRContentPanel"
   | "landmark:navigation→XRNavigationBar"
+  | "landmark:navigation→XRList"
   | "landmark:banner→XRBanner"
   | "landmark:contentinfo→XRFooter"
   | "landmark:complementary→XRComplementary"

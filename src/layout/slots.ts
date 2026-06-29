@@ -50,6 +50,13 @@ function documentSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       curveRadius: d * 0.8,
       worldLocked: true,
     },
+    complementary: {
+      position: angularPosition(d, ha + 5, eyeY),
+      rotation: angularRotation(ha - 8),
+      size: { width: 1.4, height: cfg.maxPanelViewportHeight },
+      curveRadius: d,
+      worldLocked: true,
+    },
     footer: {
       position: { x: 0, y: eyeY - cfg.maxPanelViewportHeight * 0.6, z: -d },
       rotation: zeroRotation(),
@@ -116,7 +123,7 @@ function dashboardSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
     complementary: {
       position: angularPosition(d, ha + 5, eyeY),
       rotation: angularRotation(ha + 5),
-      size: { width: 0.5, height: metrics.navigationBar.height },
+      size: { width: 0.5, height: cfg.maxPanelViewportHeight },
       curveRadius: d,
       worldLocked: true,
     },
@@ -184,6 +191,13 @@ function formSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       curveRadius: 0,
       worldLocked: true,
     },
+    complementary: {
+      position: angularPosition(d, ha + 5, eyeY),
+      rotation: angularRotation(ha + 5),
+      size: { width: 0.42, height: cfg.maxPanelViewportHeight },
+      curveRadius: d,
+      worldLocked: true,
+    },
     alert: {
       position: { x: 0, y: eyeY - 0.62, z: -(d - 0.1) },
       rotation: zeroRotation(),
@@ -244,7 +258,7 @@ function landingSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
     complementary: {
       position: angularPosition(d, ha, eyeY),
       rotation: angularRotation(ha),
-      size: { width: 0.42, height: 0.75 },
+      size: { width: 0.42, height: cfg.maxPanelViewportHeight },
       curveRadius: d,
       worldLocked: true,
     },
@@ -311,7 +325,7 @@ function genericSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
     complementary: {
       position: angularPosition(d, ha, eyeY),
       rotation: angularRotation(ha),
-      size: { width: 0.42, height: 0.8 },
+      size: { width: 0.42, height: cfg.maxPanelViewportHeight },
       curveRadius: d,
       worldLocked: true,
     },

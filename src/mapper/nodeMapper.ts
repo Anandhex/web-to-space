@@ -7,7 +7,6 @@ import { baseFrom } from "./mapper";
 import type {
   MappingContext,
   XRContentPanel,
-  XRNavigationBar,
   XRBanner,
   XRFooter,
   XRComplementary,
@@ -74,24 +73,53 @@ function mapMain(node: IRNode, ctx: MappingContext): XRContentPanel {
   return primitive;
 }
 
+function collectLinksInSubtree(nodeId: string, ir: MappingContext["ir"]): IRNode[] {
+  const node = ir.nodes[nodeId];
+  if (!node) return [];
+  if (node.role === "link") return [node];
+  return node.children.flatMap((id) => collectLinksInSubtree(id, ir));
+}
+
 function mapNavigation(
   node: IRNode,
   ctx: MappingContext,
-): XRNavigationBar | null {
-  const linkChildren = node.children
-    .map((id) => ctx.ir.nodes[id])
-    .filter((n): n is IRNode => !!n && n.role === "link")
-    .map((n) => mapLink(n, ctx));
+): XRList | null {
+  const linkNodes = node.children.flatMap((id) =>
+    collectLinksInSubtree(id, ctx.ir),
+  );
 
-  if (linkChildren.length === 0) return null;
+  if (linkNodes.length === 0) return null;
 
-  const primitive: XRNavigationBar = {
-    ...baseFrom(node, "XRNavigationBar"),
-    type: "XRNavigationBar",
-    items: [...linkChildren],
-    children: linkChildren,
+  const allSamePageAnchors = linkNodes.every((n) =>
+    (n.attributes.href ?? "").startsWith("#"),
+  );
+  if (allSamePageAnchors) return null;
+
+  const linkChildren = linkNodes.map((n) => mapLink(n, ctx));
+
+  const cardChildren: XRListItem[] = linkChildren.map((link) => {
+    const card: XRListItem = {
+      id: `${link.id}__navcard`,
+      type: "XRListItem",
+      label: link.label,
+      content: link.content,
+      sourceIds: link.sourceIds,
+      confidence: link.confidence,
+      depth: link.depth,
+      children: [link],
+      relations: { controls: [], labelledBy: [], describedBy: [], details: [], errorMessage: [] },
+    };
+    registerPrimitive(ctx, card, "listitem→XRListItem");
+    return card;
+  });
+
+  const primitive: XRList = {
+    ...baseFrom(node, "XRList"),
+    type: "XRList",
+    listType: "unordered",
+    children: cardChildren,
   };
-  registerPrimitive(ctx, primitive, "landmark:navigation→XRNavigationBar");
+  registerPrimitive(ctx, primitive, "landmark:navigation→XRList");
   return primitive;
 }
 

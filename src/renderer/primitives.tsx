@@ -693,7 +693,7 @@ export function XRParagraphMesh({
       <group position={pos} rotation={rot}>
         <InlineProseRows
           rows={rows}
-          startY={0}
+          startY={-m.verticalPadding / 2}
           panelWidth={w}
           fontSize={m.fontSize}
           lineHeightRatio={m.lineHeightRatio}
@@ -888,6 +888,7 @@ export function XRSectionMesh({
 export interface XRNavigationMeshProps {
   primitive: XRNavigationBar;
   entry: LayoutEntry;
+  onNavigate?: (href: string) => void;
 }
 
 /**
@@ -900,7 +901,7 @@ export interface XRNavigationMeshProps {
  * TOC items use item.depth for left-indent so h1/h2 are flush and h3+
  * are progressively indented — matching the dummy-layout TOC behaviour.
  */
-export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
+export function XRNavigationMesh({ primitive, entry, onNavigate }: XRNavigationMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const items: XRLink[] = primitive.items ?? [];
@@ -958,12 +959,7 @@ export function XRNavigationMesh({ primitive, entry }: XRNavigationMeshProps) {
               key={item.id}
               position={[indent, itemY, PANEL_DEPTH * 0.5]}
               onClick={() => {
-                if (item.href && typeof window !== "undefined") {
-                  try {
-                    const target = document.querySelector(item.href);
-                    if (target) target.scrollIntoView({ behavior: "smooth" });
-                  } catch (_) {}
-                }
+                if (item.href) onNavigate?.(item.href);
               }}
             >
               {/* Hit-area plane for easier pointing */}

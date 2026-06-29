@@ -103,24 +103,25 @@ function synthesiseTOC(
     .filter(
       (n): n is IRNode =>
         !!n &&
-        n.role === "region" && // <-- KEY CHANGE: section nodes
+        n.role === "region" &&
         typeof n.label === "string" &&
         n.label.trim().length > 0,
     );
 
   if (sectionNodes.length === 0) return null;
 
+  const baseDepth = Math.min(...sectionNodes.map((n) => n.readingDepth));
+
   const items: XRLink[] = sectionNodes.map((n) => {
     const link: XRLink = {
       id: `toc__${n.id}`,
       type: "XRLink",
-      label: n.label, // <-- now comes from parser (correct source of truth)
-      content: n.content, // <-- now comes from parser (correct source of truth)
+      label: n.label,
+      content: n.content,
       sourceIds: [n.id],
       confidence: n.confidence,
 
-      // OPTIONAL: use section nesting instead of heading level
-      depth: 0,
+      depth: n.readingDepth - baseDepth,
 
       children: [],
       relations: {
@@ -191,8 +192,11 @@ function synthesiseTOC(
 const LANDMARK_TYPES_TO_HOIST = new Set<XRPrimitiveType>([
   "XRBanner",
   "XRFooter",
+  // XRComplementary is hoisted so the engine slots it into the complementary
+  // slot (right-side panel) as a persistent landmark. Leaving it inside
+  // XRContentPanel caused it to be page-gated (pageIndex matched only one page
+  // of the main content) so it vanished when the user navigated past page 0.
   "XRComplementary",
-  // XRNavigationBar without "toc__" prefix (toc is already hoisted via synthesiseTOC)
 ]);
 
 /**
@@ -213,10 +217,7 @@ function hoistLandmarkChildren(contentPanel: XRPrimitive): XRPrimitive[] {
   const kept: XRPrimitive[] = [];
 
   for (const child of contentPanel.children) {
-    const shouldHoist =
-      LANDMARK_TYPES_TO_HOIST.has(child.type) ||
-      // Non-TOC navigation bars that leaked into the main slot
-      (child.type === "XRNavigationBar" && !child.id.startsWith("toc__"));
+    const shouldHoist = LANDMARK_TYPES_TO_HOIST.has(child.type);
 
     if (shouldHoist) {
       hoisted.push(child);
