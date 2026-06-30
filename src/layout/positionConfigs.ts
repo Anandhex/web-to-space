@@ -706,7 +706,7 @@ export const PRIMITIVE_CONFIG: Partial<
   XRListItem: {
     heightStrategy: "custom",
     customHandler: _estimateListItemHeight,
-    paginate: "recursive",
+    paginate: "atomic",
     ownsXPadding: false,
     ownsTopPadding: false,
     slot: "main",

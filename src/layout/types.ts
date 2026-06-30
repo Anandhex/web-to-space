@@ -23,7 +23,11 @@ export type LayoutTemplate =
   | "dashboard" // Data-heavy, card grids, metrics
   | "form" // Single-purpose input page
   | "landing" // Hero + feature sections, marketing
-  | "generic"; // Safe fallback
+  | "generic" // Safe fallback
+  | "carousel" // Arc of panels: TOC, prev-page, main, next-page, aside
+  | "cards" // Paginated grid of section cards with expand-on-click
+  | "door" // Progressive drill-down columns (TOC + drillPath)
+  | "theatre"; // Wide IMAX-style curved panel, peripheral TOC/aside
 
 // ─────────────────────────────────────────────────────────────
 // Output types (LayoutEntry, PaginationMeta, LayoutPlan)

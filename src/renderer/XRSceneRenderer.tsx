@@ -125,6 +125,8 @@ import {
   QUEST_3_PROFILE,
 } from "../layout/profiles";
 import { flattenInlineWrappers, isInlinePrimitive } from "../layout/utils";
+import { CAROUSEL_GHOST_GAP } from "../layout/slots";
+import type { ViewMode } from "../components/viewTypes";
 
 // ─────────────────────────────────────────────────────────────
 // Contexts
@@ -150,6 +152,7 @@ export interface XRSceneRendererProps {
   deviceType?: XRDeviceType;
   fontType?: string;
   parserConfig?: Partial<ParserConfig>;
+  viewMode?: ViewMode;
   onPlanReady?: (plan: LayoutPlan) => void;
 }
 
@@ -321,6 +324,7 @@ function usePipeline(
   deviceProfile: DeviceProfile,
   layoutConfig: Partial<LayoutConfig>,
   parserConfig: Partial<ParserConfig>,
+  templateOverride: import("../layout/types").LayoutTemplate | undefined,
 ) {
   const [result, setResult] = useState({
     scene: null as SemanticScene | null,
@@ -358,8 +362,8 @@ function usePipeline(
         const plan = computeLayoutPlan(
           scene,
           deviceProfile,
-          undefined,
-          stableConfig, // <-- Use the stableConfig here
+          templateOverride,
+          stableConfig,
         );
 
         if (!cancelled) setResult({ scene, plan, error: null });
@@ -377,7 +381,7 @@ function usePipeline(
     return () => {
       cancelled = true;
     };
-  }, [html, sceneIn, url, deviceProfile, stableConfig, stableParserConfig]);
+  }, [html, sceneIn, url, deviceProfile, stableConfig, stableParserConfig, templateOverride]);
 
   return result;
 }
@@ -477,6 +481,88 @@ function PaginatingPanelRenderer({
     </CurrentPageContext.Provider>
   );
 }
+
+// ─────────────────────────────────────────────────────────────
+// Carousel ghost panel
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Renders one "ghost" copy of a paginated panel at an overridden world position.
+ * Used by carousel mode to show the prev/next page panels beside the current one.
+ * Non-interactive: no pagination controls, raycast disabled.
+ */
+function CarouselGhostPanel({
+  primitive,
+  plan,
+  entry,
+  targetPage,
+  primitiveMap,
+  opacity,
+}: {
+  primitive: XRPrimitive;
+  plan: LayoutPlan;
+  entry: LayoutEntry;
+  targetPage: number;
+  primitiveMap: Map<string, XRPrimitive>;
+  opacity: number;
+}) {
+  const ex = entry.position.x;
+  const ey = entry.position.y;
+  const ez = entry.position.z;
+  const rot: [number, number, number] = [entry.rotation.x, entry.rotation.y, entry.rotation.z];
+
+  const panelClipPlanes = React.useMemo(
+    () => buildPanelClipPlanes(ey, entry.size.height),
+    [ey, entry.size.height],
+  );
+
+  // Ghost pageState: only this panel's page is overridden
+  const ghostPageState = React.useMemo(
+    () => ({ [primitive.id]: targetPage }),
+    [primitive.id, targetPage],
+  );
+
+  const ghostExtractedComps = React.useMemo(
+    () =>
+      primitive.type === "XRContentPanel"
+        ? collectExtractedComplementaries(primitive, plan)
+        : [],
+    [primitive, plan],
+  );
+
+  return (
+    <CurrentPageContext.Provider value={targetPage}>
+      {ghostExtractedComps.map((comp) => {
+        const compEntry = plan.entries[comp.id];
+        if (!compEntry) return null;
+        return (
+          <group key={comp.id} position={[compEntry.position.x, compEntry.position.y, compEntry.position.z]} rotation={[0, 0, 0]}>
+            {/* extracted comps dimmed alongside parent */}
+          </group>
+        );
+      })}
+      <group position={[ex, ey, ez]} rotation={rot} raycast={() => null}>
+        <PanelBacking entry={zeroedEntry(entry)} opacity={opacity * 0.35} />
+        <ClipPlanesContext.Provider value={panelClipPlanes}>
+          {primitive.children
+            .filter((child) => !isExtractedComplementary(child, plan))
+            .map((child) => (
+              <PrimitiveDispatcher
+                key={child.id}
+                primitive={child}
+                plan={plan}
+                pageState={ghostPageState}
+                setPage={_noop}
+                primitiveMap={primitiveMap}
+              />
+            ))}
+        </ClipPlanesContext.Provider>
+      </group>
+    </CurrentPageContext.Provider>
+  );
+}
+
+const _noop = () => {};
 
 interface DispatcherProps {
   primitive: XRPrimitive;
@@ -1099,12 +1185,18 @@ function PaginationControls({
   const BTN_W = 0.1;
   const BTN_H = 0.038;
   const barY = -(h + BTN_H / 2 + 0.016);
+  // Spread: half the distance from center to prev/next button center.
+  // Adapts to panel width but never exceeds 0.22 m so wide theatre panels
+  // don't push buttons to the extreme edges.
+  const SPREAD = Math.min(w / 2 - BTN_W * 0.6, 0.22);
   const fontType = React.useContext(FontContext);
 
+  // Bar group is centered horizontally under the panel (w/2 from panel origin).
+  // Prev/Next positions are ±SPREAD from that center.
   return (
-    <group position={[0, barY, 0.005]}>
+    <group position={[w / 2, barY, 0.005]}>
       <group
-        position={[BTN_W / 2, 0, 0]}
+        position={[-SPREAD, 0, 0]}
         onClick={() => onPageChange(Math.max(0, currentPage - 1))}
       >
         <RoundedBox
@@ -1133,7 +1225,7 @@ function PaginationControls({
         font={fontType}
         anchorX="center"
         anchorY="middle"
-        position={[w / 2, 0, 0]}
+        position={[0, 0, 0]}
         fontSize={0.016}
         color="#fff"
       >
@@ -1141,7 +1233,7 @@ function PaginationControls({
       </Text>
 
       <group
-        position={[w - BTN_W / 2, 0, 0]}
+        position={[SPREAD, 0, 0]}
         onClick={() =>
           onPageChange(Math.min(pagination.pageCount - 1, currentPage + 1))
         }
@@ -1207,11 +1299,13 @@ function XRSceneGraph({
   plan,
   pageState,
   setPage,
+  viewMode,
 }: {
   scene: SemanticScene;
   plan: LayoutPlan;
   pageState: PageState;
   setPage: (id: string, page: number) => void;
+  viewMode?: ViewMode;
 }) {
   const primitiveMap = React.useMemo(() => {
     // Start with the tree walk so ordering is preserved for normal nodes,
@@ -1327,18 +1421,93 @@ function XRSceneGraph({
     }
   }, [plan, scene]);
 
+  // ── Carousel: find the main XRContentPanel for 3× rendering ─────
+  const mainContentPanel = React.useMemo(() => {
+    if (viewMode !== "carousel") return null;
+    return scene.root.children.find(
+      (p) => p.type === "XRContentPanel" && plan.entries[p.id]?.paginatedByEngine,
+    ) ?? null;
+  }, [viewMode, scene.root.children, plan.entries]);
+
   return (
     <>
-      {scene.root.children.map((primitive) => (
-        <PrimitiveDispatcher
-          key={primitive.id}
-          primitive={primitive}
-          plan={plan}
-          pageState={pageState}
-          setPage={setPage}
-          primitiveMap={primitiveMap}
-        />
-      ))}
+      {scene.root.children.map((primitive) => {
+        // In carousel mode, the main content panel is rendered via CarouselPanelGroup
+        if (viewMode === "carousel" && primitive === mainContentPanel) {
+          const entry = plan.entries[primitive.id];
+          if (!entry) return null;
+          // Ghost panels share the same size as main — no ghostSize override needed.
+          // Positions are derived from main's position and width plus the gap constant.
+          const zeroRot = { x: 0, y: 0, z: 0 };
+
+          const prevEntry: LayoutEntry = {
+            ...entry,
+            position: {
+              x: entry.position.x - CAROUSEL_GHOST_GAP - entry.size.width,
+              y: entry.position.y,
+              z: entry.position.z,
+            },
+            rotation: zeroRot,
+          };
+          const nextEntry: LayoutEntry = {
+            ...entry,
+            position: {
+              x: entry.position.x + entry.size.width + CAROUSEL_GHOST_GAP,
+              y: entry.position.y,
+              z: entry.position.z,
+            },
+            rotation: zeroRot,
+          };
+
+          const currentPage = pageState[primitive.id] ?? 0;
+          const pageCount = entry.pagination?.pageCount ?? 1;
+          const prevPage = Math.max(0, currentPage - 1);
+          const nextPage = Math.min(pageCount - 1, currentPage + 1);
+
+          return (
+            <React.Fragment key={primitive.id}>
+              {currentPage > 0 && (
+                <CarouselGhostPanel
+                  primitive={primitive}
+                  plan={plan}
+                  entry={prevEntry}
+                  targetPage={prevPage}
+                  primitiveMap={primitiveMap}
+                  opacity={0.45}
+                />
+              )}
+              <PrimitiveDispatcher
+                primitive={primitive}
+                plan={plan}
+                pageState={pageState}
+                setPage={setPage}
+                primitiveMap={primitiveMap}
+              />
+              {currentPage < pageCount - 1 && (
+                <CarouselGhostPanel
+                  primitive={primitive}
+                  plan={plan}
+                  entry={nextEntry}
+                  targetPage={nextPage}
+                  primitiveMap={primitiveMap}
+                  opacity={0.45}
+                />
+              )}
+            </React.Fragment>
+          );
+        }
+
+        return (
+          <PrimitiveDispatcher
+            key={primitive.id}
+            primitive={primitive}
+            plan={plan}
+            pageState={pageState}
+            setPage={setPage}
+            primitiveMap={primitiveMap}
+          />
+        );
+      })}
     </>
   );
 }
@@ -1400,6 +1569,7 @@ export function XRSceneRenderer({
   deviceType = "QUEST_3",
   fontType = undefined,
   parserConfig = {},
+  viewMode,
   onPlanReady,
 }: XRSceneRendererProps) {
   // 1. Resolve Device Profile locally
@@ -1415,6 +1585,17 @@ export function XRSceneRenderer({
     }
   }, [deviceType]);
 
+  // Map view mode → explicit layout template override
+  const templateOverride = useMemo((): "document"|"dashboard"|"form"|"landing"|"generic"|"carousel"|"cards"|"door"|"theatre"|undefined => {
+    switch (viewMode) {
+      case "carousel": return "carousel";
+      case "cards":    return "cards";
+      case "door":     return "door";
+      case "theatre":  return "theatre";
+      default:         return undefined; // "standard" → auto-select
+    }
+  }, [viewMode]);
+
   const {
     scene,
     plan,
@@ -1422,7 +1603,7 @@ export function XRSceneRenderer({
   } = usePipeline(html, sceneIn, url, deviceProfile, {
     ...layoutConfig,
     // sectionStartsOnNewPage: false,
-  }, parserConfig);
+  }, parserConfig, templateOverride);
 
   const {
     sessionState,
@@ -1438,6 +1619,15 @@ export function XRSceneRenderer({
   const setPage = useCallback((id: string, page: number) => {
     setPageStateMap((prev) => ({ ...prev, [id]: page }));
   }, []);
+
+  // ── View-mode interaction state ─────────────────────────────
+  const [expandedSectionId, setExpandedSectionId] = useState<string | null>(null);
+
+  // Reset interaction state when viewMode or content changes
+  useEffect(() => {
+    setExpandedSectionId(null);
+    setPageStateMap({});
+  }, [viewMode, html, scene]);
 
   useEffect(() => {
     if (plan && onPlanReady) onPlanReady(plan);
@@ -1523,6 +1713,7 @@ export function XRSceneRenderer({
                     plan={plan}
                     pageState={pageState}
                     setPage={setPage}
+                    viewMode={viewMode}
                   />
                 )}
 
@@ -1558,10 +1749,319 @@ export function XRSceneRenderer({
             </RenderMetricsContext.Provider>
           </Suspense>
         </Canvas>
+
+        {/* ── Cards mode overlay ──────────────────────────────── */}
+        {viewMode === "cards" && scene && plan && (
+          <CardsOverlay
+            scene={scene}
+            plan={plan}
+            expandedSectionId={expandedSectionId}
+            setExpandedSectionId={setExpandedSectionId}
+            setPage={setPage}
+          />
+        )}
+
+        {/* ── Door mode TOC navigation overlay ───────────────── */}
+        {viewMode === "door" && scene && plan && (
+          <DoorTOCNav
+            scene={scene}
+            plan={plan}
+            expandedSectionId={expandedSectionId}
+            setExpandedSectionId={setExpandedSectionId}
+            setPage={setPage}
+          />
+        )}
       </div>
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────────────────
+// Cards overlay
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Shows section headings as clickable cards in a floating 2D overlay.
+ * Clicking a card jumps the main content panel to that section's first page.
+ * Works in tandem with the "cards" layout template (wider main slot).
+ */
+function CardsOverlay({
+  scene,
+  plan,
+  expandedSectionId,
+  setExpandedSectionId,
+  setPage,
+}: {
+  scene: SemanticScene;
+  plan: LayoutPlan;
+  expandedSectionId: string | null;
+  setExpandedSectionId: (id: string | null) => void;
+  setPage: (id: string, page: number) => void;
+}) {
+  // Build cards from TOC navigation items (XRNavigationBar in the toc slot).
+  // We match each TOC link's label against content-section heading labels to
+  // find the page that section starts on, then navigate there when clicked.
+  const sections = React.useMemo(() => {
+    const result: { id: string; label: string; pageIndex: number }[] = [];
+
+    // Build label → pageIndex from the main content panel's sections.
+    const mainPanel = scene.root.children.find(
+      (p) => p.type === "XRContentPanel",
+    );
+    const sectionPageByLabel = new Map<string, number>();
+    if (mainPanel) {
+      for (const child of mainPanel.children) {
+        const heading = child.children.find((c) => c.type === "XRHeading");
+        const label = (heading?.label ?? child.label ?? "").toLowerCase().trim();
+        const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
+        if (label) sectionPageByLabel.set(label, pageIndex);
+      }
+    }
+
+    // Pull items from the first XRNavigationBar (the TOC panel).
+    const tocNav = scene.root.children.find(
+      (p) => p.type === "XRNavigationBar",
+    );
+    if (!tocNav) {
+      // Fallback: collect sections from the main panel directly.
+      if (mainPanel) {
+        for (const child of mainPanel.children) {
+          if (child.type !== "XRSection" && child.type !== "XRArticle") continue;
+          const heading = child.children.find((c) => c.type === "XRHeading");
+          const label = heading?.label ?? child.label ?? child.id;
+          const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
+          result.push({ id: child.id, label, pageIndex });
+        }
+      }
+      return result;
+    }
+
+    for (const link of tocNav.children) {
+      const label = link.label ?? link.content ?? "";
+      if (!label) continue;
+      const pageIndex =
+        sectionPageByLabel.get(label.toLowerCase().trim()) ?? 0;
+      result.push({ id: link.id, label, pageIndex });
+    }
+    return result;
+  }, [scene.root.children, scene.primitives, plan.entries]);
+
+  if (sections.length === 0) return null;
+
+  // Find the main content panel for page navigation.
+  const mainPanelId = scene.root.children.find(
+    (p) => p.type === "XRContentPanel",
+  )?.id;
+
+  function jumpToSection(sectionId: string, pageIndex: number) {
+    setExpandedSectionId(sectionId);
+    if (mainPanelId) setPage(mainPanelId, pageIndex);
+  }
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 50,
+        left: "50%",
+        transform: "translateX(-50%)",
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 8,
+        padding: "10px 14px",
+        background: "rgba(6, 10, 20, 0.88)",
+        border: "1px solid rgba(88, 166, 255, 0.18)",
+        borderRadius: 12,
+        backdropFilter: "blur(16px)",
+        WebkitBackdropFilter: "blur(16px)",
+        maxWidth: "80vw",
+        maxHeight: "28vh",
+        overflowY: "auto",
+        zIndex: 200,
+        fontFamily: "system-ui, -apple-system, sans-serif",
+      }}
+    >
+      {expandedSectionId && (
+        <button
+          onClick={() => setExpandedSectionId(null)}
+          style={{
+            width: "100%",
+            padding: "5px 10px",
+            background: "rgba(88, 166, 255, 0.1)",
+            border: "1px solid rgba(88, 166, 255, 0.3)",
+            borderRadius: 6,
+            color: "#58a6ff",
+            fontSize: 11,
+            cursor: "pointer",
+            marginBottom: 4,
+            textAlign: "left",
+          }}
+        >
+          ← All sections
+        </button>
+      )}
+      {sections.map(({ id, label, pageIndex }) => {
+        const isActive = expandedSectionId === id;
+        return (
+          <button
+            key={id}
+            onClick={() => jumpToSection(id, pageIndex)}
+            style={{
+              padding: "5px 12px",
+              background: isActive
+                ? "rgba(88, 166, 255, 0.2)"
+                : "rgba(255,255,255,0.04)",
+              border: `1px solid ${isActive ? "rgba(88, 166, 255, 0.45)" : "rgba(255,255,255,0.1)"}`,
+              borderRadius: 20,
+              color: isActive ? "#58a6ff" : "#7a9abf",
+              fontSize: 11,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+              maxWidth: 180,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              transition: "all 0.15s",
+            }}
+            title={label}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Door TOC navigation overlay
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Always-visible sidebar navigation for door mode.
+ * Shows TOC items; clicking one jumps the main content panel to that section.
+ * The active item is highlighted so the user knows where they are.
+ */
+function DoorTOCNav({
+  scene,
+  plan,
+  expandedSectionId,
+  setExpandedSectionId,
+  setPage,
+}: {
+  scene: SemanticScene;
+  plan: LayoutPlan;
+  expandedSectionId: string | null;
+  setExpandedSectionId: (id: string | null) => void;
+  setPage: (id: string, page: number) => void;
+}) {
+  const mainPanelId = React.useMemo(
+    () => scene.root.children.find((p) => p.type === "XRContentPanel")?.id,
+    [scene.root.children],
+  );
+
+  // Build the same TOC-item list as CardsOverlay.
+  const items = React.useMemo(() => {
+    const result: { id: string; label: string; pageIndex: number }[] = [];
+
+    const mainPanel = scene.root.children.find(
+      (p) => p.type === "XRContentPanel",
+    );
+    const sectionPageByLabel = new Map<string, number>();
+    if (mainPanel) {
+      for (const child of mainPanel.children) {
+        const heading = child.children.find((c) => c.type === "XRHeading");
+        const label = (heading?.label ?? child.label ?? "").toLowerCase().trim();
+        const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
+        if (label) sectionPageByLabel.set(label, pageIndex);
+      }
+    }
+
+    const tocNav = scene.root.children.find(
+      (p) => p.type === "XRNavigationBar",
+    );
+    if (!tocNav) {
+      if (mainPanel) {
+        for (const child of mainPanel.children) {
+          if (child.type !== "XRSection" && child.type !== "XRArticle") continue;
+          const heading = child.children.find((c) => c.type === "XRHeading");
+          const label = heading?.label ?? child.label ?? child.id;
+          const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
+          result.push({ id: child.id, label, pageIndex });
+        }
+      }
+      return result;
+    }
+
+    for (const link of tocNav.children) {
+      const label = link.label ?? link.content ?? "";
+      if (!label) continue;
+      const pageIndex =
+        sectionPageByLabel.get(label.toLowerCase().trim()) ?? 0;
+      result.push({ id: link.id, label, pageIndex });
+    }
+    return result;
+  }, [scene.root.children, plan.entries]);
+
+  if (items.length === 0) return null;
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 50,
+        left: 14,
+        bottom: 60,
+        width: 200,
+        display: "flex",
+        flexDirection: "column",
+        gap: 3,
+        padding: "10px 8px",
+        background: "rgba(6, 10, 20, 0.92)",
+        border: "1px solid rgba(88, 166, 255, 0.18)",
+        borderRadius: 12,
+        backdropFilter: "blur(16px)",
+        WebkitBackdropFilter: "blur(16px)",
+        zIndex: 200,
+        fontFamily: "system-ui, -apple-system, sans-serif",
+        overflowY: "auto",
+      }}
+    >
+      <div style={{ fontSize: 10, color: "#3a5870", marginBottom: 4, paddingLeft: 4, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+        Sections
+      </div>
+      {items.map(({ id, label, pageIndex }) => {
+        const isActive = expandedSectionId === id;
+        return (
+          <button
+            key={id}
+            onClick={() => {
+              setExpandedSectionId(id);
+              if (mainPanelId) setPage(mainPanelId, pageIndex);
+            }}
+            style={{
+              padding: "5px 8px",
+              textAlign: "left",
+              background: isActive ? "rgba(88, 166, 255, 0.15)" : "transparent",
+              border: `1px solid ${isActive ? "rgba(88, 166, 255, 0.4)" : "transparent"}`,
+              borderRadius: 6,
+              color: isActive ? "#58a6ff" : "#7a9abf",
+              fontSize: 11,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              transition: "all 0.12s",
+            }}
+            title={label}
+          >
+            {isActive ? "▶ " : "  "}{label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 
 // ─────────────────────────────────────────────────────────────
 // Styles

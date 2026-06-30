@@ -765,11 +765,22 @@ function paginateContentPanel(
     // exceed the viewport.
     let rowsOnPage = 0;
 
-    for (let rowStart = 0; rowStart < node.children.length; rowStart += columns) {
+    for (
+      let rowStart = 0;
+      rowStart < node.children.length;
+      rowStart += columns
+    ) {
       const rowItems = node.children.slice(rowStart, rowStart + columns);
 
       const rowHeights = rowItems.map((item) => {
-        const h = estimateHeight(item, cardWidth, metrics, config, new Set(), scene);
+        const h = estimateHeight(
+          item,
+          cardWidth,
+          metrics,
+          config,
+          new Set(),
+          scene,
+        );
         return h > 0 && isFinite(h) ? h : metrics.fallbackElementHeight;
       });
       const rowH = Math.max(...rowHeights);
@@ -1171,10 +1182,14 @@ function paginateContentPanel(
           if (!positionMap.has(child.id)) {
             const rawBlockY = node.type === "XRListItem" ? blockCursorY : absY;
             const parentPage = pageIndexMap[node.id] ?? 0;
-            const { page: childPage, y: childRelY } = overflowCorrect(
-              rawBlockY,
-              parentPage,
-            );
+            // XRListItem block children must stay on the same page as the item:
+            // overflowCorrect mutates the outer pageIdx, which would cause
+            // subsequent columns in the same placeListGrid row to inherit the
+            // wrong page index. Clip planes handle any visual overflow.
+            const { page: childPage, y: childRelY } =
+              node.type === "XRListItem"
+                ? { page: parentPage, y: rawBlockY }
+                : overflowCorrect(rawBlockY, parentPage);
             const panelAbs: Vec3 = { x: absX, y: childRelY, z: 0 };
             positionMap.set(child.id, panelAbs);
             const childH = estimateHeight(
@@ -1240,12 +1255,16 @@ function paginateContentPanel(
       // extend past the viewport boundary. overflowCorrect derives the correct
       // page and page-relative Y, extending pageYOffsets as needed so totalPages
       // reflects the true page count.
+      //
+      // Exception: XRListItem children must stay on the same page as the item.
+      // overflowCorrect mutates the outer pageIdx closure, which would corrupt
+      // the page assignment of subsequent columns in the same placeListGrid row.
       const rawY = absY + local.position.y;
       const parentPage = pageIndexMap[node.id] ?? 0;
-      const { page: childPage, y: childRelY } = overflowCorrect(
-        rawY,
-        parentPage,
-      );
+      const { page: childPage, y: childRelY } =
+        node.type === "XRListItem"
+          ? { page: parentPage, y: rawY }
+          : overflowCorrect(rawY, parentPage);
 
       const panelAbs: Vec3 = {
         x: absX + local.position.x,

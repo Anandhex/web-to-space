@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "Bash(/usr/local/bin/npm run *)",
+      "Read(//opt/homebrew/bin/**)",
+      "Read(//Users/anandpatil/.nvm/versions/node/**)",
+      "Bash(~/.nvm/versions/node/v22.22.2/bin/npm run *)",
+      "Bash(/usr/local/bin/node_modules/.bin/tsc --noEmit)",
+      "Bash(/Users/anandpatil/Documents/Projects/web/javascript/from-space-to-web/node_modules/.bin/tsc --noEmit)",
+      "Read(//usr/local/bin/**)",
+      "Read(//Users/anandpatil/.nvm/versions/**)",
+      "Bash(/usr/local/bin/node /Users/anandpatil/Documents/Projects/web/javascript/from-space-to-web/node_modules/.bin/tsc --noEmit)",
+      "Bash(PATH=/Users/anandpatil/.nvm/versions/node/v22.22.2/bin:__TRACKED_VAR__ npm run build)",
+      "Bash(PATH=/opt/homebrew/bin:/usr/local/bin:__TRACKED_VAR__ npx tsx probe.ts)",
+      "Bash(PATH=/opt/homebrew/bin:/usr/local/bin:__TRACKED_VAR__ npm run build)"
+    ]
+  }
+}
