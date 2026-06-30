@@ -620,28 +620,6 @@ function PrimitiveDispatcher({
       );
     case "XRLink": {
       const linkPrimitive = primitive as import("../mapper/types").XRLink;
-      const isRichLink = linkPrimitive.children.some(
-        (child) => child.type === "XRText",
-      );
-      if (isRichLink) {
-        // Rich link: render with no chrome of its own at this position —
-        // children (e.g. a synthesised XRText leaf) already carry their
-        // own panel-absolute positions and must be dispatched as siblings,
-        // exactly like XRTableCell/XRSection/XRGenericPanel. Wrapping them
-        // inside XRLinkMesh's own <AtPos> here would stack two absolute
-        // translations (this link's position AND its child's identical-
-        // looking but independently absolute position), roughly doubling
-        // the effective offset — see XRLinkMesh's removed rich-link branch.
-        return (
-          <DispatchChildren
-            primitives={primitive.children}
-            plan={plan}
-            pageState={pageState}
-            setPage={setPage}
-            primitiveMap={primitiveMap}
-          />
-        );
-      }
       return (
         <AtPos entry={entry}>
           <XRLinkMesh
@@ -721,7 +699,6 @@ function PrimitiveDispatcher({
         </AtPos>
       );
     case "XRImage":
-    case "XRFigure":
       return (
         <AtPos entry={entry}>
           <XRImageMesh
@@ -730,6 +707,19 @@ function PrimitiveDispatcher({
           />
         </AtPos>
       );
+    case "XRFigure": {
+      return (
+        <WithSiblingChildren
+          entry={entry}
+          backing={<PanelBacking entry={zeroedEntry(entry)} opacity={0.15} />}
+          primitives={primitive.children}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
+      );
+    }
     case "XRButton":
       return (
         <AtPos entry={entry}>
@@ -943,16 +933,25 @@ function PrimitiveDispatcher({
         />
       );
 
-    case "XRTable":
+    case "XRTable": {
       return (
-        <AtPos entry={entry}>
-          <XRTableMesh
-            primitive={primitive as XRTable}
-            entry={zeroedEntry(entry)}
-            renderChild={renderChild}
-          />
-        </AtPos>
+        <WithSiblingChildren
+          entry={entry}
+          backing={
+            <XRTableMesh
+              primitive={primitive as XRTable}
+              entry={zeroedEntry(entry)}
+              renderChild={() => null}
+            />
+          }
+          primitives={primitive.children}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
       );
+    }
 
     case "XRTabGroup":
       return (

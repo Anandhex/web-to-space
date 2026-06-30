@@ -1,4 +1,11 @@
-import type { Vec3, Rotation3, Size2, XRPrimitive, XRPrimitiveType } from "../mapper/types";
+import type {
+  Vec3,
+  Rotation3,
+  Size2,
+  XRPrimitive,
+  XRPrimitiveType,
+  SemanticScene,
+} from "../mapper/types";
 
 // ─────────────────────────────────────────────────────────────
 // Re-exported template type (was previously in mapper.ts)
@@ -382,4 +389,46 @@ export interface PaginateResult {
    * scene.primitives and the panel's children so the renderer dispatches them.
    */
   syntheticPrimitives: XRPrimitive[];
+}
+
+// ─────────────────────────────────────────────────────────────
+// Primitive configuration registry
+// ─────────────────────────────────────────────────────────────
+
+type HeightStrategy = "mixed" | "text" | "children" | "fixed" | "custom";
+type PaginateBehavior = "split" | "recursive" | "atomic";
+
+export interface PrimitiveConfig {
+  heightStrategy: HeightStrategy;
+  // For "mixed": font metrics resolver (null → metrics.paragraph)
+  fontMetrics?: (
+    primitive: XRPrimitive,
+    metrics: RenderMetrics,
+  ) => PrimitiveFontMetrics;
+  // For "mixed": additional width inset for the inline flow pass only
+  flowWidthInset?: number;
+  // For "mixed"/"text": minimum height floor
+  minHeight?: (metrics: RenderMetrics) => number;
+  // For "text": text-bearing metrics resolver
+  textBearing?: (
+    metrics: RenderMetrics,
+  ) => import("./types").TextBearingMetrics;
+  // For "fixed": fixed height
+  fixedHeight?: (metrics: RenderMetrics) => number;
+  // For "custom": full handler
+  customHandler?: (
+    primitive: XRPrimitive,
+    panelUsableWidth: number,
+    metrics: RenderMetrics,
+    config: LayoutConfig,
+    ancestors: Set<string>,
+    scene?: SemanticScene,
+  ) => number;
+  paginate: PaginateBehavior;
+  forceNewPage?: boolean;
+  ownsXPadding: boolean;
+  ownsTopPadding: boolean;
+  slot: import("./types").SlotName;
+  // Override slot based on primitive state (e.g. XRNavigationBar toc vs navigation)
+  slotFn?: (primitive: XRPrimitive) => import("./types").SlotName;
 }

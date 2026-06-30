@@ -752,6 +752,7 @@ export type MappingRule =
   | "video:default→XRMediaPlayer:large-panel"
   | "video:autoplay→XRMediaPlayer:ambient"
   | "audio→XRMediaPlayer:compact-widget"
+  | "table:trivial→XRGenericPanel"
   | "table:flat-2d→XRTable"
   | "table:curved-2d→XRTable"
   | "table:scrollable→XRTable"

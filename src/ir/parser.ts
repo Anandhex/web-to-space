@@ -437,15 +437,59 @@ async function createNode(
       resolvedConfidence = confidenceForSource("ai-timeout", ctx.config);
     }
   }
+  // ---- SYNTHESIS OF TEXT CHILD FOR LEAF TEXT NODES ----
+  // If we have no children at all, no textNodes (i.e. no inline decomposition),
+  // and this node is a text-bearing role, and it has direct text content,
+  // create a synthetic "text" child so that the mapper always sees a child.
+  const textBearingRoles = new Set([
+    "paragraph",
+    "heading",
+    "link",
+    "button",
+    "blockquote",
+    "note",
+    "code",
+    "listitem",
+    "cell",
+    "columnheader",
+  ]);
+
+  if (
+    children.length === 0 &&
+    textNodes.length === 0 &&
+    textBearingRoles.has(resolvedRole) &&
+    resolvedRole !== "text" // don't create a child for a text node itself
+  ) {
+    const rawText = element.textContent?.trim() || "";
+    if (rawText) {
+      const textId = `${id}-synth-text-${ctx.counters.node++}`;
+      ctx.nodes[textId] = createBaseNode(textId, "text", id, ctx, {
+        content: rawText,
+        label: rawText,
+        source: "inline",
+        confidence: ctx.config.sourceConfidence["inline"],
+        readingDepth: readingDepth + 1,
+        attributes: { ...createEmptyAttributes() },
+      });
+      children.push(textId);
+      // We will clear the parent's content below to avoid duplication.
+    }
+  }
 
   ctx.nodes[id] = createBaseNode(id, resolvedRole, parentId, ctx, {
     level: roleInfo.level,
     label,
-    content: !hasBlockChild
-      ? textNodes.length > 0
-        ? textNodes.join(" ")
-        : (element.textContent?.trim() ?? null)
-      : null,
+    content: (() => {
+      // If we just added a synthetic text child, don't duplicate text on the parent.
+      if (children.length > 0 && children[0].startsWith(id + "-synth-text-")) {
+        return null;
+      }
+      return !hasBlockChild
+        ? textNodes.length > 0
+          ? textNodes.join(" ")
+          : (element.textContent?.trim() ?? null)
+        : null;
+    })(),
     source: resolvedSource,
     confidence: resolvedConfidence,
     children,
@@ -989,6 +1033,27 @@ async function createListItem(
     false,
   );
 
+  // Synthesize a text child for plain-text list items (e.g. <li>Hello world</li>
+  // with no element children). Mirrors what createNode does for text-bearing roles
+  // so XRListItem always has children and the engine can treat it uniformly.
+  let hasSynthTextChild = false;
+  if (childIds.length === 0) {
+    const rawText = contentEl.textContent?.trim() ?? "";
+    if (rawText) {
+      const textId = `${id}-synth-text-${ctx.counters.node++}`;
+      ctx.nodes[textId] = createBaseNode(textId, "text", id, ctx, {
+        content: rawText,
+        label: rawText,
+        source: "inline",
+        confidence: ctx.config.sourceConfidence["inline"],
+        readingDepth: readingDepth + 1,
+        attributes: { ...createEmptyAttributes() },
+      });
+      childIds.push(textId);
+      hasSynthTextChild = true;
+    }
+  }
+
   const mergedAttrs = readNodeAttributes(contentEl, { sourceUrl: ctx.pageUrl });
   for (const wrapper of wrappers) {
     const wrapperAttrs = readNodeAttributes(wrapper, {
@@ -1002,7 +1067,7 @@ async function createListItem(
     label:
       resolveNodeLabel(contentEl, ctx.config, ctx.doc) ||
       resolveNodeLabel(element, ctx.config, ctx.doc),
-    content: contentEl.textContent?.trim() || null,
+    content: hasSynthTextChild ? null : (contentEl.textContent?.trim() || null),
     children: childIds,
     state: readNodeState(contentEl),
     attributes: mergedAttrs,
@@ -1110,8 +1175,8 @@ async function handleLinkRun(
   // site navigation. Grouping them into an XRNavigationBar causes them to land
   // inside the content panel at its full width and render as a horizontal chip
   // strip. Return null so each <a> falls through to individual XRLink nodes.
-  const allSamePageAnchors = run.every(
-    (el) => (el.getAttribute("href") ?? "").startsWith("#"),
+  const allSamePageAnchors = run.every((el) =>
+    (el.getAttribute("href") ?? "").startsWith("#"),
   );
   if (allSamePageAnchors) return null;
 
@@ -1646,7 +1711,6 @@ export const parsePageToIR = async (
   }
   analytics.textDensity =
     orderedNodes.length > 0 ? analytics.textLength / orderedNodes.length : 0;
-  console.log(nodes);
   return {
     meta: {
       url,

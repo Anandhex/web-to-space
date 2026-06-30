@@ -184,6 +184,8 @@ const RIM_RADIUS = 0.001; // must be < RIM_DEPTH / 2 = 0.002
 // Use MIN_DIM as the floor for w/h, and safeRadius() to clamp any per-call radius.
 const MIN_DIM = PANEL_RADIUS * 2 + 0.001; // 0.025 m — safe floor for w and h
 
+const accentHex = parseInt(ACCENT_COL.replace("#", ""), 16);
+
 /** Clamp a layout dimension to a safe minimum for RoundedBox. */
 function safeDim(v: number): number {
   return Number.isFinite(v) && v > MIN_DIM ? v : MIN_DIM;
@@ -507,7 +509,10 @@ export function buildInlineRows(children: any[]): InlineRow[] {
  * brighter EMPHASIS_COL instead of the muted BODY_COL, so they still stand
  * out from plain prose on the same line without forcing a line break.
  */
-export function buildRowMeta(segments: InlineSeg[]): {
+export function buildRowMeta(
+  segments: InlineSeg[],
+  forceColor?: number,
+): {
   text: string;
   colorRanges: Record<number, number> | null;
 } {
@@ -515,7 +520,6 @@ export function buildRowMeta(segments: InlineSeg[]): {
   const colorRanges: Record<number, number> = {};
   let hasColor = false;
 
-  const accentHex = parseInt(ACCENT_COL.replace("#", ""), 16);
   const bodyHex = parseInt(BODY_COL.replace("#", ""), 16);
   const emphasisHex = parseInt(EMPHASIS_COL.replace("#", ""), 16);
 
@@ -531,7 +535,7 @@ export function buildRowMeta(segments: InlineSeg[]): {
     const charStart = text.length;
     text += seg.text;
 
-    const color = colorForSegment(seg);
+    const color = forceColor !== undefined ? forceColor : colorForSegment(seg);
     if (color !== prevColor) {
       colorRanges[charStart] = color;
       hasColor = true;
@@ -575,6 +579,7 @@ interface InlineProseRowsProps {
   fontSize: number;
   lineHeightRatio: number;
   xInset?: number;
+  forceColor?: number;
   renderChild: (id: string) => React.ReactNode;
 }
 
@@ -586,6 +591,7 @@ export function InlineProseRows({
   lineHeightRatio,
   xInset = 0,
   renderChild,
+  forceColor,
 }: InlineProseRowsProps) {
   const lineH = fontSize * lineHeightRatio;
   const usableWidth = panelWidth - xInset;
@@ -602,7 +608,7 @@ export function InlineProseRows({
           return <group key={`b-${i}`}>{renderChild(row.childId)}</group>;
         }
 
-        const { text, colorRanges } = buildRowMeta(row.segments);
+        const { text, colorRanges } = buildRowMeta(row.segments, forceColor);
         const rowY = cursorY;
         cursorY -= lineH;
 
@@ -901,7 +907,11 @@ export interface XRNavigationMeshProps {
  * TOC items use item.depth for left-indent so h1/h2 are flush and h3+
  * are progressively indented — matching the dummy-layout TOC behaviour.
  */
-export function XRNavigationMesh({ primitive, entry, onNavigate }: XRNavigationMeshProps) {
+export function XRNavigationMesh({
+  primitive,
+  entry,
+  onNavigate,
+}: XRNavigationMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const items: XRLink[] = primitive.items ?? [];
@@ -1745,10 +1755,21 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
   const { ref, handlers } = useHoverScale(1.0, 1.04);
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const BTN_DEPTH = 0.016;
   const isDisabled = primitive.state?.disabled;
+
+  // Read label text from the synthetic child when available (added by
+  // normalizeSceneLabels in the mapper), otherwise fall back to primitive.label.
+  const flatChildren = flattenInlineWrappers(primitive.children ?? []);
+  const labelText =
+    flatChildren.length > 0
+      ? ((flatChildren[0] as unknown as { text?: string }).text ??
+        flatChildren[0].label ??
+        "")
+      : (primitive.label ?? "");
 
   return (
     <group ref={ref} position={pos} rotation={rot} {...handlers}>
@@ -1771,12 +1792,12 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
         anchorX="center"
         anchorY="middle"
         position={[w / 2, -h / 2, BTN_DEPTH + 0.001]}
-        fontSize={0.02}
+        fontSize={metrics.button.font.fontSize}
         color={isDisabled ? "#4a5568" : "#ffffff"}
         fontWeight="600"
         maxWidth={w - 0.02}
       >
-        {primitive.label ?? ""}
+        {labelText}
       </ClippedText>
     </group>
   );
@@ -2180,43 +2201,56 @@ export interface XRLinkMeshProps {
 }
 
 /**
- * XRLinkMesh renders a simple link as a single line of accent-coloured text.
+ * XRLinkMesh renders a link's text content inline.
  *
- * Rich links (links with XRText/other children) never reach this component —
- * XRSceneRenderer's case "XRLink" dispatches those directly via
- * DispatchChildren so each child's panel-absolute position applies once,
- * not once here AND once via this component's own AtPos wrapper (the
- * previous combination double-translated rich-link content, e.g. sending
- * "Sony Pictures Animation" / "Netflix" / "Marcelo Zarvos" to roughly double
- * their intended offset and landing them outside their table cell).
+ * When the link has children (synthetic XRLink leaf from normalizeSceneLabels,
+ * or real mixed XRText/XRLink children), they are flowed via InlineProseRows.
+ * XRLink segments in buildRowMeta automatically receive ACCENT_COL, so a
+ * synthetic XRLink child renders in link colour with no extra wiring needed.
+ *
+ * Label-only fallback (no children after normalization) renders via ClippedText.
  */
-export function XRLinkMesh({ primitive, entry }: XRLinkMeshProps) {
+export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const w = safeDim(entry.size.width);
   const metrics = useRenderMetrics();
-  // Inherit the ancestor heading's metric if this link sits inside one
-  // (e.g. a heading wrapping an <a>), otherwise fall back to metrics.link —
-  // matches estimateHeight()'s XRLink branch in engine.ts.
   const styleOverride = useContext(TextStyleContext);
   const linkMetric = styleOverride ?? metrics.link.font;
-
-  // Hover effect
   const { ref, handlers } = useHoverScale(1.0, 1.02);
+
+  const flatChildren = flattenInlineWrappers(primitive.children ?? []);
+  const hasInlineChildren = flatChildren.some((c) => isInlinePrimitive(c.type));
+  const rows = hasInlineChildren
+    ? buildInlineRows(mergeAdjacentTextRuns(flatChildren))
+    : [];
 
   return (
     <group ref={ref} position={pos} rotation={rot} {...handlers}>
-      <ClippedText
-        anchorX="left"
-        anchorY="top"
-        position={[0, 0, 0.002]}
-        fontSize={linkMetric.fontSize}
-        color={primitive.isCurrent ? "#ffffff" : ACCENT_COL}
-        fontWeight={primitive.isCurrent ? "700" : "500"}
-        maxWidth={w}
-        lineHeight={linkMetric.lineHeightRatio}
-      >
-        {primitive.label ?? primitive.href ?? ""}
-      </ClippedText>
+      {hasInlineChildren ? (
+        <InlineProseRows
+          rows={rows}
+          startY={0}
+          panelWidth={w}
+          fontSize={linkMetric.fontSize}
+          lineHeightRatio={linkMetric.lineHeightRatio}
+          xInset={0}
+          renderChild={renderChild}
+          forceColor={accentHex}
+        />
+      ) : (
+        <ClippedText
+          anchorX="left"
+          anchorY="top"
+          position={[0, 0, 0.002]}
+          fontSize={linkMetric.fontSize}
+          color={primitive.isCurrent ? "#ffffff" : ACCENT_COL}
+          fontWeight={primitive.isCurrent ? "700" : "500"}
+          maxWidth={w}
+          lineHeight={linkMetric.lineHeightRatio}
+        >
+          {primitive.label ?? primitive.href ?? ""}
+        </ClippedText>
+      )}
     </group>
   );
 }

@@ -527,7 +527,10 @@ function mapMedia(node: IRNode, ctx: MappingContext): XRMediaPlayer {
  * Attaches rowCount and columnCount as semantic facts.
  * Layout decides layoutStrategy (flat-2d / curved-2d / scrollable / cards).
  */
-function mapTable(node: IRNode, ctx: MappingContext): XRTable {
+function mapTable(
+  node: IRNode,
+  ctx: MappingContext,
+): XRTable | XRGenericPanel {
   const rowNodes = node.children
     .map((id) => ctx.ir.nodes[id])
     .filter(
@@ -550,6 +553,21 @@ function mapTable(node: IRNode, ctx: MappingContext): XRTable {
   let columnCount = 0;
   for (const r of flatRows) {
     columnCount = Math.max(columnCount, r.children.length);
+  }
+
+  // A table with no meaningful grid (0×0 or 1×1) is a layout shell whose
+  // real content was re-classified by structural inference (e.g. infobox rows
+  // collapsed to a list). Render it as a transparent generic container so no
+  // table header or badge is shown.
+  if (rowCount * columnCount <= 1) {
+    const generic: XRGenericPanel = {
+      ...baseFrom(node, "XRGenericPanel"),
+      type: "XRGenericPanel",
+      irRole: node.role,
+      children: resolveChildren(node, ctx),
+    };
+    registerPrimitive(ctx, generic, "table:trivial→XRGenericPanel");
+    return generic;
   }
 
   const children: XRPrimitive[] = [];
