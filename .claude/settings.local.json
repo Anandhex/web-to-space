@@ -14,7 +14,11 @@
       "Bash(/usr/local/bin/node /Users/anandpatil/Documents/Projects/web/javascript/from-space-to-web/node_modules/.bin/tsc --noEmit)",
       "Bash(PATH=/Users/anandpatil/.nvm/versions/node/v22.22.2/bin:__TRACKED_VAR__ npm run build)",
       "Bash(PATH=/opt/homebrew/bin:/usr/local/bin:__TRACKED_VAR__ npx tsx probe.ts)",
-      "Bash(PATH=/opt/homebrew/bin:/usr/local/bin:__TRACKED_VAR__ npm run build)"
+      "Bash(PATH=/opt/homebrew/bin:/usr/local/bin:__TRACKED_VAR__ npm run build)",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(node --version 2>&1 || which node 2>&1 || ls /usr/local/bin/node 2>&1)",
+      "Bash(/usr/local/bin/node ./node_modules/.bin/tsc --noEmit)",
+      "Bash(/usr/local/bin/node node_modules/.bin/tsc --noEmit)"
     ]
   }
 }

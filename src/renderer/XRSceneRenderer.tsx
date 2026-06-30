@@ -52,7 +52,7 @@ import React, {
   useEffect,
   useMemo,
 } from "react";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree, useFrame } from "@react-three/fiber";
 import {
   OrbitControls,
   Environment,
@@ -124,8 +124,17 @@ import {
   RAY_BAN_META_PROFILE,
   QUEST_3_PROFILE,
 } from "../layout/profiles";
-import { flattenInlineWrappers, isInlinePrimitive } from "../layout/utils";
-import { CAROUSEL_GHOST_GAP } from "../layout/slots";
+import {
+  flattenInlineWrappers,
+  isInlinePrimitive,
+  angularRotation,
+} from "../layout/utils";
+import {
+  CAROUSEL_GHOST_PREV_ANGLE_DEG,
+  CAROUSEL_GHOST_NEXT_ANGLE_DEG,
+  CAROUSEL_GHOST_GAP,
+  CAROUSEL_Z_STEP,
+} from "../layout/slots";
 import type { ViewMode } from "../components/viewTypes";
 
 // ─────────────────────────────────────────────────────────────
@@ -134,6 +143,13 @@ import type { ViewMode } from "../components/viewTypes";
 
 export const CurrentPageContext = React.createContext<number>(-1);
 export const FontContext = React.createContext<string | undefined>(undefined);
+
+/**
+ * Active page range [startPage, endPage] (both inclusive, absolute panel page
+ * indices) for the currently focused section in cards reading view.
+ * null = no restriction (show all pages / full document pagination).
+ */
+const PageRangeContext = React.createContext<[number, number] | null>(null);
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -440,6 +456,12 @@ function PaginatingPanelRenderer({
   // All other containers use a lighter backing so nesting levels remain legible.
   const backingOpacity = primitive.type === "XRContentPanel" ? 0.35 : 0.2;
 
+  // Apply the section page range only for the top-level content panel — not
+  // for nested sections/articles which have their own per-child pagination.
+  const pageRange = React.useContext(PageRangeContext);
+  const effectiveRange =
+    primitive.type === "XRContentPanel" ? pageRange : null;
+
   return (
     <CurrentPageContext.Provider value={currentPage}>
       {extractedComps.map((comp) => (
@@ -475,6 +497,7 @@ function PaginatingPanelRenderer({
             currentPage={currentPage}
             entry={zeroedEntry(entry)}
             onPageChange={(p) => setPage(primitive.id, p)}
+            pageRange={effectiveRange}
           />
         )}
       </group>
@@ -563,6 +586,318 @@ function CarouselGhostPanel({
 }
 
 const _noop = () => {};
+
+// ─────────────────────────────────────────────────────────────
+// Cards zoom system
+// ─────────────────────────────────────────────────────────────
+
+type CardsZoomLevel = 0 | 1;
+
+interface SectionCardInfo {
+  id: string;
+  label: string;
+  pageIndex: number; // absolute start page in the content panel
+  endPage: number;   // absolute end page (inclusive); equals startPage when unknown
+  hasSubSections: boolean;
+}
+
+const CARDS_LOOK_TARGET: [number, number, number] = [0, 1.4, -1.2];
+
+function getSectionCards(
+  scene: SemanticScene,
+  plan: LayoutPlan,
+  parentId: string | null,
+): SectionCardInfo[] {
+  // Sub-sections: always enumerate from the parent section's children directly
+  if (parentId) {
+    const parent = scene.primitives[parentId];
+    if (!parent) return [];
+    const children = parent.children.filter(
+      (c) => c.type === "XRSection" || c.type === "XRArticle",
+    );
+    const endPages = computeEndPages(children, plan, Infinity);
+    return children.map((child, i) => {
+      const heading = child.children.find((c) => c.type === "XRHeading");
+      const label = heading?.label ?? child.label ?? "";
+      const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
+      const hasSubSections = child.children.some(
+        (c) => c.type === "XRSection" || c.type === "XRArticle",
+      );
+      return { id: child.id, label, pageIndex, endPage: endPages[i], hasSubSections };
+    });
+  }
+
+  // Top-level: prefer TOC nodes for labels so cards match the page's own navigation
+  const mainPanel = scene.root.children.find(
+    (p) => p.type === "XRContentPanel",
+  );
+  if (!mainPanel) return [];
+
+  const totalPages =
+    (plan.entries[mainPanel.id]?.pagination?.pageCount ?? 1) - 1; // max page index
+
+  const sections = mainPanel.children.filter(
+    (c) => c.type === "XRSection" || c.type === "XRArticle",
+  );
+
+  // Build a sorted end-page map for all sections by document order
+  const sectionEndPageMap = buildSectionEndPageMap(sections, plan, totalPages);
+
+  // Build label → section primitive so we can look up pageIndex and sub-sections
+  const sectionByLabel = new Map<string, XRPrimitive>();
+  for (const sec of sections) {
+    const heading = sec.children.find((c) => c.type === "XRHeading");
+    const key = (heading?.label ?? sec.label ?? "").toLowerCase().trim();
+    if (key) sectionByLabel.set(key, sec);
+  }
+
+  const tocNav = scene.root.children.find((p) => p.type === "XRNavigationBar");
+  if (tocNav && tocNav.children.length > 0) {
+    const result: SectionCardInfo[] = [];
+    for (const link of tocNav.children) {
+      const label = link.label ?? "";
+      if (!label) continue;
+      const matched = sectionByLabel.get(label.toLowerCase().trim());
+      const id = matched?.id ?? link.id;
+      const pageIndex = matched ? (plan.entries[matched.id]?.pageIndex ?? 0) : 0;
+      const endPage = matched
+        ? (sectionEndPageMap.get(matched.id) ?? totalPages)
+        : totalPages;
+      const hasSubSections = matched
+        ? matched.children.some(
+            (c) => c.type === "XRSection" || c.type === "XRArticle",
+          )
+        : false;
+      result.push({ id, label, pageIndex, endPage, hasSubSections });
+    }
+    if (result.length > 0) return result;
+  }
+
+  // Fallback: enumerate sections directly
+  const endPages = computeEndPages(sections, plan, totalPages);
+  return sections.map((child, i) => {
+    const heading = child.children.find((c) => c.type === "XRHeading");
+    const label = heading?.label ?? child.label ?? "";
+    const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
+    const hasSubSections = child.children.some(
+      (c) => c.type === "XRSection" || c.type === "XRArticle",
+    );
+    return { id: child.id, label, pageIndex, endPage: endPages[i], hasSubSections };
+  });
+}
+
+/**
+ * Given a list of sibling sections (in document order), compute the end page
+ * for each using next-section-boundary: endPage[i] = startPage[i+1] - 1.
+ * The last section extends to `maxPage`.
+ */
+function buildSectionEndPageMap(
+  sections: XRPrimitive[],
+  plan: LayoutPlan,
+  maxPage: number,
+): Map<string, number> {
+  const sorted = sections
+    .map((s) => ({ id: s.id, startPage: plan.entries[s.id]?.pageIndex ?? 0 }))
+    .sort((a, b) => a.startPage - b.startPage);
+
+  const result = new Map<string, number>();
+  for (let i = 0; i < sorted.length; i++) {
+    const nextStart = sorted[i + 1]?.startPage;
+    // Guard: endPage must be >= startPage even when adjacent sections share a page.
+    const endPage =
+      nextStart !== undefined
+        ? Math.max(sorted[i].startPage, nextStart - 1)
+        : maxPage;
+    result.set(sorted[i].id, endPage);
+  }
+  return result;
+}
+
+/** Compute end pages for a list of siblings ordered by their position in `children`. */
+function computeEndPages(
+  sections: XRPrimitive[],
+  plan: LayoutPlan,
+  maxPage: number,
+): number[] {
+  const map = buildSectionEndPageMap(sections, plan, maxPage);
+  return sections.map((s) => map.get(s.id) ?? maxPage);
+}
+
+function CameraRig({
+  targetPos,
+  targetLook,
+}: {
+  targetPos: [number, number, number];
+  targetLook: [number, number, number];
+}) {
+  const { camera } = useThree();
+  const tp = React.useRef(
+    new THREE.Vector3(targetPos[0], targetPos[1], targetPos[2]),
+  );
+  const tl = React.useRef(
+    new THREE.Vector3(targetLook[0], targetLook[1], targetLook[2]),
+  );
+
+  React.useEffect(() => {
+    tp.current.set(targetPos[0], targetPos[1], targetPos[2]);
+    tl.current.set(targetLook[0], targetLook[1], targetLook[2]);
+  }, [targetPos[0], targetPos[1], targetPos[2], targetLook[0], targetLook[1], targetLook[2]]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useFrame(() => {
+    camera.position.lerp(tp.current, 0.08);
+    camera.lookAt(tl.current);
+  });
+
+  return null;
+}
+
+/** Instantly snap camera position+orientation once on mount, then yield to OrbitControls. */
+function CameraSnapTo({
+  position,
+  lookAt,
+}: {
+  position: [number, number, number];
+  lookAt: [number, number, number];
+}) {
+  const { camera } = useThree();
+  React.useLayoutEffect(() => {
+    camera.position.set(position[0], position[1], position[2]);
+    camera.lookAt(lookAt[0], lookAt[1], lookAt[2]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return null;
+}
+
+// Reading-view camera constants: camera 1.2 m in front of the panel, looking
+// at the panel's vertical centre so content fills the viewport comfortably.
+const CARDS_READ_POS: [number, number, number] = [0, 1.5, 0.0];
+const CARDS_READ_LOOK: [number, number, number] = [0, 0.95, -1.2];
+
+const CARD_W = 0.40;
+const CARD_H = 0.24;
+const CARD_GAP_X = 0.06;
+const CARD_GAP_Y = 0.05;
+const CARD_COLS = 4;
+const CARD_Z = -1.2;
+const CARD_EYE_Y = 1.5;
+
+function SectionCardTile({
+  cx,
+  cy,
+  label,
+  isActive,
+  onClick,
+}: {
+  cx: number;
+  cy: number;
+  label: string;
+  isActive: boolean;
+  onClick: () => void;
+}) {
+  const [hovered, setHovered] = React.useState(false);
+  const fontType = React.useContext(FontContext);
+  const w = CARD_W;
+  const h = CARD_H;
+
+  return (
+    <group
+      position={[cx, cy, CARD_Z]}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        setHovered(true);
+      }}
+      onPointerOut={() => setHovered(false)}
+    >
+      <RoundedBox args={[w, h, 0.008]} radius={0.012}>
+        <meshStandardMaterial
+          color={isActive ? "#112840" : hovered ? "#0d1e30" : "#070e18"}
+          transparent
+          opacity={0.95}
+        />
+      </RoundedBox>
+      {/* top accent bar */}
+      <mesh position={[0, h / 2 - 0.002, 0.006]}>
+        <planeGeometry args={[w * 0.65, 0.003]} />
+        <meshBasicMaterial
+          color={isActive ? "#58a6ff" : hovered ? "#2a5a8f" : "#162840"}
+        />
+      </mesh>
+      <Text
+        font={fontType}
+        position={[0, 0, 0.007]}
+        fontSize={0.016}
+        color={isActive ? "#90c8ff" : hovered ? "#8ab4d8" : "#5a8ab0"}
+        anchorX="center"
+        anchorY="middle"
+        maxWidth={w - 0.04}
+        textAlign="center"
+      >
+        {label.length > 48 ? label.slice(0, 46) + "…" : label}
+      </Text>
+    </group>
+  );
+}
+
+function CardsGridMesh({
+  cards,
+  focusedId,
+  onCardClick,
+  headerLabel,
+}: {
+  cards: SectionCardInfo[];
+  focusedId: string | null;
+  onCardClick: (id: string, pageIndex: number, hasSubSections: boolean) => void;
+  headerLabel?: string;
+}) {
+  const fontType = React.useContext(FontContext);
+  const cols = CARD_COLS;
+  const cw = CARD_W;
+  const ch = CARD_H;
+  const gx = CARD_GAP_X;
+  const gy = CARD_GAP_Y;
+  const rows = Math.ceil(cards.length / cols);
+  const gridW = cols * cw + (cols - 1) * gx;
+  const gridH = rows * ch + (rows - 1) * gy;
+  const startX = -gridW / 2 + cw / 2;
+  const startY = CARD_EYE_Y + gridH / 2 - ch / 2;
+
+  return (
+    <>
+      {headerLabel && (
+        <Text
+          font={fontType}
+          position={[0, startY + ch / 2 + 0.055, CARD_Z]}
+          fontSize={0.014}
+          color="#2a4a6a"
+          anchorX="center"
+          anchorY="bottom"
+          letterSpacing={0.08}
+        >
+          {headerLabel.toUpperCase()}
+        </Text>
+      )}
+      {cards.map(({ id, label, pageIndex, hasSubSections }, i) => {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const cx = startX + col * (cw + gx);
+        const cy = startY - row * (ch + gy);
+        return (
+          <SectionCardTile
+            key={id}
+            cx={cx}
+            cy={cy}
+            label={label}
+            isActive={focusedId === id}
+            onClick={() => onCardClick(id, pageIndex, hasSubSections)}
+          />
+        );
+      })}
+    </>
+  );
+}
 
 interface DispatcherProps {
   primitive: XRPrimitive;
@@ -1173,38 +1508,41 @@ function PaginationControls({
   currentPage,
   entry,
   onPageChange,
+  pageRange,
 }: {
   primitiveId: string;
   pagination: { pageCount: number };
   currentPage: number;
   entry: LayoutEntry;
   onPageChange: (page: number) => void;
+  pageRange?: [number, number] | null;
 }) {
   const w = entry.size.width;
   const h = entry.size.height;
   const BTN_W = 0.1;
   const BTN_H = 0.038;
   const barY = -(h + BTN_H / 2 + 0.016);
-  // Spread: half the distance from center to prev/next button center.
-  // Adapts to panel width but never exceeds 0.22 m so wide theatre panels
-  // don't push buttons to the extreme edges.
   const SPREAD = Math.min(w / 2 - BTN_W * 0.6, 0.22);
   const fontType = React.useContext(FontContext);
 
-  // Bar group is centered horizontally under the panel (w/2 from panel origin).
-  // Prev/Next positions are ±SPREAD from that center.
+  // When a section range is active, clamp navigation and show relative page numbers.
+  const firstPage = pageRange?.[0] ?? 0;
+  const lastPage = pageRange?.[1] ?? (pagination.pageCount - 1);
+  const sectionPageCount = lastPage - firstPage + 1;
+  const relPage = currentPage - firstPage; // 0-based within section
+
   return (
     <group position={[w / 2, barY, 0.005]}>
       <group
         position={[-SPREAD, 0, 0]}
-        onClick={() => onPageChange(Math.max(0, currentPage - 1))}
+        onClick={() => onPageChange(Math.max(firstPage, currentPage - 1))}
       >
         <RoundedBox
           args={[BTN_W, BTN_H, 0.006]}
           radius={Math.min(BTN_H / 2, 0.0029)}
         >
           <meshStandardMaterial
-            color={currentPage === 0 ? "#1a1f2e" : "#1a2840"}
+            color={currentPage <= firstPage ? "#1a1f2e" : "#1a2840"}
             transparent
             opacity={0.8}
           />
@@ -1229,13 +1567,13 @@ function PaginationControls({
         fontSize={0.016}
         color="#fff"
       >
-        {`${currentPage + 1} / ${pagination.pageCount}`}
+        {`${relPage + 1} / ${sectionPageCount}`}
       </Text>
 
       <group
         position={[SPREAD, 0, 0]}
         onClick={() =>
-          onPageChange(Math.min(pagination.pageCount - 1, currentPage + 1))
+          onPageChange(Math.min(lastPage, currentPage + 1))
         }
       >
         <RoundedBox
@@ -1244,7 +1582,7 @@ function PaginationControls({
         >
           <meshStandardMaterial
             color={
-              currentPage === pagination.pageCount - 1 ? "#1a1f2e" : "#1a2840"
+              currentPage >= lastPage ? "#1a1f2e" : "#1a2840"
             }
             transparent
             opacity={0.8}
@@ -1436,27 +1774,25 @@ function XRSceneGraph({
         if (viewMode === "carousel" && primitive === mainContentPanel) {
           const entry = plan.entries[primitive.id];
           if (!entry) return null;
-          // Ghost panels share the same size as main — no ghostSize override needed.
-          // Positions are derived from main's position and width plus the gap constant.
-          const zeroRot = { x: 0, y: 0, z: 0 };
-
+          // Ghost panels: flat x-offset from main (no overlap), z pulled
+          // toward the viewer by one step (tier 1 = -d + Z_STEP).
           const prevEntry: LayoutEntry = {
             ...entry,
             position: {
               x: entry.position.x - CAROUSEL_GHOST_GAP - entry.size.width,
               y: entry.position.y,
-              z: entry.position.z,
+              z: entry.position.z + CAROUSEL_Z_STEP,
             },
-            rotation: zeroRot,
+            rotation: angularRotation(CAROUSEL_GHOST_PREV_ANGLE_DEG),
           };
           const nextEntry: LayoutEntry = {
             ...entry,
             position: {
               x: entry.position.x + entry.size.width + CAROUSEL_GHOST_GAP,
               y: entry.position.y,
-              z: entry.position.z,
+              z: entry.position.z + CAROUSEL_Z_STEP,
             },
-            rotation: zeroRot,
+            rotation: angularRotation(CAROUSEL_GHOST_NEXT_ANGLE_DEG),
           };
 
           const currentPage = pageState[primitive.id] ?? 0;
@@ -1622,12 +1958,56 @@ export function XRSceneRenderer({
 
   // ── View-mode interaction state ─────────────────────────────
   const [expandedSectionId, setExpandedSectionId] = useState<string | null>(null);
+  const [cardsZoom, setCardsZoom] = useState<CardsZoomLevel>(0);
+  const [cardsFocusedId, setCardsFocusedId] = useState<string | null>(null);
 
   // Reset interaction state when viewMode or content changes
   useEffect(() => {
     setExpandedSectionId(null);
     setPageStateMap({});
+    setCardsZoom(0);
+    setCardsFocusedId(null);
   }, [viewMode, html, scene]);
+
+  // ── Cards zoom derived state ─────────────────────────────────
+  const mainPanelId = useMemo(
+    () =>
+      scene?.root.children.find((p) => p.type === "XRContentPanel")?.id ??
+      null,
+    [scene],
+  );
+
+  const topLevelCards = useMemo(
+    () => (scene && plan ? getSectionCards(scene, plan, null) : []),
+    [scene, plan],
+  );
+
+  const focusedCard = useMemo(
+    () =>
+      cardsFocusedId
+        ? (topLevelCards.find((c) => c.id === cardsFocusedId) ?? null)
+        : null,
+    [topLevelCards, cardsFocusedId],
+  );
+
+  // Section-scoped page range for the reading view: clamps Prev/Next to this
+  // section's pages only. null when not in cards reading mode.
+  const cardsSectionRange = useMemo(
+    (): [number, number] | null =>
+      viewMode === "cards" && cardsZoom === 1 && focusedCard
+        ? [focusedCard.pageIndex, focusedCard.endPage]
+        : null,
+    [viewMode, cardsZoom, focusedCard],
+  );
+
+  const handleCardsZoomOut = useCallback(() => {
+    setCardsZoom(0);
+    setCardsFocusedId(null);
+  }, []);
+
+  const handlePointerMissed = useCallback(() => {
+    if (viewMode === "cards" && cardsZoom > 0) handleCardsZoomOut();
+  }, [viewMode, cardsZoom, handleCardsZoomOut]);
 
   useEffect(() => {
     if (plan && onPlanReady) onPlanReady(plan);
@@ -1685,6 +2065,7 @@ export function XRSceneRenderer({
               gl.xr.setSession(session as unknown as any);
             }
           }}
+          onPointerMissed={handlePointerMissed}
         >
           <Suspense fallback={null}>
             <ambientLight intensity={0.4} />
@@ -1701,30 +2082,68 @@ export function XRSceneRenderer({
             />
             <Environment preset="city" />
 
-            {/* Provide the same RenderMetrics the layout engine used, so
-                renderer components (XRHeadingMesh, XRTextMesh, etc.) can
-                never drift from estimateHeight()'s assumptions. */}
             <RenderMetricsContext.Provider value={deviceProfile.renderMetrics}>
-              {/* Provide the Font Context to the entire rendered tree */}
               <FontContext.Provider value={fontType}>
-                {scene && plan && (
-                  <XRSceneGraph
-                    scene={scene}
-                    plan={plan}
-                    pageState={pageState}
-                    setPage={setPage}
-                    viewMode={viewMode}
+                {/* Level 0 (overview): locked fly-out position, no orbit */}
+                {viewMode === "cards" && cardsZoom === 0 && (
+                  <CameraRig
+                    targetPos={[0, 1.5, 1.8]}
+                    targetLook={CARDS_LOOK_TARGET}
+                  />
+                )}
+                {/* Level 1 (reading): snap camera to reading position, then
+                    hand off to OrbitControls so the user can look around */}
+                {viewMode === "cards" && cardsZoom === 1 && (
+                  <CameraSnapTo
+                    position={CARDS_READ_POS}
+                    lookAt={CARDS_READ_LOOK}
                   />
                 )}
 
-                {sessionState !== "immersive" && (
-                  <>
+                {scene && plan && (
+                  viewMode === "cards" && cardsZoom === 0 ? (
+                    /* Level 0: overview grid of all top-level section cards */
+                    <CardsGridMesh
+                      cards={topLevelCards}
+                      focusedId={cardsFocusedId}
+                      onCardClick={(id, pageIndex) => {
+                        setCardsFocusedId(id);
+                        setCardsZoom(1);
+                        if (mainPanelId) setPage(mainPanelId, pageIndex);
+                      }}
+                    />
+                  ) : (
+                    /* Level 1: reading view — pagination scoped to the focused section */
+                    <PageRangeContext.Provider value={cardsSectionRange}>
+                      <XRSceneGraph
+                        scene={scene}
+                        plan={plan}
+                        pageState={pageState}
+                        setPage={setPage}
+                        viewMode={viewMode}
+                      />
+                    </PageRangeContext.Provider>
+                  )
+                )}
+
+                {/* OrbitControls: disabled only during cards overview (level 0) */}
+                {sessionState !== "immersive" &&
+                  (viewMode !== "cards" || cardsZoom === 1) && (
                     <OrbitControls
-                      target={[0, 1.4, -1.2]}
+                      target={
+                        viewMode === "cards"
+                          ? CARDS_READ_LOOK
+                          : [0, 1.4, -1.2]
+                      }
                       enablePan
                       enableDamping
                       dampingFactor={0.08}
                     />
+                  )}
+
+                {/* Debug helpers: grid/gizmo hidden in cards mode entirely */}
+                {sessionState !== "immersive" && viewMode !== "cards" && (
+                  <>
                     <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
                       <GizmoViewport
                         axisColors={["#ff4444", "#44ff44", "#4488ff"]}
@@ -1750,15 +2169,21 @@ export function XRSceneRenderer({
           </Suspense>
         </Canvas>
 
-        {/* ── Cards mode overlay ──────────────────────────────── */}
-        {viewMode === "cards" && scene && plan && (
-          <CardsOverlay
-            scene={scene}
-            plan={plan}
-            expandedSectionId={expandedSectionId}
-            setExpandedSectionId={setExpandedSectionId}
-            setPage={setPage}
-          />
+        {/* ── Cards mode breadcrumb ───────────────────────────── */}
+        {viewMode === "cards" && cardsZoom > 0 && (
+          <div style={styles.cardsBreadcrumb}>
+            <button
+              onClick={handleCardsZoomOut}
+              style={styles.cardsBreadcrumbBack}
+            >
+              ← All sections
+            </button>
+            {focusedCard && (
+              <span style={styles.cardsBreadcrumbLabel}>
+                {focusedCard.label}
+              </span>
+            )}
+          </div>
         )}
 
         {/* ── Door mode TOC navigation overlay ───────────────── */}
@@ -1772,162 +2197,6 @@ export function XRSceneRenderer({
           />
         )}
       </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// Cards overlay
-// ─────────────────────────────────────────────────────────────
-
-/**
- * Shows section headings as clickable cards in a floating 2D overlay.
- * Clicking a card jumps the main content panel to that section's first page.
- * Works in tandem with the "cards" layout template (wider main slot).
- */
-function CardsOverlay({
-  scene,
-  plan,
-  expandedSectionId,
-  setExpandedSectionId,
-  setPage,
-}: {
-  scene: SemanticScene;
-  plan: LayoutPlan;
-  expandedSectionId: string | null;
-  setExpandedSectionId: (id: string | null) => void;
-  setPage: (id: string, page: number) => void;
-}) {
-  // Build cards from TOC navigation items (XRNavigationBar in the toc slot).
-  // We match each TOC link's label against content-section heading labels to
-  // find the page that section starts on, then navigate there when clicked.
-  const sections = React.useMemo(() => {
-    const result: { id: string; label: string; pageIndex: number }[] = [];
-
-    // Build label → pageIndex from the main content panel's sections.
-    const mainPanel = scene.root.children.find(
-      (p) => p.type === "XRContentPanel",
-    );
-    const sectionPageByLabel = new Map<string, number>();
-    if (mainPanel) {
-      for (const child of mainPanel.children) {
-        const heading = child.children.find((c) => c.type === "XRHeading");
-        const label = (heading?.label ?? child.label ?? "").toLowerCase().trim();
-        const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
-        if (label) sectionPageByLabel.set(label, pageIndex);
-      }
-    }
-
-    // Pull items from the first XRNavigationBar (the TOC panel).
-    const tocNav = scene.root.children.find(
-      (p) => p.type === "XRNavigationBar",
-    );
-    if (!tocNav) {
-      // Fallback: collect sections from the main panel directly.
-      if (mainPanel) {
-        for (const child of mainPanel.children) {
-          if (child.type !== "XRSection" && child.type !== "XRArticle") continue;
-          const heading = child.children.find((c) => c.type === "XRHeading");
-          const label = heading?.label ?? child.label ?? child.id;
-          const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
-          result.push({ id: child.id, label, pageIndex });
-        }
-      }
-      return result;
-    }
-
-    for (const link of tocNav.children) {
-      const label = link.label ?? link.content ?? "";
-      if (!label) continue;
-      const pageIndex =
-        sectionPageByLabel.get(label.toLowerCase().trim()) ?? 0;
-      result.push({ id: link.id, label, pageIndex });
-    }
-    return result;
-  }, [scene.root.children, scene.primitives, plan.entries]);
-
-  if (sections.length === 0) return null;
-
-  // Find the main content panel for page navigation.
-  const mainPanelId = scene.root.children.find(
-    (p) => p.type === "XRContentPanel",
-  )?.id;
-
-  function jumpToSection(sectionId: string, pageIndex: number) {
-    setExpandedSectionId(sectionId);
-    if (mainPanelId) setPage(mainPanelId, pageIndex);
-  }
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        top: 50,
-        left: "50%",
-        transform: "translateX(-50%)",
-        display: "flex",
-        flexWrap: "wrap",
-        gap: 8,
-        padding: "10px 14px",
-        background: "rgba(6, 10, 20, 0.88)",
-        border: "1px solid rgba(88, 166, 255, 0.18)",
-        borderRadius: 12,
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-        maxWidth: "80vw",
-        maxHeight: "28vh",
-        overflowY: "auto",
-        zIndex: 200,
-        fontFamily: "system-ui, -apple-system, sans-serif",
-      }}
-    >
-      {expandedSectionId && (
-        <button
-          onClick={() => setExpandedSectionId(null)}
-          style={{
-            width: "100%",
-            padding: "5px 10px",
-            background: "rgba(88, 166, 255, 0.1)",
-            border: "1px solid rgba(88, 166, 255, 0.3)",
-            borderRadius: 6,
-            color: "#58a6ff",
-            fontSize: 11,
-            cursor: "pointer",
-            marginBottom: 4,
-            textAlign: "left",
-          }}
-        >
-          ← All sections
-        </button>
-      )}
-      {sections.map(({ id, label, pageIndex }) => {
-        const isActive = expandedSectionId === id;
-        return (
-          <button
-            key={id}
-            onClick={() => jumpToSection(id, pageIndex)}
-            style={{
-              padding: "5px 12px",
-              background: isActive
-                ? "rgba(88, 166, 255, 0.2)"
-                : "rgba(255,255,255,0.04)",
-              border: `1px solid ${isActive ? "rgba(88, 166, 255, 0.45)" : "rgba(255,255,255,0.1)"}`,
-              borderRadius: 20,
-              color: isActive ? "#58a6ff" : "#7a9abf",
-              fontSize: 11,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-              maxWidth: 180,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              transition: "all 0.15s",
-            }}
-            title={label}
-          >
-            {label}
-          </button>
-        );
-      })}
     </div>
   );
 }
@@ -2120,5 +2389,41 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#4a5568",
     fontFamily: "inherit",
     letterSpacing: "0.02em",
+  },
+  cardsBreadcrumb: {
+    position: "absolute",
+    top: 50,
+    left: "50%",
+    transform: "translateX(-50%)",
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "6px 14px",
+    background: "rgba(6, 10, 20, 0.88)",
+    border: "1px solid rgba(88, 166, 255, 0.18)",
+    borderRadius: 24,
+    backdropFilter: "blur(16px)",
+    WebkitBackdropFilter: "blur(16px)",
+    zIndex: 200,
+    fontFamily: "system-ui, -apple-system, sans-serif",
+    pointerEvents: "auto" as const,
+  },
+  cardsBreadcrumbBack: {
+    padding: "4px 12px",
+    background: "rgba(88, 166, 255, 0.1)",
+    border: "1px solid rgba(88, 166, 255, 0.3)",
+    borderRadius: 16,
+    color: "#58a6ff",
+    fontSize: 11,
+    cursor: "pointer",
+    fontFamily: "inherit",
+  },
+  cardsBreadcrumbLabel: {
+    fontSize: 11,
+    color: "#7a9abf",
+    maxWidth: 260,
+    overflow: "hidden" as const,
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap" as const,
   },
 };

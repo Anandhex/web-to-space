@@ -355,18 +355,27 @@ function genericSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
 }
 
 /**
- * CAROUSEL template — flat five-panel row
- * ```
- * [TOC] gap [prev page] gap [  MAIN page  ] gap [next page] gap [aside]
- * ```
- * All panels are flat (no Y-rotation) at z = -d. The three content panels
- * (prev, main, next) share the same width so ghost content never bleeds
- * outside its panel. Main is centred on the viewer's straight-ahead gaze.
+ * CAROUSEL template — five panels in a flat row, each rotated to face the
+ * viewer and pushed back in z proportional to the rotation angle.
  *
- * CAROUSEL_GHOST_GAP is exported so the renderer computes ghost positions
- * with the same gap constant.
+ * Algorithm:
+ *  1. Lay out all panels in a flat row: x positions from widths + constant gap.
+ *  2. Rotate each panel by its facing angle (0° main, ±30° ghosts, ±60° toc/aside).
+ *  3. Push z back via the cylindrical formula z = -d / cos(angle) so panels
+ *     recede naturally as they rotate — the panel facing the viewer is always
+ *     at effective depth d.
+ *
+ * Ghost panel angles and the gap constant are exported for the renderer.
  */
+export const CAROUSEL_GHOST_PREV_ANGLE_DEG = -30;
+export const CAROUSEL_GHOST_NEXT_ANGLE_DEG = 30;
+/** World-space x-gap between adjacent carousel panels (metres). */
 export const CAROUSEL_GHOST_GAP = 0.06;
+/**
+ * Z pull-forward step per tier (metres, toward the viewer).
+ * Main = -d (tier 0), ghosts = -d + Z_STEP (tier 1), toc/aside = -d + 2*Z_STEP (tier 2).
+ */
+export const CAROUSEL_Z_STEP = 0.2;
 
 function carouselSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
   const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
@@ -376,21 +385,21 @@ function carouselSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
   const TOC_W = 0.36;
   const ASIDE_W = 0.5;
 
-  // Centre main panel on the viewer's straight-ahead gaze direction.
+  // Flat row x positions (left edges, constant gap, no overlap).
   const mainX = -(MAIN_W / 2);
+  const prevGhostX = mainX - GAP - MAIN_W;
+  const nextGhostX = mainX + MAIN_W + GAP;
+  const tocX = prevGhostX - GAP - TOC_W;
+  const asideX = nextGhostX + MAIN_W + GAP;
 
-  // Ghost prev/next are the same width as main — content won't bleed.
-  const ghostPrevX = mainX - GAP - MAIN_W;
-  const ghostNextX = mainX + MAIN_W + GAP;
-
-  // TOC and aside sit outside the ghost panels.
-  const tocX = ghostPrevX - GAP - TOC_W;
-  const asideX = ghostNextX + MAIN_W + GAP;
+  // Facing angles for toc and aside (ghosts handled by the renderer).
+  const TOC_DEG = -60;
+  const ASIDE_DEG = 60;
 
   return {
     toc: {
-      position: { x: tocX, y: eyeY - 0.05, z: -d },
-      rotation: zeroRotation(),
+      position: { x: tocX, y: eyeY - 0.05, z: -d + 2 * CAROUSEL_Z_STEP },
+      rotation: angularRotation(TOC_DEG),
       size: { width: TOC_W, height: metrics.navigationBar.height },
       curveRadius: 0,
       worldLocked: true,
@@ -403,8 +412,8 @@ function carouselSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       worldLocked: true,
     },
     complementary: {
-      position: { x: asideX, y: eyeY, z: -d },
-      rotation: zeroRotation(),
+      position: { x: asideX, y: eyeY, z: -d + 2 * CAROUSEL_Z_STEP },
+      rotation: angularRotation(ASIDE_DEG),
       size: { width: ASIDE_W, height: cfg.maxPanelViewportHeight },
       curveRadius: 0,
       worldLocked: true,
@@ -452,11 +461,13 @@ function cardsSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
   const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
   const d = cfg.viewingDistance;
   const ha = cfg.comfortHalfAngleDeg;
+  const MAIN_W = 1.8;
+  const mainX = -(MAIN_W / 2); // centre the panel on the viewer's gaze axis
   return {
     banner: {
-      position: { x: 0, y: eyeY + 0.52, z: -d },
+      position: { x: mainX, y: eyeY + 0.52, z: -d },
       rotation: zeroRotation(),
-      size: { width: 1.8, height: metrics.banner.height },
+      size: { width: MAIN_W, height: metrics.banner.height },
       curveRadius: d * 1.2,
       worldLocked: true,
     },
@@ -475,9 +486,9 @@ function cardsSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       worldLocked: true,
     },
     main: {
-      position: { x: 0, y: eyeY, z: -d },
+      position: { x: mainX, y: eyeY, z: -d },
       rotation: zeroRotation(),
-      size: { width: 1.8, height: cfg.maxPanelViewportHeight },
+      size: { width: MAIN_W, height: cfg.maxPanelViewportHeight },
       curveRadius: d * 1.2,
       worldLocked: true,
     },
@@ -489,9 +500,9 @@ function cardsSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       worldLocked: true,
     },
     footer: {
-      position: { x: 0, y: eyeY - cfg.maxPanelViewportHeight * 0.6, z: -d },
+      position: { x: mainX, y: eyeY - cfg.maxPanelViewportHeight * 0.6, z: -d },
       rotation: zeroRotation(),
-      size: { width: 1.8, height: metrics.footer.height },
+      size: { width: MAIN_W, height: metrics.footer.height },
       curveRadius: d * 1.2,
       worldLocked: true,
     },
