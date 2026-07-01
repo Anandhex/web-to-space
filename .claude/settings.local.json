@@ -18,7 +18,23 @@
       "Bash(./node_modules/.bin/tsc --noEmit)",
       "Bash(node --version 2>&1 || which node 2>&1 || ls /usr/local/bin/node 2>&1)",
       "Bash(/usr/local/bin/node ./node_modules/.bin/tsc --noEmit)",
-      "Bash(/usr/local/bin/node node_modules/.bin/tsc --noEmit)"
+      "Bash(/usr/local/bin/node node_modules/.bin/tsc --noEmit)",
+      "Bash(which node *)",
+      "Bash(/Users/anandpatil/.nvm/versions/node/v22.22.2/bin/npm run *)",
+      "WebSearch",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:www.researchgate.net)",
+      "WebFetch(domain:www.jstage.jst.go.jp)",
+      "WebFetch(domain:www.cs.cmu.edu)",
+      "WebFetch(domain:www.microsoft.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -s \"https://api.github.com/repos/kikoano/web2vr/contents\")",
+      "Bash(curl -s \"https://api.github.com/repos/kikoano/web2vr/contents/src\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/web2vr.js\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/elements/containerElement.js\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/elements/element.js\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/utils/position.js\")"
     ]
   }
 }

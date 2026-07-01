@@ -152,6 +152,15 @@ export const TextStyleContext = createContext<
   RenderMetrics["paragraph"] | null
 >(null);
 
+/**
+ * Provides the navigate handler to any descendant that needs to handle link
+ * clicks — both standalone XRLinkMesh and inline link spans in InlineProseRows.
+ * XRSceneGraph provides this; components consume it via useContext.
+ */
+export const NavigateContext = createContext<((href: string) => void) | null>(
+  null,
+);
+
 import { CurrentPageContext, FontContext } from "./XRSceneRenderer";
 
 // ─────────────────────────────────────────────────────────────
@@ -438,7 +447,7 @@ export function XRHeadingMesh({
 // ─────────────────────────────────────────────────────────────
 
 type TextSeg = { kind: "text"; text: string; bold?: boolean; italic?: boolean };
-type LinkSeg = { kind: "link"; text: string };
+type LinkSeg = { kind: "link"; text: string; href?: string | null };
 export type InlineSeg = TextSeg | LinkSeg;
 
 export type InlineRow =
@@ -465,7 +474,7 @@ export function buildInlineRows(children: any[]): InlineRow[] {
     if (isInlinePrimitive(child.type)) {
       const text: string = child.text ?? child.label ?? child.content ?? "";
       if (child.type === "XRLink") {
-        currentSegs.push({ kind: "link", text });
+        currentSegs.push({ kind: "link", text, href: child.href ?? null });
       } else {
         // Bold/italic can come from a single componentType ("b"/"strong"/
         // "i"/"em") or from an accumulated styleTags stack (e.g. ["i","b"]
@@ -593,13 +602,17 @@ export function InlineProseRows({
   renderChild,
   forceColor,
 }: InlineProseRowsProps) {
+  const navigate = useContext(NavigateContext);
   const lineH = fontSize * lineHeightRatio;
   const usableWidth = panelWidth - xInset;
-  // cursorY is mutated during render — this is intentional and safe because
-  // InlineProseRows is always called from a single render pass, never
-  // concurrently. React will call this function once per render cycle and
-  // the returned elements are stable.
+  // cursorY is mutated during render — intentional, single render pass.
   let cursorY = startY;
+  // Approx average char width for Roboto as a fraction of fontSize.
+  const CHAR_W = 0.52;
+  // How many characters fit on one visual line before troika wraps.
+  // Used to map charOffset → (visualLine, xInLine) so overlay blocks land
+  // on the right wrapped line rather than always at the row's first line.
+  const charsPerLine = Math.max(1, Math.floor(usableWidth / (fontSize * CHAR_W)));
 
   return (
     <>
@@ -611,6 +624,43 @@ export function InlineProseRows({
         const { text, colorRanges } = buildRowMeta(row.segments, forceColor);
         const rowY = cursorY;
         cursorY -= lineH;
+
+        // Transparent overlay blocks for each link segment.
+        // charOffset tracks how many characters precede the current segment;
+        // dividing by charsPerLine gives the approximate visual line so the
+        // overlay Y is correct even when the merged text has wrapped.
+        const linkHits: React.ReactNode[] = [];
+        if (navigate) {
+          let charOffset = 0;
+          for (let si = 0; si < row.segments.length; si++) {
+            const seg = row.segments[si];
+            if (seg.kind === "link" && seg.href) {
+              const visualLine = Math.floor(charOffset / charsPerLine);
+              const xInLine = charOffset % charsPerLine;
+              const hitX = xInset + xInLine * fontSize * CHAR_W;
+              const hitY = rowY - visualLine * lineH;
+              const hitW = Math.min(
+                Math.max(seg.text.length * fontSize * CHAR_W, 0.02),
+                usableWidth - xInLine * fontSize * CHAR_W,
+              );
+              const href = seg.href;
+              linkHits.push(
+                <mesh
+                  key={`lh-${si}`}
+                  position={[hitX + hitW / 2, hitY - lineH / 2, 0.004]}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigate(href);
+                  }}
+                >
+                  <planeGeometry args={[hitW, lineH]} />
+                  <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+                </mesh>,
+              );
+            }
+            charOffset += seg.text.length;
+          }
+        }
 
         return (
           <group key={`il-${i}`}>
@@ -627,6 +677,7 @@ export function InlineProseRows({
             >
               {text}
             </ClippedText>
+            {linkHits}
           </group>
         );
       })}
@@ -2217,6 +2268,7 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
   const styleOverride = useContext(TextStyleContext);
   const linkMetric = styleOverride ?? metrics.link.font;
   const { ref, handlers } = useHoverScale(1.0, 1.02);
+  const navigate = useContext(NavigateContext);
 
   const flatChildren = flattenInlineWrappers(primitive.children ?? []);
   const hasInlineChildren = flatChildren.some((c) => isInlinePrimitive(c.type));
@@ -2224,8 +2276,18 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
     ? buildInlineRows(mergeAdjacentTextRuns(flatChildren))
     : [];
 
+  const clickHandler =
+    primitive.href && navigate
+      ? {
+          onClick: (e: { stopPropagation: () => void }) => {
+            e.stopPropagation();
+            navigate(primitive.href!);
+          },
+        }
+      : {};
+
   return (
-    <group ref={ref} position={pos} rotation={rot} {...handlers}>
+    <group ref={ref} position={pos} rotation={rot} {...handlers} {...clickHandler}>
       {hasInlineChildren ? (
         <InlineProseRows
           rows={rows}

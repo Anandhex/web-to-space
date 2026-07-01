@@ -63,12 +63,15 @@ import {
 } from "@react-three/drei";
 
 import { parsePageToIR } from "../ir/parser";
+import { parsePageWithVIPS } from "../ir/vips";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../mapper/mapper";
 import { computeLayoutPlan } from "../layout/engine";
 import { DEFAULT_CONFIG } from "../ir/defaults";
-import type { ParserConfig } from "../ir/types";
+import type { ParserConfig, ParserBackend } from "../ir/types";
+import { applyParserBackend } from "../ir/backends";
 
 import { useXRSession } from "./useXRSession";
+import { Web2VRScene } from "./Web2VRScene";
 import {
   XRHeadingMesh,
   XRParagraphMesh,
@@ -91,6 +94,7 @@ import {
   ClipPlanesContext,
   ClippedText,
   RenderMetricsContext,
+  NavigateContext,
 } from "./primitives";
 import * as THREE from "three";
 import type {
@@ -168,8 +172,15 @@ export interface XRSceneRendererProps {
   deviceType?: XRDeviceType;
   fontType?: string;
   parserConfig?: Partial<ParserConfig>;
+  /**
+   * Selects the HTML processing strategy applied before the XR pipeline.
+   * "flat" skips the pipeline entirely and renders raw HTML in a browser iframe.
+   */
+  parserBackend?: ParserBackend;
   viewMode?: ViewMode;
   onPlanReady?: (plan: LayoutPlan) => void;
+  /** Called when a non-anchor link is clicked; defaults to window.open if omitted. */
+  onExternalNavigate?: (href: string) => void;
 }
 
 type PageState = Record<string, number>;
@@ -340,12 +351,14 @@ function usePipeline(
   deviceProfile: DeviceProfile,
   layoutConfig: Partial<LayoutConfig>,
   parserConfig: Partial<ParserConfig>,
+  parserBackend: ParserBackend,
   templateOverride: import("../layout/types").LayoutTemplate | undefined,
 ) {
   const [result, setResult] = useState({
     scene: null as SemanticScene | null,
     plan: null as LayoutPlan | null,
     error: null as string | null,
+    backendLabel: "Custom Pipeline" as string,
   });
 
   const configHash = JSON.stringify(layoutConfig);
@@ -357,38 +370,56 @@ function usePipeline(
     let cancelled = false;
 
     async function run() {
+      // "flat" and "web2vr" skip the XR pipeline entirely.
+      // The renderer handles each as its own non-pipeline visual.
+      if (parserBackend === "flat" || parserBackend === "web2vr") {
+        if (!cancelled)
+          setResult({
+            scene: null,
+            plan: null,
+            error: null,
+            backendLabel: parserBackend === "web2vr" ? "Web2VR" : "Browser Panel",
+          });
+        return;
+      }
+
       try {
         let scene: SemanticScene;
         if (sceneIn) {
           scene = sceneIn;
         } else if (html) {
-          const resolvedParserConfig = { ...DEFAULT_CONFIG, ...stableParserConfig };
-          const ir = await parsePageToIR(html, url!, undefined, resolvedParserConfig);
+          let ir;
+          let label: string;
+
+          if (parserBackend === "vips") {
+            ir = await parsePageWithVIPS(html, url!);
+            label = "VIPS (Visual Blocks)";
+          } else {
+            const transform = applyParserBackend(html, parserBackend, stableParserConfig);
+            label = transform.label;
+            const resolvedParserConfig = { ...DEFAULT_CONFIG, ...transform.configOverride };
+            ir = await parsePageToIR(transform.html, url!, undefined, resolvedParserConfig);
+          }
+
           scene = mapIRToScene(ir, DEFAULT_MAPPER_CONFIG);
+          const plan = computeLayoutPlan(scene, deviceProfile, templateOverride, stableConfig);
+          if (!cancelled) setResult({ scene, plan, error: null, backendLabel: label });
+          return;
         } else {
           if (!cancelled)
-            setResult({
-              scene: null,
-              plan: null,
-              error: "No html or scene provided.",
-            });
+            setResult({ scene: null, plan: null, error: "No html or scene provided.", backendLabel: "Custom Pipeline" });
           return;
         }
 
-        const plan = computeLayoutPlan(
-          scene,
-          deviceProfile,
-          templateOverride,
-          stableConfig,
-        );
-
-        if (!cancelled) setResult({ scene, plan, error: null });
+        const plan = computeLayoutPlan(scene, deviceProfile, templateOverride, stableConfig);
+        if (!cancelled) setResult({ scene, plan, error: null, backendLabel: "Custom Pipeline" });
       } catch (err) {
         if (!cancelled)
           setResult({
             scene: null,
             plan: null,
             error: err instanceof Error ? err.message : "Pipeline error.",
+            backendLabel: "Custom Pipeline",
           });
       }
     }
@@ -397,7 +428,7 @@ function usePipeline(
     return () => {
       cancelled = true;
     };
-  }, [html, sceneIn, url, deviceProfile, stableConfig, stableParserConfig, templateOverride]);
+  }, [html, sceneIn, url, deviceProfile, stableConfig, stableParserConfig, parserBackend, templateOverride]);
 
   return result;
 }
@@ -1638,12 +1669,16 @@ function XRSceneGraph({
   pageState,
   setPage,
   viewMode,
+  onExternalNavigate,
+  sourceUrl,
 }: {
   scene: SemanticScene;
   plan: LayoutPlan;
   pageState: PageState;
   setPage: (id: string, page: number) => void;
   viewMode?: ViewMode;
+  onExternalNavigate?: (href: string) => void;
+  sourceUrl?: string;
 }) {
   const primitiveMap = React.useMemo(() => {
     // Start with the tree walk so ordering is preserved for normal nodes,
@@ -1767,8 +1802,43 @@ function XRSceneGraph({
     ) ?? null;
   }, [viewMode, scene.root.children, plan.entries]);
 
+  const navigate = useCallback(
+    (href: string) => {
+      if (href.startsWith("#")) {
+        const sectionId = href.slice(1);
+        const sectionEntry = plan.entries[sectionId];
+        if (sectionEntry?.pageIndex !== undefined) {
+          for (const [, p] of primitiveMap) {
+            if (p.type === "XRContentPanel" && hasDescendant(p, sectionId)) {
+              setPage(p.id, sectionEntry.pageIndex);
+              return;
+            }
+          }
+        }
+        // anchor not found in plan — fall through to external handler
+      }
+
+      // Resolve relative URLs against the source page URL
+      let resolved = href;
+      if (sourceUrl && !/^https?:\/\//i.test(href) && !href.startsWith("#")) {
+        try {
+          resolved = new URL(href, sourceUrl).href;
+        } catch {
+          resolved = href;
+        }
+      }
+
+      if (onExternalNavigate) {
+        onExternalNavigate(resolved);
+      } else {
+        window.open(resolved, "_blank", "noopener,noreferrer");
+      }
+    },
+    [plan, primitiveMap, setPage, onExternalNavigate, sourceUrl],
+  );
+
   return (
-    <>
+    <NavigateContext.Provider value={navigate}>
       {scene.root.children.map((primitive) => {
         // In carousel mode, the main content panel is rendered via CarouselPanelGroup
         if (viewMode === "carousel" && primitive === mainContentPanel) {
@@ -1844,7 +1914,7 @@ function XRSceneGraph({
           />
         );
       })}
-    </>
+    </NavigateContext.Provider>
   );
 }
 
@@ -1905,8 +1975,10 @@ export function XRSceneRenderer({
   deviceType = "QUEST_3",
   fontType = undefined,
   parserConfig = {},
+  parserBackend = "custom",
   viewMode,
   onPlanReady,
+  onExternalNavigate,
 }: XRSceneRendererProps) {
   // 1. Resolve Device Profile locally
   const deviceProfile = useMemo(() => {
@@ -1936,10 +2008,11 @@ export function XRSceneRenderer({
     scene,
     plan,
     error: pipelineError,
+    backendLabel,
   } = usePipeline(html, sceneIn, url, deviceProfile, {
     ...layoutConfig,
     // sectionStartsOnNewPage: false,
-  }, parserConfig, templateOverride);
+  }, parserConfig, parserBackend, templateOverride);
 
   const {
     sessionState,
@@ -2031,25 +2104,55 @@ export function XRSceneRenderer({
         onExit={exitVR}
       />
 
-      {plan && (
-        <div style={styles.diag}>
-          <span>{plan.diagnostics.totalPlaced} primitives</span>
-          {plan.diagnostics.paginatedPanelCount > 0 && (
-            <span> · {plan.diagnostics.paginatedPanelCount} paginated</span>
-          )}
-          {plan.diagnostics.unplacedIds.length > 0 && (
-            <span style={{ color: "#f6a623" }}>
-              {" "}
-              · {plan.diagnostics.unplacedIds.length} unplaced
+      <div style={styles.diag}>
+        <span style={{ color: "#58a6ff", opacity: 0.8 }}>{backendLabel}</span>
+        {plan && (
+          <>
+            <span style={{ opacity: 0.4 }}> · </span>
+            <span>{plan.diagnostics.totalPlaced} primitives</span>
+            {plan.diagnostics.paginatedPanelCount > 0 && (
+              <span> · {plan.diagnostics.paginatedPanelCount} paginated</span>
+            )}
+            {plan.diagnostics.unplacedIds.length > 0 && (
+              <span style={{ color: "#f6a623" }}>
+                {" "}
+                · {plan.diagnostics.unplacedIds.length} unplaced
+              </span>
+            )}
+            <span style={{ marginLeft: "auto", opacity: 0.5 }}>
+              {plan.template} layout
             </span>
-          )}
-          <span style={{ marginLeft: "auto", opacity: 0.5 }}>
-            {plan.template} layout
-          </span>
-        </div>
-      )}
+          </>
+        )}
+        {parserBackend === "flat" && (
+          <span style={{ marginLeft: "auto", opacity: 0.5 }}>browser iframe</span>
+        )}
+        {parserBackend === "web2vr" && (
+          <span style={{ marginLeft: "auto", opacity: 0.5 }}>CSS layout → 3D</span>
+        )}
+      </div>
 
-      <div style={{ width, height }}>
+      <div style={{ width, height, position: "relative" }}>
+        {/* ── Flat backend: raw HTML in a floating browser panel ───── */}
+        {parserBackend === "flat" && html && (
+          <div style={styles.flatOverlay}>
+            <div style={styles.flatPanel}>
+              <div style={styles.flatChrome}>
+                <span style={{ opacity: 0.6 }}>◉</span>
+                <span>Browser Panel</span>
+                <span style={{ marginLeft: "auto", opacity: 0.4, fontSize: 10 }}>
+                  No semantic processing · raw HTML
+                </span>
+              </div>
+              <iframe
+                srcDoc={html}
+                style={{ flex: 1, border: "none", width: "100%" }}
+                sandbox="allow-scripts allow-forms"
+                title="Flat browser panel — no XR processing"
+              />
+            </div>
+          </div>
+        )}
         <Canvas
           style={{ background }}
           camera={{ position: [0, 1.5, 0], fov: 60, near: 0.01, far: 100 }}
@@ -2100,7 +2203,12 @@ export function XRSceneRenderer({
                   />
                 )}
 
-                {scene && plan && (
+                {/* Web2VR backend: CSS layout extracted from hidden iframe → 3D */}
+                {parserBackend === "web2vr" && html && (
+                  <Web2VRScene html={html} />
+                )}
+
+                {parserBackend !== "web2vr" && scene && plan && (
                   viewMode === "cards" && cardsZoom === 0 ? (
                     /* Level 0: overview grid of all top-level section cards */
                     <CardsGridMesh
@@ -2121,6 +2229,8 @@ export function XRSceneRenderer({
                         pageState={pageState}
                         setPage={setPage}
                         viewMode={viewMode}
+                        onExternalNavigate={onExternalNavigate}
+                        sourceUrl={url}
                       />
                     </PageRangeContext.Provider>
                   )
@@ -2425,5 +2535,39 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: "hidden" as const,
     textOverflow: "ellipsis",
     whiteSpace: "nowrap" as const,
+  },
+  flatOverlay: {
+    position: "absolute" as const,
+    inset: 0,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 10,
+    pointerEvents: "none" as const,
+  },
+  flatPanel: {
+    pointerEvents: "all" as const,
+    width: "80%",
+    maxWidth: 1100,
+    height: "90%",
+    borderRadius: 16,
+    overflow: "hidden",
+    boxShadow:
+      "0 8px 80px rgba(88, 166, 255, 0.2), 0 0 0 1px rgba(88, 166, 255, 0.28)",
+    background: "rgba(8, 14, 24, 0.98)",
+    display: "flex",
+    flexDirection: "column" as const,
+  },
+  flatChrome: {
+    padding: "9px 16px",
+    borderBottom: "1px solid rgba(88, 166, 255, 0.18)",
+    color: "#58a6ff",
+    fontSize: 12,
+    fontFamily: "system-ui, -apple-system, sans-serif",
+    background: "rgba(6, 10, 20, 0.95)",
+    flexShrink: 0,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
   },
 };

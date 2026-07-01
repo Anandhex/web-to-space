@@ -7,6 +7,7 @@ import {
 } from "./HomeScreen";
 import { TabBar } from "./TabBar";
 import { ViewToggle } from "./ViewToggle";
+import { ComparePanel } from "./ComparePanel";
 import {
   type Tab,
   type ViewMode,
@@ -28,6 +29,7 @@ export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([makeHomeTab()]);
   const [activeTabId, setActiveTabId] = useState(tabs[0].id);
   const [viewMode, setViewMode] = useState<ViewMode>("standard");
+  const [showCompare, setShowCompare] = useState(false);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
 
@@ -37,6 +39,26 @@ export default function App() {
     const tab = makeHomeTab();
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
+  }
+
+  async function openInNewTab(url: string) {
+    const tab: Tab = {
+      ...makeHomeTab(),
+      url,
+      label: labelFromUrl(url),
+    };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+    try {
+      const res = await fetch(`/proxy?url=${encodeURIComponent(url)}`);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const html = await res.text();
+      setTabs((prev) =>
+        prev.map((t) => (t.id === tab.id ? { ...t, html } : t)),
+      );
+    } catch (err) {
+      console.error("Failed to load:", err);
+    }
   }
 
   function handleCloseTab(id: string) {
@@ -91,6 +113,7 @@ export default function App() {
 
   // ── Render ────────────────────────────────────────────────────
 
+  const hasUrl = Boolean(activeTab.url);
   const hasContent = Boolean(activeTab.html);
 
   return (
@@ -103,12 +126,12 @@ export default function App() {
       }}
     >
       {/* Main content area */}
-      {!hasContent ? (
+      {!hasUrl ? (
         <HomeScreen
           onLoad={loadUrl}
           loading={loading}
         />
-      ) : (
+      ) : hasContent ? (
         <>
           {/* Active URL indicator */}
           <div
@@ -137,6 +160,31 @@ export default function App() {
 
           <ViewToggle mode={viewMode} onChange={setViewMode} />
 
+          {/* Compare button */}
+          <button
+            onClick={() => setShowCompare((v) => !v)}
+            style={{
+              position: "fixed",
+              top: 14,
+              right: 14,
+              padding: "7px 14px",
+              background: showCompare
+                ? "rgba(88,166,255,0.18)"
+                : "rgba(8,14,24,0.8)",
+              border: `1px solid ${showCompare ? "rgba(88,166,255,0.5)" : "rgba(30,45,61,0.4)"}`,
+              color: showCompare ? "#58a6ff" : "#7a8a9a",
+              borderRadius: 8,
+              fontSize: 12,
+              zIndex: 9999,
+              fontFamily: "monospace",
+              cursor: "pointer",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
+            }}
+          >
+            ⊞ Compare Parsers
+          </button>
+
           <XRSceneRenderer
             html={activeTab.html}
             url={activeTab.url}
@@ -144,10 +192,54 @@ export default function App() {
             height="100vh"
             deviceType={activeTab.settings.deviceType}
             parserConfig={activeTab.settings.parserConfig}
+            parserBackend={activeTab.settings.parserBackend}
             viewMode={viewMode}
             onPlanReady={onPlanReady}
+            onExternalNavigate={openInNewTab}
           />
         </>
+      ) : (
+        /* URL set but HTML not yet fetched — loading state */
+        <div
+          style={{
+            width: "100%",
+            height: "100vh",
+            background: "#050a10",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 16,
+            fontFamily: "system-ui, -apple-system, sans-serif",
+          }}
+        >
+          <div
+            style={{
+              width: 40,
+              height: 40,
+              border: "2px solid rgba(88, 166, 255, 0.15)",
+              borderTop: "2px solid #58a6ff",
+              borderRadius: "50%",
+              animation: "app-spin 1s linear infinite",
+            }}
+          />
+          <p style={{ margin: 0, color: "#58a6ff", fontSize: 13, letterSpacing: "0.06em" }}>
+            Rendering in 3D…
+          </p>
+          <p style={{ margin: 0, color: "#3a5a7a", fontSize: 11, fontFamily: "monospace", maxWidth: "60vw", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {activeTab.url}
+          </p>
+          <style>{`@keyframes app-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
+
+      {/* Parser comparison overlay */}
+      {showCompare && hasContent && (
+        <ComparePanel
+          html={activeTab.html}
+          url={activeTab.url}
+          onClose={() => setShowCompare(false)}
+        />
       )}
 
       {/* Tab bar — always visible */}

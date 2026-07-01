@@ -453,3 +453,15 @@ export interface BuildContext {
 export interface ParseContext {
   sourceUrl: string;
 }
+
+/**
+ * Selects which HTML processing strategy is applied before the XR pipeline.
+ *
+ * - "custom"      Full ARIA + structural inference + wrapper-piercing (default).
+ * - "readability" @mozilla/readability article extraction, then full pipeline.
+ * - "naive"       PARSER_CONFIGS.baseline — tag-to-role mapping only, no ARIA or inference.
+ * - "flat"        Raw HTML rendered in a flat browser iframe; skips the XR pipeline entirely.
+ * - "vips"        Simplified VIPS visual block segmentation (Cai et al., 2003), then semantic pipeline.
+ * - "web2vr"      Direct CSS layout → 3D mapping via getBoundingClientRect() (kikoano/web2vr approach).
+ */
+export type ParserBackend = "custom" | "readability" | "naive" | "flat" | "vips" | "web2vr";

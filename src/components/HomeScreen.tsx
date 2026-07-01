@@ -3,7 +3,7 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { Stars, OrbitControls, Text, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
 import type { XRDeviceType } from "../renderer/XRSceneRenderer";
-import type { ParserConfig } from "../ir/types";
+import type { ParserConfig, ParserBackend } from "../ir/types";
 
 // ─────────────────────────────────────────────────────────────
 // Types & defaults
@@ -24,6 +24,7 @@ export interface HomeSettings {
   deviceType: XRDeviceType;
   theme: HomeTheme;
   parserConfig: Partial<ParserConfig>;
+  parserBackend: ParserBackend;
 }
 
 export const DEFAULT_HOME_THEME: HomeTheme = {
@@ -41,6 +42,7 @@ export const DEFAULT_HOME_SETTINGS: HomeSettings = {
   deviceType: "QUEST_3",
   theme: DEFAULT_HOME_THEME,
   parserConfig: {},
+  parserBackend: "custom",
 };
 
 const LS_KEY = "fsw-home-settings";
@@ -55,6 +57,7 @@ function loadStoredSettings(): HomeSettings {
         ...parsed,
         theme: { ...DEFAULT_HOME_THEME, ...(parsed.theme ?? {}) },
         parserConfig: parsed.parserConfig ?? {},
+        parserBackend: parsed.parserBackend ?? "custom",
       };
     }
   } catch {}
@@ -313,12 +316,51 @@ const DEVICES: { id: XRDeviceType; label: string; desc: string; icon: string }[]
   { id: "RAY_BAN_META",  label: "Ray-Ban Meta",desc: "AR Glasses · 40° FOV",     icon: "◯" },
 ];
 
+const BACKENDS: { id: ParserBackend; icon: string; label: string; desc: string }[] = [
+  {
+    id: "custom",
+    icon: "⬡",
+    label: "Custom Pipeline",
+    desc: "ARIA + structural inference + wrapper piercing — 3 semantic layers",
+  },
+  {
+    id: "readability",
+    icon: "◎",
+    label: "Mozilla Readability",
+    desc: "@mozilla/readability article extractor — strips nav/ads, returns clean content",
+  },
+  {
+    id: "naive",
+    icon: "◯",
+    label: "Naive (Tags Only)",
+    desc: "Basic HTML tag → role mapping · No ARIA, no inference",
+  },
+  {
+    id: "flat",
+    icon: "▭",
+    label: "Browser Panel",
+    desc: "Raw HTML in a flat iframe — no XR processing, like a traditional VR browser",
+  },
+  {
+    id: "vips",
+    icon: "◈",
+    label: "VIPS Visual Blocks",
+    desc: "Cai et al. 2003 — DOM-based visual block segmentation, then semantic pipeline",
+  },
+  {
+    id: "web2vr",
+    icon: "⬕",
+    label: "Web2VR",
+    desc: "kikoano/web2vr — direct CSS layout → 3D via getBoundingClientRect() (no semantic parsing)",
+  },
+];
+
 function SettingsPanel({ settings, onChange, onClose }: {
   settings: HomeSettings;
   onChange: (s: HomeSettings) => void;
   onClose: () => void;
 }) {
-  const { theme, deviceType, parserConfig: pc } = settings;
+  const { theme, deviceType, parserConfig: pc, parserBackend } = settings;
   const acc = theme.accent;
 
   const updateTheme = (partial: Partial<HomeTheme>) =>
@@ -327,6 +369,8 @@ function SettingsPanel({ settings, onChange, onClose }: {
     onChange({ ...settings, parserConfig: { ...pc, ...partial } });
   const updateDevice = (dt: XRDeviceType) =>
     onChange({ ...settings, deviceType: dt });
+  const updateBackend = (b: ParserBackend) =>
+    onChange({ ...settings, parserBackend: b });
 
   // Resolve each boolean against its default value
   const bool = (key: keyof ParserConfig, def: boolean): boolean =>
@@ -359,6 +403,47 @@ function SettingsPanel({ settings, onChange, onClose }: {
       </div>
 
       <div style={{ flex: 1, overflowY: "auto" }}>
+
+        {/* ── Parser Backend ──────────────────────────── */}
+        <SettingsSection title="PARSER BACKEND" accent={acc}>
+          <p style={{ color: theme.textSecondary, fontSize: 11, margin: "0 0 12px", lineHeight: 1.5 }}>
+            Selects how HTML is pre-processed before entering the XR pipeline.
+            Switch backends and reload the same URL to compare output.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {BACKENDS.map((b) => (
+              <button
+                key={b.id}
+                onClick={() => updateBackend(b.id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  padding: "10px 14px",
+                  background: parserBackend === b.id
+                    ? `rgba(${hexToRgb(acc)}, 0.12)`
+                    : "rgba(255,255,255,0.03)",
+                  border: `1px solid ${parserBackend === b.id
+                    ? `rgba(${hexToRgb(acc)}, 0.5)`
+                    : "rgba(255,255,255,0.07)"}`,
+                  borderRadius: 8, cursor: "pointer", textAlign: "left",
+                  transition: "all 0.15s",
+                }}
+              >
+                <span style={{ fontSize: 16, color: parserBackend === b.id ? acc : theme.textSecondary, flexShrink: 0 }}>
+                  {b.icon}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: parserBackend === b.id ? acc : theme.textPrimary, fontSize: 13, fontWeight: 600 }}>
+                    {b.label}
+                  </div>
+                  <div style={{ color: theme.textSecondary, fontSize: 10, marginTop: 2, lineHeight: 1.4 }}>{b.desc}</div>
+                </div>
+                {parserBackend === b.id && (
+                  <span style={{ color: acc, fontSize: 13, flexShrink: 0 }}>✓</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </SettingsSection>
 
         {/* ── Device ─────────────────────────────────── */}
         <SettingsSection title="DEVICE" accent={acc}>
