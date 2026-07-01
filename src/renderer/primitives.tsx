@@ -1540,6 +1540,26 @@ export interface XRImageMeshProps {
   entry: LayoutEntry;
 }
 
+/**
+ * Routes external image URLs through the CORS proxy so Three.js can load
+ * them without cross-origin restrictions.  Data and blob URLs pass through
+ * unchanged.
+ */
+function proxyImageSrc(src: string): string {
+  if (!src || src.startsWith("data:") || src.startsWith("blob:") || src.startsWith("/")) {
+    return src;
+  }
+  try {
+    const u = new URL(src);
+    if (u.protocol === "http:" || u.protocol === "https:") {
+      return `/api/proxy?url=${encodeURIComponent(src)}`;
+    }
+  } catch {
+    // relative URL — leave as-is
+  }
+  return src;
+}
+
 export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
@@ -1547,20 +1567,21 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
   const h = safeDim(entry.size.height);
   const IMG_BG = "#111622";
 
+  // Proxy external URLs so Three.js can load them without CORS errors.
+  const proxiedSrc = proxyImageSrc(primitive.src ?? "");
+
   function isRenderableImage(url: string) {
+    // After proxying, external images become same-origin /api/proxy paths.
+    if (!url) return false;
+    if (url.startsWith("/") || url.startsWith("data:") || url.startsWith("blob:")) return true;
     try {
-      const u = new URL(url);
-      return (
-        u.origin === window.location.origin ||
-        url.startsWith("data:") ||
-        url.startsWith("blob:")
-      );
+      return new URL(url).origin === window.location.origin;
     } catch {
       return false;
     }
   }
   const texture =
-    isRenderableImage(primitive.src ?? "") && useTexture(primitive.src!);
+    isRenderableImage(proxiedSrc) && useTexture(proxiedSrc);
 
   return (
     <group position={pos} rotation={rot}>
@@ -1579,22 +1600,14 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
         />
       </RoundedBox>
 
-      {primitive.src && isRenderableImage(primitive.src) ? (
-        <mesh>
+      {proxiedSrc && isRenderableImage(proxiedSrc) && (
+        <mesh position={[w / 2, -h / 2, PANEL_DEPTH + 0.004]}>
           <planeGeometry args={[w, h]} />
-          <meshBasicMaterial map={texture} />
-        </mesh>
-      ) : (
-        <Html position={[w / 2, -h / 2, 0]}>
-          <img
-            src={primitive.src ?? ""}
-            style={{
-              width: `${w * 300}px`,
-              height: `${h * 300}px`,
-              objectFit: "cover",
-            }}
+          <meshBasicMaterial
+            map={texture || undefined}
+            clippingPlanes={clips}
           />
-        </Html>
+        </mesh>
       )}
       <mesh position={[w / 2, -h / 2, 0.002]} rotation={[0, 0, Math.PI / 2]}>
         <planeGeometry args={[h * 0.4, 0.002]} />
@@ -1610,7 +1623,7 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
         <ClippedText
           anchorX="center"
           anchorY="bottom"
-          position={[w / 2, -h + 0.02, PANEL_DEPTH]}
+          position={[w / 2, -h + 0.02, PANEL_DEPTH + 0.008]}
           fontSize={0.016}
           color={BODY_COL}
           maxWidth={w - 0.04}

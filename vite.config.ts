@@ -6,7 +6,7 @@ function corsProxyPlugin(): Plugin {
   return {
     name: "cors-proxy",
     configureServer(server) {
-      server.middlewares.use("/proxy", async (req, res) => {
+      server.middlewares.use("/api/proxy", async (req, res) => {
         const urlParam = new URL(
           req.url ?? "",
           "http://localhost",
@@ -24,9 +24,13 @@ function corsProxyPlugin(): Plugin {
               "User-Agent": "Mozilla/5.0 (compatible; WebToSpace/1.0)",
             },
           });
-          const html = await response.text();
-          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.end(html);
+          const contentType = response.headers.get("content-type") ?? "application/octet-stream";
+          const body = Buffer.from(await response.arrayBuffer());
+          res.writeHead(response.status, {
+            "Content-Type": contentType,
+            "Access-Control-Allow-Origin": "*",
+          });
+          res.end(body);
         } catch (err) {
           res.writeHead(500, { "Content-Type": "text/plain" });
           res.end(`Proxy error: ${String(err)}`);
