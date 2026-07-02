@@ -13,6 +13,7 @@ Instead of showing a flat browser window inside a headset, **Web-to-Space** unde
 3. Semantic elements are mapped to 3D primitives — panels, buttons, text blocks, nav rails
 4. A layout engine positions everything in 3D space (in metres, for XR viewports)
 5. The scene renders inside a WebXR session with hand/controller interaction
+   https://from-space-to-web.vercel.app - link to the weboage
 
 ---
 
@@ -20,13 +21,13 @@ Instead of showing a flat browser window inside a headset, **Web-to-Space** unde
 
 Switch between five spatial layout modes:
 
-| Mode | Description |
-|---|---|
-| **Standard** | Landmark panels spread across the scene |
-| **Carousel** | Pages arc around the user in a cylinder |
-| **Cards** | Content as floating cards in front of the user |
-| **Door** | Full-height vertical panels like open doors |
-| **Theatre** | Wide-screen presentation layout |
+| Mode         | Description                                    |
+| ------------ | ---------------------------------------------- |
+| **Standard** | Landmark panels spread across the scene        |
+| **Carousel** | Pages arc around the user in a cylinder        |
+| **Cards**    | Content as floating cards in front of the user |
+| **Door**     | Full-height vertical panels like open doors    |
+| **Theatre**  | Wide-screen presentation layout                |
 
 ---
 
