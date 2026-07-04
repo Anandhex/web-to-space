@@ -133,11 +133,15 @@ export default function App() {
         />
       ) : hasContent ? (
         <>
-          {/* Active URL indicator */}
+          {/* Active URL indicator.
+              top: 78 clears XRSceneRenderer's own in-flow header (VR button
+              row + diag row, ~64px tall) — XRSceneRenderer fills 100vh
+              starting at y=0, so a top:14 fixed badge here used to sit
+              directly on top of the Enter/Exit VR button, eating its clicks. */}
           <div
             style={{
               position: "fixed",
-              top: 14,
+              top: 78,
               left: 14,
               padding: "7px 14px",
               background: "rgba(8, 14, 24, 0.8)",
@@ -158,32 +162,43 @@ export default function App() {
             {activeTab.url}
           </div>
 
-          <ViewToggle mode={viewMode} onChange={setViewMode} />
-
-          {/* Compare button */}
-          <button
-            onClick={() => setShowCompare((v) => !v)}
+          {/* ViewToggle and Compare button share one fixed group so they
+              lay out side by side instead of both claiming top:14/right:14
+              independently (which stacked them directly on top of each
+              other). */}
+          <div
             style={{
               position: "fixed",
-              top: 14,
+              top: 78,
               right: 14,
-              padding: "7px 14px",
-              background: showCompare
-                ? "rgba(88,166,255,0.18)"
-                : "rgba(8,14,24,0.8)",
-              border: `1px solid ${showCompare ? "rgba(88,166,255,0.5)" : "rgba(30,45,61,0.4)"}`,
-              color: showCompare ? "#58a6ff" : "#7a8a9a",
-              borderRadius: 8,
-              fontSize: 12,
               zIndex: 9999,
-              fontFamily: "monospace",
-              cursor: "pointer",
-              backdropFilter: "blur(12px)",
-              WebkitBackdropFilter: "blur(12px)",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
             }}
           >
-            ⊞ Compare Parsers
-          </button>
+            <ViewToggle mode={viewMode} onChange={setViewMode} />
+
+            <button
+              onClick={() => setShowCompare((v) => !v)}
+              style={{
+                padding: "7px 14px",
+                background: showCompare
+                  ? "rgba(88,166,255,0.18)"
+                  : "rgba(8,14,24,0.8)",
+                border: `1px solid ${showCompare ? "rgba(88,166,255,0.5)" : "rgba(30,45,61,0.4)"}`,
+                color: showCompare ? "#58a6ff" : "#7a8a9a",
+                borderRadius: 8,
+                fontSize: 12,
+                fontFamily: "monospace",
+                cursor: "pointer",
+                backdropFilter: "blur(12px)",
+                WebkitBackdropFilter: "blur(12px)",
+              }}
+            >
+              ⊞ Compare Parsers
+            </button>
+          </div>
 
           <XRSceneRenderer
             html={activeTab.html}

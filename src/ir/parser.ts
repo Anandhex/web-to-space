@@ -1461,6 +1461,14 @@ function pruneUIChrome(doc: Document): void {
     ".navbox",
     ".sistersitebox",
     ".metadata",
+    // Wikipedia Vector-2022 skin chrome that lives *inside* <main>, as
+    // siblings of the real article body (#bodyContent) rather than outside
+    // it — pruning the outer skip-to-main slice doesn't remove these, so
+    // without this they get paginated ahead of the article as blank pages.
+    ".vector-page-titlebar-toc",
+    "#p-lang-btn",
+    ".vector-page-toolbar",
+    ".vector-column-end",
     "svg[aria-hidden='true']",
     "img[aria-hidden='true']",
     "span[aria-hidden='true']:empty",
@@ -1600,6 +1608,13 @@ export const parsePageToIR = async (
     if (mainEl && mainEl.parentElement === parsedDoc.body) {
       const sliceIndex = allBodyChildren.indexOf(mainEl as Element);
       if (sliceIndex >= 0) bodyChildren = allBodyChildren.slice(sliceIndex);
+    } else if (mainEl) {
+      // <main> isn't a direct child of <body> (e.g. MediaWiki's Vector skin
+      // nests it several containers deep alongside sidebar/toolbar chrome
+      // that are its own siblings, not body-level siblings we can slice
+      // around). Descend into <main> itself so only its children — not the
+      // surrounding page shell — become page content.
+      bodyChildren = getValidChildren(mainEl, skipTags);
     }
   }
 

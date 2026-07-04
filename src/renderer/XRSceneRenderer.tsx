@@ -787,6 +787,22 @@ function CameraRig({
   return null;
 }
 
+/**
+ * Binds the imperatively-requested XRSession (from useXRSession) to the R3F
+ * WebGLRenderer. Canvas's `onCreated` only fires once at mount, when the
+ * session is still null — it can't pick up a session granted later by
+ * clicking "Enter VR". This effect re-runs on every session change instead,
+ * which is what actually puts the renderer into (and out of) XR presentation.
+ */
+function XRSessionBinder({ session }: { session: XRSession | null }) {
+  const { gl } = useThree();
+  React.useEffect(() => {
+    gl.xr.enabled = true;
+    gl.xr.setSession(session);
+  }, [gl, session]);
+  return null;
+}
+
 /** Instantly snap camera position+orientation once on mount, then yield to OrbitControls. */
 function CameraSnapTo({
   position,
@@ -2259,18 +2275,15 @@ export function XRSceneRenderer({
           gl={{
             antialias: true,
             alpha: false,
-            ...(session ? { xr: { enabled: true } } : {}),
           }}
           onCreated={({ gl }) => {
             gl.localClippingEnabled = true;
-            if (session) {
-              gl.xr.enabled = true;
-              gl.xr.setSession(session as unknown as any);
-            }
+            gl.xr.enabled = true;
           }}
           onPointerMissed={handlePointerMissed}
         >
           <Suspense fallback={null}>
+            <XRSessionBinder session={session} />
             <ambientLight intensity={0.4} />
             <directionalLight
               position={[0, 3, 2]}

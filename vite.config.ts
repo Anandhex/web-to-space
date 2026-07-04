@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import type { Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import basicSsl from "@vitejs/plugin-basic-ssl";
 
 function corsProxyPlugin(): Plugin {
   return {
@@ -41,5 +42,12 @@ function corsProxyPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [corsProxyPlugin(), react()],
+  plugins: [corsProxyPlugin(), react(), basicSsl()],
+  server: {
+    // 0.0.0.0 so a headset on the same LAN can reach this machine's HTTPS
+    // dev server directly (e.g. https://<your-ip>:5173) — WebXR requires a
+    // secure context, and "secure context" only covers localhost, not a
+    // LAN IP over plain http.
+    host: true,
+  },
 });

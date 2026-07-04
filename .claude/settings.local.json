@@ -36,5 +36,6 @@
       "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/elements/element.js\")",
       "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/utils/position.js\")"
     ]
-  }
+  },
+  "showThinkingSummaries": true
 }

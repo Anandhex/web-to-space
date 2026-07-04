@@ -20,9 +20,6 @@ export function ViewToggle({ mode, onChange }: ViewToggleProps) {
   return (
     <div
       style={{
-        position: "fixed",
-        top: 14,
-        right: 14,
         display: "flex",
         alignItems: "center",
         gap: 2,
@@ -32,7 +29,6 @@ export function ViewToggle({ mode, onChange }: ViewToggleProps) {
         borderRadius: 24,
         backdropFilter: "blur(16px)",
         WebkitBackdropFilter: "blur(16px)",
-        zIndex: 9999,
         fontFamily: "system-ui, -apple-system, sans-serif",
       }}
     >
