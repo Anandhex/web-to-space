@@ -24,11 +24,13 @@ import {
   FIXED_HEIGHT_LOOKUP,
   flattenInlineWrappers,
   isInlinePrimitive,
+  LIST_ITEM_LABEL_TOP_INSET,
+  LIST_ITEM_PROSE_INSET,
   listItemLabelBlockHeight,
   mergeAdjacentTextRuns,
 } from "./utils";
 
-export const LIST_ITEM_PROSE_INSET = 0.014;
+export { LIST_ITEM_PROSE_INSET };
 
 // ── Custom height handlers (extracted from estimateHeight branches) ────────────
 
@@ -167,7 +169,9 @@ function _estimateListItemHeight(
       ancestors,
       scene,
     );
-    return Math.max(lineH2 + 0.02, contentHeight);
+    // Reserve LIST_ITEM_LABEL_TOP_INSET at the top for the accent band + gap,
+    // so the engine-computed card height matches what the renderer actually draws.
+    return Math.max(lineH2 + 0.02, LIST_ITEM_LABEL_TOP_INSET + contentHeight);
   }
   const labelBlockHeight = listItemLabelBlockHeight(primitive.label, metrics);
   return Math.max(

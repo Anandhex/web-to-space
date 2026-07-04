@@ -92,10 +92,13 @@ import {
   XRFormFieldMesh,
   XRTabGroupMesh,
   ClipPlanesContext,
+  PanelOriginYContext,
   ClippedText,
   RenderMetricsContext,
   NavigateContext,
 } from "./primitives";
+import { ThemeContext, useTheme, LIGHT_THEME, type XRTheme } from "./theme";
+import { PanelGradientOverlay } from "./PanelGradient";
 import * as THREE from "three";
 import type {
   SemanticScene,
@@ -181,6 +184,8 @@ export interface XRSceneRendererProps {
   onPlanReady?: (plan: LayoutPlan) => void;
   /** Called when a non-anchor link is clicked; defaults to window.open if omitted. */
   onExternalNavigate?: (href: string) => void;
+  /** XR primitive colour palette. Defaults to LIGHT_THEME (Meta Horizon UI Set). */
+  theme?: XRTheme;
 }
 
 type PageState = Record<string, number>;
@@ -483,10 +488,6 @@ function PaginatingPanelRenderer({
     [primitive, plan],
   );
 
-  // XRContentPanel uses a more opaque backing (it IS the main content surface).
-  // All other containers use a lighter backing so nesting levels remain legible.
-  const backingOpacity = primitive.type === "XRContentPanel" ? 0.35 : 0.2;
-
   // Apply the section page range only for the top-level content panel — not
   // for nested sections/articles which have their own per-child pagination.
   const pageRange = React.useContext(PageRangeContext);
@@ -506,8 +507,9 @@ function PaginatingPanelRenderer({
         />
       ))}
       <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
-        <PanelBacking entry={zeroedEntry(entry)} opacity={backingOpacity} />
+        <PanelBacking entry={zeroedEntry(entry)} />
         <ClipPlanesContext.Provider value={panelClipPlanes}>
+        <PanelOriginYContext.Provider value={ey}>
           {primitive.children
             .filter((child) => !isExtractedComplementary(child, plan))
             .map((child) => (
@@ -520,6 +522,7 @@ function PaginatingPanelRenderer({
                 primitiveMap={primitiveMap}
               />
             ))}
+        </PanelOriginYContext.Provider>
         </ClipPlanesContext.Provider>
         {pagination && pagination.pageCount > 1 && (
           <PaginationControls
@@ -596,8 +599,9 @@ function CarouselGhostPanel({
         );
       })}
       <group position={[ex, ey, ez]} rotation={rot} raycast={() => null}>
-        <PanelBacking entry={zeroedEntry(entry)} opacity={opacity * 0.35} />
+        <PanelBacking entry={zeroedEntry(entry)} ghostOpacity={opacity} />
         <ClipPlanesContext.Provider value={panelClipPlanes}>
+        <PanelOriginYContext.Provider value={ey}>
           {primitive.children
             .filter((child) => !isExtractedComplementary(child, plan))
             .map((child) => (
@@ -610,6 +614,7 @@ function CarouselGhostPanel({
                 primitiveMap={primitiveMap}
               />
             ))}
+        </PanelOriginYContext.Provider>
         </ClipPlanesContext.Provider>
       </group>
     </CurrentPageContext.Provider>
@@ -824,6 +829,7 @@ function SectionCardTile({
   isActive: boolean;
   onClick: () => void;
 }) {
+  const theme = useTheme();
   const [hovered, setHovered] = React.useState(false);
   const fontType = React.useContext(FontContext);
   const w = CARD_W;
@@ -844,23 +850,25 @@ function SectionCardTile({
     >
       <RoundedBox args={[w, h, 0.008]} radius={0.012}>
         <meshStandardMaterial
-          color={isActive ? "#112840" : hovered ? "#0d1e30" : "#070e18"}
+          color={isActive ? "#EAF2FE" : hovered ? "#F3F3F6" : theme.panelBg}
           transparent
-          opacity={0.95}
+          opacity={0.97}
+          roughness={0.6}
+          metalness={0}
         />
       </RoundedBox>
       {/* top accent bar */}
       <mesh position={[0, h / 2 - 0.002, 0.006]}>
         <planeGeometry args={[w * 0.65, 0.003]} />
         <meshBasicMaterial
-          color={isActive ? "#58a6ff" : hovered ? "#2a5a8f" : "#162840"}
+          color={isActive || hovered ? theme.accentCol : theme.panelRim}
         />
       </mesh>
       <Text
         font={fontType}
         position={[0, 0, 0.007]}
         fontSize={0.016}
-        color={isActive ? "#90c8ff" : hovered ? "#8ab4d8" : "#5a8ab0"}
+        color={isActive ? theme.accentCol : theme.headingCol}
         anchorX="center"
         anchorY="middle"
         maxWidth={w - 0.04}
@@ -883,6 +891,7 @@ function CardsGridMesh({
   onCardClick: (id: string, pageIndex: number, hasSubSections: boolean) => void;
   headerLabel?: string;
 }) {
+  const theme = useTheme();
   const fontType = React.useContext(FontContext);
   const cols = CARD_COLS;
   const cw = CARD_W;
@@ -902,7 +911,7 @@ function CardsGridMesh({
           font={fontType}
           position={[0, startY + ch / 2 + 0.055, CARD_Z]}
           fontSize={0.014}
-          color="#2a4a6a"
+          color={theme.bodyCol}
           anchorX="center"
           anchorY="bottom"
           letterSpacing={0.08}
@@ -948,6 +957,7 @@ function PrimitiveDispatcher({
   const entry = plan.entries[primitive.id];
   const currentPage = React.useContext(CurrentPageContext);
   const fontType = React.useContext(FontContext);
+  const theme = useTheme();
 
   if (!entry) return null;
 
@@ -1163,7 +1173,7 @@ function PrimitiveDispatcher({
       return (
         <WithSiblingChildren
           entry={entry}
-          backing={<PanelBacking entry={zeroedEntry(entry)} opacity={0.15} />}
+          backing={<PanelBacking entry={zeroedEntry(entry)} />}
           primitives={primitive.children}
           plan={plan}
           pageState={pageState}
@@ -1243,7 +1253,7 @@ function PrimitiveDispatcher({
       return (
         <WithSiblingChildren
           entry={entry}
-          backing={<PanelBacking entry={zeroedEntry(entry)} opacity={0.2} />}
+          backing={<PanelBacking entry={zeroedEntry(entry)} />}
           primitives={primitive.children}
           plan={plan}
           pageState={pageState}
@@ -1261,7 +1271,7 @@ function PrimitiveDispatcher({
       // this group — not as world-space siblings — for the slot offset to compose.
       return (
         <AtPos entry={entry}>
-          <PanelBacking entry={zeroedEntry(entry)} opacity={0.2} />
+          <PanelBacking entry={zeroedEntry(entry)} />
           <DispatchChildren
             primitives={primitive.children}
             plan={plan}
@@ -1314,6 +1324,7 @@ function PrimitiveDispatcher({
                 primitive={primitive as XRListItem}
                 entry={zeroedEntry(entry)}
                 renderChild={() => null}
+                panelRelativeY={entry.position.y}
               />
             }
             primitives={primitive.children}
@@ -1360,6 +1371,7 @@ function PrimitiveDispatcher({
               primitive={primitive as XRListItem}
               entry={zeroedEntry(entry)}
               renderChild={() => null}
+              panelRelativeY={entry.position.y}
             />
           }
           primitives={blockChildrenForDispatch}
@@ -1371,7 +1383,23 @@ function PrimitiveDispatcher({
       );
     }
 
-    case "XRList":
+    case "XRList": {
+      // Shared container "shell" panel behind the item tiles — matches the
+      // Meta Horizon UI Set List component (one rounded backplate wrapping
+      // a grid of tiles, rather than each item floating with no container).
+      return (
+        <WithSiblingChildren
+          entry={entry}
+          backing={<PanelBacking entry={zeroedEntry(entry)} />}
+          primitives={primitive.children}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
+      );
+    }
+
     case "XRTableRow":
     case "XRTableCell":
       // Children have panel-absolute positions — dispatch as siblings only.
@@ -1437,7 +1465,7 @@ function PrimitiveDispatcher({
             anchorY="top"
             position={[0.008, -0.008, 0.004]}
             fontSize={0.018}
-            color="#7aa2cc"
+            color={theme.bodyCol}
             maxWidth={w - 0.016}
           >
             {primitive.label ?? primitive.type}
@@ -1487,18 +1515,59 @@ function PrimitiveDispatcher({
 
 function PanelBacking({
   entry,
-  opacity,
+  ghostOpacity,
 }: {
   entry: LayoutEntry;
-  opacity: number;
+  /**
+   * When set, renders as a translucent, dimmed carousel "ghost" preview
+   * panel (an adjacent page) instead of the normal opaque matte card.
+   */
+  ghostOpacity?: number;
 }) {
-  const w = entry.size.width;
-  const h = entry.size.height;
+  const theme = useTheme();
+  const w = Math.max(entry.size.width, 0.025);
+  const h = Math.max(entry.size.height, 0.032);
+  const DEPTH = 0.01;
+  const RADIUS = Math.min(0.004, Math.min(w, h, DEPTH) / 2 - 0.001);
+  const isGhost = ghostOpacity !== undefined;
+
+  // Two layers only — opaque matte fill + gradient wash. This backing is
+  // reused for the top-level content panel AND every nested XRArticle/
+  // XRFormPanel/XRComplementary container, so a document with many nested
+  // containers no longer stacks a border-rim box + highlight strip per
+  // container at nearly the same Z depth (that compounding read as a thick
+  // "brick" of panels when viewed edge-on — see the matching simplification
+  // in XRSectionMesh, primitives.tsx). The box is positioned so its front
+  // face sits exactly at local z=0 — the panel-absolute origin every child
+  // primitive's position is measured from (see the coordinate contract in
+  // CLAUDE.md) — rather than being pushed back by an ad hoc epsilon.
   return (
-    <mesh position={[w / 2, -h / 2, -0.002]}>
-      <planeGeometry args={[w, h]} />
-      <meshStandardMaterial color="#0d1117" transparent opacity={opacity} />
-    </mesh>
+    <>
+      <RoundedBox
+        args={[w, h, DEPTH]}
+        radius={RADIUS}
+        position={[w / 2, -h / 2, -DEPTH / 2]}
+      >
+        <meshStandardMaterial
+          color={theme.panelBg}
+          transparent={isGhost}
+          opacity={isGhost ? ghostOpacity : 1}
+          roughness={0.85}
+          metalness={0}
+        />
+      </RoundedBox>
+
+      {/* Subtle vertical gradient wash — panelGradientBottom matches panelBg
+          exactly so the seam against the flat fill above is invisible; only
+          the top portion reads lighter, matching Meta's panel material. */}
+      <PanelGradientOverlay
+        width={w}
+        height={h}
+        position={[w / 2, -h / 2, 0.0005]}
+        topColor={theme.panelGradientTop}
+        bottomColor={theme.panelGradientBottom}
+      />
+    </>
   );
 }
 
@@ -1509,14 +1578,15 @@ function GenericPanelMesh({
   primitive: XRPrimitive;
   entry: LayoutEntry;
 }) {
+  const theme = useTheme();
   const w = Math.max(entry.size.width, 0.025);
   const h = Math.max(entry.size.height, 0.032);
   const fontType = React.useContext(FontContext);
   return (
     <>
-      <mesh position={[w / 2, -h / 2, -0.003]}>
+      <mesh position={[w / 2, -h / 2, 0]}>
         <planeGeometry args={[w, h]} />
-        <meshStandardMaterial color="#0d1117" transparent opacity={0.28} />
+        <meshStandardMaterial color={theme.panelBg} roughness={0.85} metalness={0} />
       </mesh>
       <Text
         font={fontType}
@@ -1524,7 +1594,7 @@ function GenericPanelMesh({
         anchorY="top"
         position={[0.006, -0.005, 0.001]}
         fontSize={0.011}
-        color="#3a5068"
+        color={theme.bodyCol}
         maxWidth={w - 0.012}
       >
         {`${primitive.type}${primitive.label ? ` · ${primitive.label.slice(0, 32)}` : ""}`}
@@ -1548,12 +1618,15 @@ function PaginationControls({
   onPageChange: (page: number) => void;
   pageRange?: [number, number] | null;
 }) {
+  const theme = useTheme();
   const w = entry.size.width;
   const h = entry.size.height;
-  const BTN_W = 0.1;
-  const BTN_H = 0.038;
-  const barY = -(h + BTN_H / 2 + 0.016);
-  const SPREAD = Math.min(w / 2 - BTN_W * 0.6, 0.22);
+  // Round icon buttons (chevron-only) — matches the Horizon UI Set's
+  // circular media-transport button language (rewind/play/forward-10 in the
+  // "Content Modules" reference) rather than a wide labelled pill.
+  const BTN_SIZE = 0.044;
+  const barY = -(h + BTN_SIZE / 2 + 0.016);
+  const SPREAD = Math.min(w / 2 - BTN_SIZE * 0.6, 0.22);
   const fontType = React.useContext(FontContext);
 
   // When a section range is active, clamp navigation and show relative page numbers.
@@ -1561,6 +1634,8 @@ function PaginationControls({
   const lastPage = pageRange?.[1] ?? (pagination.pageCount - 1);
   const sectionPageCount = lastPage - firstPage + 1;
   const relPage = currentPage - firstPage; // 0-based within section
+  const atFirst = currentPage <= firstPage;
+  const atLast = currentPage >= lastPage;
 
   return (
     <group position={[w / 2, barY, 0.005]}>
@@ -1569,24 +1644,26 @@ function PaginationControls({
         onClick={() => onPageChange(Math.max(firstPage, currentPage - 1))}
       >
         <RoundedBox
-          args={[BTN_W, BTN_H, 0.006]}
-          radius={Math.min(BTN_H / 2, 0.0029)}
+          args={[BTN_SIZE, BTN_SIZE, 0.006]}
+          radius={BTN_SIZE / 2}
         >
           <meshStandardMaterial
-            color={currentPage <= firstPage ? "#1a1f2e" : "#1a2840"}
+            color={atFirst ? theme.disabledBg : theme.emphasisCol}
             transparent
-            opacity={0.8}
+            opacity={0.95}
+            roughness={0.35}
+            metalness={0}
           />
         </RoundedBox>
         <Text
           font={fontType}
           anchorX="center"
           anchorY="middle"
-          position={[0, 0, 0.005]}
-          fontSize={0.018}
-          color="#fff"
+          position={[-0.001, 0, 0.005]}
+          fontSize={0.02}
+          color={atFirst ? theme.mutedTextCol : theme.panelBg}
         >
-          ← Prev
+          {"‹"}
         </Text>
       </group>
 
@@ -1596,7 +1673,7 @@ function PaginationControls({
         anchorY="middle"
         position={[0, 0, 0]}
         fontSize={0.016}
-        color="#fff"
+        color={theme.bodyCol}
       >
         {`${relPage + 1} / ${sectionPageCount}`}
       </Text>
@@ -1608,26 +1685,26 @@ function PaginationControls({
         }
       >
         <RoundedBox
-          args={[BTN_W, BTN_H, 0.006]}
-          radius={Math.min(BTN_H / 2, 0.0029)}
+          args={[BTN_SIZE, BTN_SIZE, 0.006]}
+          radius={BTN_SIZE / 2}
         >
           <meshStandardMaterial
-            color={
-              currentPage >= lastPage ? "#1a1f2e" : "#1a2840"
-            }
+            color={atLast ? theme.disabledBg : theme.emphasisCol}
             transparent
-            opacity={0.8}
+            opacity={0.95}
+            roughness={0.35}
+            metalness={0}
           />
         </RoundedBox>
         <Text
           font={fontType}
           anchorX="center"
           anchorY="middle"
-          position={[0, 0, 0.005]}
-          fontSize={0.018}
-          color="#fff"
+          position={[0.001, 0, 0.005]}
+          fontSize={0.02}
+          color={atLast ? theme.mutedTextCol : theme.panelBg}
         >
-          Next →
+          {"›"}
         </Text>
       </group>
     </group>
@@ -1979,6 +2056,7 @@ export function XRSceneRenderer({
   viewMode,
   onPlanReady,
   onExternalNavigate,
+  theme = LIGHT_THEME,
 }: XRSceneRendererProps) {
   // 1. Resolve Device Profile locally
   const deviceProfile = useMemo(() => {
@@ -2186,6 +2264,7 @@ export function XRSceneRenderer({
             <Environment preset="city" />
 
             <RenderMetricsContext.Provider value={deviceProfile.renderMetrics}>
+              <ThemeContext.Provider value={theme}>
               <FontContext.Provider value={fontType}>
                 {/* Level 0 (overview): locked fly-out position, no orbit */}
                 {viewMode === "cards" && cardsZoom === 0 && (
@@ -2275,6 +2354,7 @@ export function XRSceneRenderer({
                   </>
                 )}
               </FontContext.Provider>
+              </ThemeContext.Provider>
             </RenderMetricsContext.Provider>
           </Suspense>
         </Canvas>

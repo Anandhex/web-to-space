@@ -197,7 +197,28 @@ export function paragraphWordsThatFit(
  * child either overlap (renderer inset smaller than what layout reserved)
  * or leave a dead gap (renderer inset larger than what layout reserved).
  */
-export const LIST_ITEM_LABEL_TOP_INSET = 0.018;
+/** Height of the accent band drawn at the top of every list-item card. */
+export const LIST_ITEM_ACCENT_H = 0.008;
+/**
+ * Space between the card's glass top edge and the top of the accent band.
+ * Must be large enough to absorb perspective parallax: the accent bar sits at
+ * z=0 while the glass top edge is at z≈−0.009, giving a ~10 mm upward shift
+ * at eye level (1.4 m Y, 1.2 m viewing distance). 12 mm keeps the bar
+ * visually inside the card at all row positions within the panel.
+ */
+export const LIST_ITEM_ACCENT_INSET = 0.012;
+/** Vertical gap between the bottom of the accent band and the first line of content. */
+export const LIST_ITEM_CONTENT_PAD = 0.018;
+/**
+ * Total distance from the card's top edge to where content starts.
+ * = LIST_ITEM_ACCENT_INSET + LIST_ITEM_ACCENT_H + LIST_ITEM_CONTENT_PAD.
+ * Both the engine (height estimates) and the renderer (mesh positions) must
+ * read this same value — any drift causes visual overlap or dead gaps.
+ */
+export const LIST_ITEM_LABEL_TOP_INSET =
+  LIST_ITEM_ACCENT_INSET + LIST_ITEM_ACCENT_H + LIST_ITEM_CONTENT_PAD;
+/** Horizontal inset for content inside a list-item card (left and right). */
+export const LIST_ITEM_PROSE_INSET = 0.016;
 
 /**
  * Height occupied by an XRListItem's own label line, including its top

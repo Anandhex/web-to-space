@@ -115,7 +115,10 @@ function stackChildrenSimple(
   // and supplies a resolved column count.
   if (parentType === "XRList" && listColumns && listColumns > 1) {
     const columns = listColumns;
-    const cardWidth = Math.max(0.025, childWidth / columns);
+    const cardWidth = Math.max(
+      0.025,
+      (childWidth - config.childGapY * (columns - 1)) / columns,
+    );
     const rowCount = Math.ceil(children.length / columns);
     const childEntries: LayoutEntry[] = [];
     // cursorY starts at 0 (no internal top padding): the XRList container's
@@ -163,6 +166,10 @@ function stackChildrenSimple(
           size: { width: cardWidth, height: rowHeights[colIdx] ?? rowH },
           curveRadius: 0,
           worldLocked: true,
+          // Stamped on each item (not just the XRList container) so
+          // XRListItemMesh can tell a grid tile apart from a flat list row
+          // without needing to look up its parent.
+          listColumns: columns,
         };
         attachResolvedStrategies(entry, card, cardWidth, metrics);
         childEntries.push(entry);
@@ -208,6 +215,10 @@ function stackChildrenSimple(
       size: { width: childWidth, height: h },
       curveRadius: 0,
       worldLocked: true,
+      // Single-column XRList children: stamp listColumns=1 so XRListItemMesh
+      // can distinguish a flat list row from a multi-column grid tile (see
+      // the listColumns>1 branch above) purely from its own entry.
+      ...(parentType === "XRList" ? { listColumns: 1 } : {}),
     };
     attachResolvedStrategies(entry, child, panelUsableWidth, metrics);
     childEntries.push(entry);
@@ -274,6 +285,7 @@ function paginateContentPanel(
       pageIndexMap: {},
       placedPositionMap: new Map(),
       placedHeightMap: new Map(),
+      placedWidthMap: new Map(),
       syntheticPrimitives: [],
     };
   }
@@ -283,6 +295,7 @@ function paginateContentPanel(
 
   const positionMap: Map<string, Vec3> = new Map();
   const heightMap: Map<string, number> = new Map();
+  const widthMap: Map<string, number> = new Map();
   const pageIndexMap: Record<string, number> = {};
   const pageYOffsets: number[] = [0];
   const syntheticPrimitives: XRPrimitive[] = [];
@@ -306,6 +319,29 @@ function paginateContentPanel(
     lastPlacedType = null;
   }
 
+  // Shared "does this node fit in what's left of the current page?" guard.
+  // If not — and the page already has content, and doing so wouldn't strand
+  // a lone heading — start a fresh page before the node is placed. Used by
+  // the main loop's atomic path, splitSection's leaf path, and
+  // placeRecursiveContainer (for keep-together containers like XRFigure).
+  // Absent from a call site, this check is what lets an atomic block (image,
+  // figure, table, ...) get placed straddling a page boundary and clipped by
+  // the viewport instead of starting clean on the next page.
+  function breakIfDoesNotFit(h: number): boolean {
+    const wouldStrandHeading =
+      lastPlacedType === "XRHeading" && itemsOnPage === 1;
+    const gap = itemsOnPage === 0 ? 0 : config.childGapY;
+    if (
+      pageHeight + gap + h > VIEWPORT &&
+      itemsOnPage > 0 &&
+      !wouldStrandHeading
+    ) {
+      nextPage((pageYOffsets[pageIdx] ?? 0) + VIEWPORT);
+      return true;
+    }
+    return false;
+  }
+
   function stampSubtree(node: XRPrimitive, page: number): void {
     pageIndexMap[node.id] = page;
     for (const child of node.children) stampSubtree(child, page);
@@ -313,7 +349,18 @@ function paginateContentPanel(
 
   // Config-driven helpers replacing the old isSectionLike / isRecursiveContainer.
   function isSectionLike(p: XRPrimitive): boolean {
-    return PRIMITIVE_CONFIG[p.type]?.forceNewPage === true;
+    if (PRIMITIVE_CONFIG[p.type]?.forceNewPage !== true) return false;
+    // mapList downgrades a list with fewer than minCardGridItems items to a
+    // titleless XRSection (not worth a card grid for 1-2 items) — this can
+    // fire on a tiny sub-list nested anywhere, including deep inside a
+    // citation's own inline content (e.g. a one-item "external link"
+    // sub-bullet). That's not a real document section; forcing a page break
+    // for it splits ordinary content (e.g. a citation's DOI link) onto its
+    // own page mid-item. A genuine document section reliably has a title
+    // (from a heading or landmark label), so require one before treating it
+    // as page-break-worthy.
+    if (p.type === "XRSection" && p.title === null) return false;
+    return true;
   }
 
   // A recursive container is one whose config says paginate:'recursive' but
@@ -323,6 +370,13 @@ function paginateContentPanel(
   function isRecursiveContainer(p: XRPrimitive): boolean {
     const cfg = PRIMITIVE_CONFIG[p.type];
     if (cfg?.paginate === "recursive" && !cfg.forceNewPage) return true;
+    // A titleless XRSection is exempted from forcing a page break (see
+    // isSectionLike) but its content must still be recursed into normally —
+    // falling through to the atomic-leaf path instead would size it with
+    // the generic linear-stack height estimator, which doesn't understand
+    // grid-column layouts and wildly overestimates height for any XRList
+    // nested inside (e.g. a small table remapped to a card grid).
+    if (p.type === "XRSection" && p.title === null) return true;
     if (
       (p.type === "XRParagraph" ||
         p.type === "XRHeading" ||
@@ -752,11 +806,15 @@ function paginateContentPanel(
   // row-level page overflow (entire row moves to next page if it doesn't fit).
   function placeListGrid(node: XRPrimitive): void {
     const columns = resolveListColumns(childWidth, metrics);
-    const usableW = childWidth - config.panelPaddingX * 2;
+    const usableW = childWidth; // childWidth is already panelWidth - 2*panelPaddingX
     const cardWidth = Math.max(
       0.025,
       (usableW - config.childGapY * (columns - 1)) / columns,
     );
+    // The most vertical room any row could ever get, even alone on a fresh
+    // page. An item whose card-width estimate exceeds this can never fit its
+    // grid column without clipping, no matter which page it lands on.
+    const emptyPageBudget = VIEWPORT - config.panelPaddingTop;
 
     // rowsOnPage tracks rows placed on the current page by THIS list only.
     // Using a local counter (not the global itemsOnPage) ensures the first
@@ -765,26 +823,12 @@ function paginateContentPanel(
     // exceed the viewport.
     let rowsOnPage = 0;
 
-    for (
-      let rowStart = 0;
-      rowStart < node.children.length;
-      rowStart += columns
-    ) {
-      const rowItems = node.children.slice(rowStart, rowStart + columns);
-
-      const rowHeights = rowItems.map((item) => {
-        const h = estimateHeight(
-          item,
-          cardWidth,
-          metrics,
-          config,
-          new Set(),
-          scene,
-        );
-        return h > 0 && isFinite(h) ? h : metrics.fallbackElementHeight;
-      });
+    const placeRow = (
+      rowItems: XRPrimitive[],
+      rowWidths: number[],
+      rowHeights: number[],
+    ): void => {
       const rowH = Math.max(...rowHeights);
-
       const g = rowsOnPage > 0 ? config.childGapY : 0;
 
       // Overflow: advance page only when at least one row of THIS list is
@@ -802,26 +846,149 @@ function paginateContentPanel(
       const gap = rowsOnPage > 0 ? config.childGapY : 0;
       const rowY = cursorY - gap;
 
+      let itemX = config.panelPaddingX;
       for (let col = 0; col < rowItems.length; col++) {
         const item = rowItems[col];
-        const itemX =
-          config.panelPaddingX + col * (cardWidth + config.childGapY);
+        const w = rowWidths[col] ?? cardWidth;
 
         pageIndexMap[item.id] = pageIdx;
         positionMap.set(item.id, { x: itemX, y: rowY, z: 0 });
         heightMap.set(item.id, rowHeights[col] ?? rowH);
+        if (w !== cardWidth) widthMap.set(item.id, w);
         stampSubtree(item, pageIdx);
-        stampDescendants(item, itemX, rowY, cardWidth);
+        // stampDescendants calls overflowCorrect for any of this item's own
+        // descendants that overflow past a page boundary, which mutates the
+        // shared pageIdx counter as a side effect — appropriate for a linear
+        // sequence, but here it would leak into the NEXT sibling in this
+        // same visual row (stamping it onto a later page than its actual
+        // row-mates, scattering one row across several pages). Restore
+        // pageIdx afterward so only this item's own descendants are
+        // affected; pageYOffsets extensions (needed for total page count)
+        // still persist regardless.
+        const pageIdxBeforeDescendants = pageIdx;
+        stampDescendants(item, itemX, rowY, w);
+        pageIdx = pageIdxBeforeDescendants;
+        itemX += w + config.childGapY;
       }
 
       cursorY -= gap + rowH;
       pageHeight += gap + rowH;
       itemsOnPage += 1;
       rowsOnPage += 1;
+
+      // A single row — most commonly one promoted to a full-width,
+      // single-item row above — can still be taller than an entire empty
+      // page (e.g. a text-heavy card). Without this correction, pageHeight
+      // is left far past VIEWPORT and the next row's "doesn't fit" check
+      // only ever advances by one page, undercounting however many pages
+      // this row's own overflow actually spans — leaving a stray blank
+      // page, or landing the next row a page later than it should.
+      if (pageHeight > VIEWPORT) {
+        const { bleed, newPageIdx } = advanceOverflowPages(
+          pageHeight,
+          VIEWPORT,
+          pageYOffsets,
+          pageIdx,
+        );
+        pageIdx = newPageIdx;
+        pageHeight = bleed;
+        cursorY = -bleed;
+        itemsOnPage = 0;
+        rowsOnPage = 0;
+      }
+    };
+
+    const children = node.children;
+    let i = 0;
+    while (i < children.length) {
+      const item = children[i];
+      const cardH = estimateHeight(
+        item,
+        cardWidth,
+        metrics,
+        config,
+        new Set(),
+        scene,
+      );
+
+      if (cardH > emptyPageBudget) {
+        // This item can't fit its normal grid column on any page. Promote it
+        // to a dedicated full-width row instead: the same text wraps into far
+        // fewer lines at full panel width, which usually brings it back
+        // under the viewport instead of clipping past it. (A citation with
+        // many linked sub-parts is the common real-world trigger.)
+        const fullWidthH = estimateHeight(
+          item,
+          usableW,
+          metrics,
+          config,
+          new Set(),
+          scene,
+        );
+        const h =
+          fullWidthH > 0 && isFinite(fullWidthH)
+            ? fullWidthH
+            : metrics.fallbackElementHeight;
+        // placeRow's own break check exempts a list's first row so it stays
+        // with a heading it might otherwise be stranded from — appropriate
+        // for an ordinary small row, but not here: this item is already
+        // known to be unusually tall, and starting it deep into whatever's
+        // left of the current page (rather than a fresh one it would
+        // actually fit on) makes it overflow so far that stampDescendants
+        // flows its tail onto a later page — one that may already have
+        // other grid rows scheduled on it, scrambling the reading order.
+        // Use the shared itemsOnPage-based check instead, which has no such
+        // exemption for an item this size.
+        if (breakIfDoesNotFit(h)) rowsOnPage = 0;
+        placeRow([item], [usableW], [h]);
+        i += 1;
+        continue;
+      }
+
+      const rowItems: XRPrimitive[] = [item];
+      const rowHeights: number[] = [
+        cardH > 0 && isFinite(cardH) ? cardH : metrics.fallbackElementHeight,
+      ];
+      i += 1;
+      while (rowItems.length < columns && i < children.length) {
+        const candidate = children[i];
+        const h = estimateHeight(
+          candidate,
+          cardWidth,
+          metrics,
+          config,
+          new Set(),
+          scene,
+        );
+        if (h > emptyPageBudget) break; // handled as its own full-width row next
+        rowItems.push(candidate);
+        rowHeights.push(h > 0 && isFinite(h) ? h : metrics.fallbackElementHeight);
+        i += 1;
+      }
+      placeRow(
+        rowItems,
+        rowItems.map(() => cardWidth),
+        rowHeights,
+      );
     }
   }
 
-  function placeRecursiveContainer(node: XRPrimitive): void {
+  function placeRecursiveContainer(
+    node: XRPrimitive,
+    precomputedH?: number,
+  ): void {
+    // Figures (image + caption) must stay together — unlike other recursive
+    // containers (lists, articles) that are allowed to paginate mid-content,
+    // a figure that straddles a page boundary clips its image. If it doesn't
+    // fit in what's left of the current page, push the whole figure to the
+    // next one, mirroring the atomic-leaf "doesn't fit" check below.
+    if (node.type === "XRFigure") {
+      const h =
+        precomputedH ??
+        estimateHeight(node, childWidth, metrics, config, new Set(), scene);
+      breakIfDoesNotFit(h);
+    }
+
     const wrapperPage = pageIdx;
     const wrapperY = cursorY - (itemsOnPage > 0 ? config.childGapY : 0);
     pageIndexMap[node.id] = wrapperPage;
@@ -891,6 +1058,14 @@ function paginateContentPanel(
         new Set(),
         scene,
       );
+
+      // Unlike the main pagination loop, this path previously placed leaves
+      // wherever the cursor happened to be with no "does it fit?" pre-check —
+      // non-text leaves (XRImage, XRTable, ...) have no continuation logic,
+      // so one that didn't fit would start on the current page and simply get
+      // clipped by the viewport instead of moving to the next page.
+      breakIfDoesNotFit(sch);
+
       const g = itemsOnPage > 0 ? config.childGapY : 0;
       const pageHeightBeforePlacement = pageHeight;
       stampSubtree(sc, pageIdx);
@@ -970,7 +1145,7 @@ function paginateContentPanel(
       absoluteY = config.panelPaddingTop + pageHeight;
     } else if (isRecursiveContainer(child)) {
       if (child.children.length === 0) continue;
-      placeRecursiveContainer(child);
+      placeRecursiveContainer(child, h);
       absoluteY = config.panelPaddingTop + pageHeight;
     } else {
       // Atomic leaf child
@@ -1300,6 +1475,7 @@ function paginateContentPanel(
     pageIndexMap,
     placedPositionMap: positionMap,
     placedHeightMap: heightMap,
+    placedWidthMap: widthMap,
     syntheticPrimitives,
   };
 }
@@ -1351,6 +1527,7 @@ function layoutPrimitive(
   pageIndexMap?: Record<string, number>,
   placedPositionMap?: Map<string, Vec3>,
   placedHeightMap?: Map<string, number>,
+  placedWidthMap?: Map<string, number>,
 ): void {
   const entry: LayoutEntry = {
     id: primitive.id,
@@ -1368,7 +1545,19 @@ function layoutPrimitive(
   attachResolvedStrategies(
     entry,
     primitive,
-    Math.max(0.025, worldSize.width - config.panelPaddingX * 2),
+    // worldSize.width is already panel-padding-reduced once we're a descendant
+    // inside a paginated panel (placedPositionMap set) — matching the basis
+    // placeListGrid uses for the SAME list (see childWidth/usableW there).
+    // Subtracting panelPaddingX*2 again here would narrow the width used to
+    // resolve column count below what placeListGrid actually placed items
+    // with, causing entry.listColumns to disagree with the real column count
+    // and rendered cards to overlap/gap relative to their true slot pitch.
+    // Outside a paginated panel (top-level call), worldSize.width is still
+    // full/unreduced and needs the single reduction to match
+    // stackChildrenSimple's own ownsXPadding-driven reduction.
+    placedPositionMap
+      ? Math.max(0.025, worldSize.width)
+      : Math.max(0.025, worldSize.width - config.panelPaddingX * 2),
     metrics,
   );
 
@@ -1399,6 +1588,7 @@ function layoutPrimitive(
         pageIndexMap: newPageIndexMap,
         placedPositionMap: newPlacedPositionMap,
         placedHeightMap: newPlacedHeightMap,
+        placedWidthMap: newPlacedWidthMap,
         syntheticPrimitives: newSyntheticPrimitives,
       } = paginateContentPanel(
         primitive.children,
@@ -1465,6 +1655,7 @@ function layoutPrimitive(
           newPageIndexMap,
           newPlacedPositionMap,
           newPlacedHeightMap,
+          newPlacedWidthMap,
         );
       }
     } else if (placedPositionMap && placedHeightMap) {
@@ -1514,6 +1705,7 @@ function layoutPrimitive(
             pageIndexMap,
             placedPositionMap,
             placedHeightMap,
+            placedWidthMap,
           );
         }
         entries[primitive.id] = entry;
@@ -1526,13 +1718,15 @@ function layoutPrimitive(
           ? entry.listColumns!
           : null;
 
+      // worldSize.width is already the panel-padding-reduced usable width at
+      // this point (see the attachResolvedStrategies call above) — matches
+      // placeListGrid's `usableW = childWidth` basis. No further panelPaddingX
+      // subtraction here, or cards render narrower than their actual slot
+      // pitch and drift out of sync with where placeListGrid put them.
       const listCardWidth = listCols
         ? Math.max(
             0.025,
-            (worldSize.width -
-              config.panelPaddingX * 2 -
-              config.childGapY * (listCols - 1)) /
-              listCols,
+            (worldSize.width - config.childGapY * (listCols - 1)) / listCols,
           )
         : null;
 
@@ -1543,7 +1737,16 @@ function layoutPrimitive(
 
         let childHeight = placedHeightMap.get(child.id);
 
-        const childWidth = listCardWidth ?? Math.max(0.025, worldSize.width);
+        // A list item placeListGrid promoted to a full-width row (too tall
+        // for its normal grid column even on an empty page) carries an
+        // override in placedWidthMap — it must win over the uniform
+        // per-column listCardWidth, or the height computed for it upstream
+        // (at the wider width) won't match the narrower box it's squeezed
+        // back into here, reintroducing the same overflow it was meant to fix.
+        const childWidth =
+          placedWidthMap?.get(child.id) ??
+          listCardWidth ??
+          Math.max(0.025, worldSize.width);
         if (childHeight === undefined) {
           diag.missingHeightMapEntries =
             (diag.missingHeightMapEntries ?? 0) + 1;
@@ -1573,6 +1776,7 @@ function layoutPrimitive(
           pageIndexMap,
           placedPositionMap,
           placedHeightMap,
+          placedWidthMap,
         );
       }
     } else {

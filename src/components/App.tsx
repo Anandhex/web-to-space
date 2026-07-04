@@ -191,6 +191,7 @@ export default function App() {
             width="100%"
             height="100vh"
             deviceType={activeTab.settings.deviceType}
+            theme={activeTab.settings.xrTheme}
             parserConfig={activeTab.settings.parserConfig}
             parserBackend={activeTab.settings.parserBackend}
             viewMode={viewMode}

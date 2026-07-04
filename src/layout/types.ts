@@ -387,6 +387,16 @@ export interface PaginateResult {
   placedHeightMap: Map<string, number>;
 
   /**
+   * primitiveId → override width, for descendants whose width diverges from
+   * the container's standard column/content width. Currently only populated
+   * by placeListGrid for a list item too tall to fit its normal grid column
+   * even on an empty page — it gets promoted to a full-width row so its text
+   * wraps into far fewer lines instead of clipping past the viewport. Absent
+   * entries fall back to the caller's own width computation.
+   */
+  placedWidthMap: Map<string, number>;
+
+  /**
    * Synthetic XRParagraph continuation nodes created during paragraph splitting.
    * Each carries the remaining text of an overflowed paragraph and is placed at
    * the top of its overflow page. layoutPrimitive injects these into

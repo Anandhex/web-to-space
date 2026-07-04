@@ -1067,7 +1067,7 @@ async function createListItem(
     label:
       resolveNodeLabel(contentEl, ctx.config, ctx.doc) ||
       resolveNodeLabel(element, ctx.config, ctx.doc),
-    content: hasSynthTextChild ? null : (contentEl.textContent?.trim() || null),
+    content: hasSynthTextChild ? null : contentEl.textContent?.trim() || null,
     children: childIds,
     state: readNodeState(contentEl),
     attributes: mergedAttrs,
@@ -1477,6 +1477,7 @@ function findSkipToMainTarget(doc: Document): string | null {
     /skip\s+(to\s+)?(main\s+)?content/i,
     /skip\s+navigation/i,
     /jump\s+to\s+(main\s+)?content/i,
+    /skip\s+(to\s+)?content/i,
   ];
   const candidates = Array.from(doc.querySelectorAll('a[href^="#"]')).slice(
     0,
