@@ -911,7 +911,11 @@ function handleFigureSythenticCreation(
   if (isFigurePromotionFailed) return;
 
   const figElement = promoted.element;
-  const src = figElement.getAttribute("data-ir-src") || "";
+  const rawSrc = figElement.getAttribute("data-ir-src") || "";
+  // promoteLinkedImageDeep reads img.getAttribute("src") straight off the DOM,
+  // bypassing readNodeAttributes' resolveUrl — resolve it here so root-relative
+  // paths (e.g. "/static/ssr/x.png") don't get requested against our own origin.
+  const src = rawSrc ? new URL(rawSrc, ctx.pageUrl).href : rawSrc;
   const href = figElement.getAttribute("data-ir-figure-href") || null;
   const alt = figElement.getAttribute("alt") || null;
   const captionEl = figElement.querySelector(

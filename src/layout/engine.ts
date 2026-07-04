@@ -854,7 +854,17 @@ function paginateContentPanel(
         pageIndexMap[item.id] = pageIdx;
         positionMap.set(item.id, { x: itemX, y: rowY, z: 0 });
         heightMap.set(item.id, rowHeights[col] ?? rowH);
-        if (w !== cardWidth) widthMap.set(item.id, w);
+        // Always persist this card's real per-column width — not just when
+        // promoted to a full-width row. Without an entry here, layoutPrimitive's
+        // final assembly recomputes column count independently (via
+        // attachResolvedStrategies, using whatever width this list actually
+        // received at its own nesting depth), which can disagree with the
+        // childWidth this function used — e.g. a list nested under a section
+        // that itself sits under another wrapper resolves to a narrower width
+        // there than the flat, panel-wide childWidth used here — silently
+        // picking a different column count and stretching every card into an
+        // overlapping, too-wide box relative to where it was actually placed.
+        widthMap.set(item.id, w);
         stampSubtree(item, pageIdx);
         // stampDescendants calls overflowCorrect for any of this item's own
         // descendants that overflow past a page boundary, which mutates the
@@ -1448,6 +1458,15 @@ function paginateContentPanel(
       };
       positionMap.set(child.id, panelAbs);
       heightMap.set(child.id, local.size.height);
+      // Persist the width stackChildrenSimple just computed for this specific
+      // nesting level (already narrowed by this container's own x-padding).
+      // Without this, layoutPrimitive's final entries assembly finds no
+      // widthMap entry for anything outside a list grid's card-promotion
+      // path and falls back to the full top-level panel width for every
+      // nested Section/Article/Paragraph — silently discarding the correct,
+      // progressively-narrower width and letting each nesting level's right
+      // edge drift past its actual parent's boundary.
+      widthMap.set(child.id, local.size.width);
       pageIndexMap[child.id] = childPage;
 
       // Recurse: the child's usable width comes from stackChildrenSimple's

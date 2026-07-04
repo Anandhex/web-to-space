@@ -959,6 +959,27 @@ function PrimitiveDispatcher({
   const fontType = React.useContext(FontContext);
   const theme = useTheme();
 
+  const renderChild = useCallback(
+    (childId: string) => {
+      const childPrim = primitiveMap.get(childId);
+      if (!childPrim || !plan.entries[childId]) {
+        console.warn(`[RENDER] Child ${childId} not found in map or entries`);
+        return null;
+      }
+      return (
+        <PrimitiveDispatcher
+          key={childId}
+          primitive={childPrim}
+          plan={plan}
+          pageState={pageState}
+          setPage={setPage}
+          primitiveMap={primitiveMap}
+        />
+      );
+    },
+    [primitiveMap, plan, pageState, setPage],
+  );
+
   if (!entry) return null;
 
   // ✅ Define hasVisibleDescendant FIRST before using it
@@ -1024,30 +1045,6 @@ function PrimitiveDispatcher({
       />
     );
   }
-
-  const renderChild = useCallback(
-    (childId: string) => {
-      const childPrim = primitiveMap.get(childId);
-      if (!childPrim || !plan.entries[childId]) {
-        console.warn(`[RENDER] Child ${childId} not found in map or entries`);
-        return null;
-      }
-      // console.log(
-      //   `[RENDER] Rendering child ${childId} from parent ${primitive.id}`,
-      // );
-      return (
-        <PrimitiveDispatcher
-          key={childId}
-          primitive={childPrim}
-          plan={plan}
-          pageState={pageState}
-          setPage={setPage}
-          primitiveMap={primitiveMap}
-        />
-      );
-    },
-    [primitiveMap, plan, pageState, setPage],
-  );
 
   switch (primitive.type) {
     case "XRHeading":
@@ -1477,7 +1474,32 @@ function PrimitiveDispatcher({
     default: {
       // XRGenericPanel is a transparent wrapper — no visual of its own.
       // Children already carry panel-absolute positions, so dispatch directly.
+      // A childless GenericPanel (e.g. an unmapped leaf like a bare <time>
+      // element with no ARIA role) carries its own text in content/label —
+      // the engine already reserves height for that text, so it must be
+      // rendered here or it becomes a dead, invisible gap.
       if (primitive.type === "XRGenericPanel") {
+        const leafText =
+          (primitive as unknown as { content?: string | null }).content ??
+          primitive.label;
+        if (primitive.children.length === 0 && leafText) {
+          const w = Math.max(entry.size.width, 0.025);
+          return (
+            <AtPos entry={entry}>
+              <ClippedText
+                font={fontType}
+                anchorX="left"
+                anchorY="top"
+                position={[0.008, -0.008, 0.004]}
+                fontSize={0.018}
+                color={theme.bodyCol}
+                maxWidth={w - 0.016}
+              >
+                {leafText}
+              </ClippedText>
+            </AtPos>
+          );
+        }
         return (
           <DispatchChildren
             primitives={primitive.children}

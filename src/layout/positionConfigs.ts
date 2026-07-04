@@ -454,13 +454,17 @@ export function estimateHeight(
           const wordCount = countWords(labelText);
           const m = metrics.paragraph;
           const lineH = m.fontSize * m.lineHeightRatio;
+          // No m.verticalPadding here: that constant represents a real
+          // paragraph's own space before/after it, which is wrong for this
+          // fallback — a bare unmapped text leaf (e.g. a <time> caption with
+          // no ARIA role) that already gets normal childGapY spacing from its
+          // siblings. Including it double-counted spacing and left a dead
+          // gap around short captions like "3 weeks ago".
           const fromLabel =
             Math.max(
               1,
               Math.ceil(wordCount / computeWordsPerLine(panelUsableWidth, m)),
-            ) *
-              lineH +
-            m.verticalPadding;
+            ) * lineH;
           return fixedFloor !== undefined
             ? Math.max(fixedFloor, fromLabel)
             : fromLabel;
@@ -882,21 +886,35 @@ export const PRIMITIVE_CONFIG: Partial<
     paginate: "recursive",
     forceNewPage: true,
     ownsXPadding: true,
-    ownsTopPadding: true,
+    // Top-level sections (direct children of the content panel) get their
+    // page-edge padding from paginateContentPanel's own cursor/page-height
+    // bookkeeping via splitSection — this flag is never consulted on that
+    // path. It only fires when a section is estimated as an ordinary nested
+    // child (e.g. a heading+paragraph pair structurally grouped inside an
+    // XRArticle/XRListItem card), where reserving a full panel-edge padding
+    // above and below produced a large dead gap with no visible boundary.
+    ownsTopPadding: false,
     slot: "main",
   },
   XRArticle: {
     heightStrategy: "children",
     paginate: "recursive",
     ownsXPadding: true,
-    ownsTopPadding: true,
+    // Same reasoning as XRSection above: XRArticle never forces its own
+    // page (paginate: "recursive"), so it's always nested inside a panel or
+    // list item that already provides edge padding — see PRIMITIVE_CONFIG.XRSection.
+    ownsTopPadding: false,
     slot: "main",
   },
   XRGenericPanel: {
     heightStrategy: "children",
     paginate: "recursive",
     ownsXPadding: true,
-    ownsTopPadding: true,
+    // Same reasoning as XRSection/XRArticle: XRGenericPanel never forces its
+    // own page (paginate: "recursive"), so — as the catch-all wrapper for any
+    // unmapped/structurally-inferred grouping — it's always nested inside a
+    // panel or card that already provides edge padding.
+    ownsTopPadding: false,
     slot: "main",
   },
   XRFormPanel: {

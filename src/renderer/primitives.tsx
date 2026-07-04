@@ -39,7 +39,6 @@ import React, { useRef, useContext, createContext } from "react";
 import { Text, RoundedBox, Html } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { useTexture } from "@react-three/drei";
 
 // ─────────────────────────────────────────────────────────────
 // Panel clipping context
@@ -731,7 +730,6 @@ export function XRParagraphMesh({
   const hasAnyInlineChild = flatForInlineCheck.some((c) =>
     isInlinePrimitive(c.type),
   );
-
   // ── Mixed / pure-inline children: flow layout ────────────────────────────
   // Merge adjacent plain-text XRText siblings so fragmented runs like
   //   ["This page was last edited on ", "20 June 2026", " (UTC)."]
@@ -863,17 +861,16 @@ export function XRSectionMesh({
   const theme = useTheme();
   const w = safeDim(entry.size.width);
 
-  // Panel height = sum of visible child heights + gaps + top/bottom padding.
-  // We sum rather than using position.y so this is correct regardless of how
-  // the engine positions children within the section.
-  const PAD = 0.04; // panelPaddingTop — matches DEFAULT_LAYOUT_CONFIG
-  const GAP = 0.02; // childGapY
+  // Panel height = span from the top of the first visible child to the
+  // bottom of the last, read from their real engine-assigned positions —
+  // not reconstructed from hardcoded padding/gap constants, which drift out
+  // of sync with the engine's actual values (e.g. when a nested section's
+  // own top/bottom padding is zero) and leave a dead gap or an oversized box.
   const visibleHeight =
     childEntries.length > 0
-      ? PAD +
-        childEntries.reduce((sum, ce) => sum + ce.size.height, 0) +
-        GAP * Math.max(0, childEntries.length - 1) +
-        PAD
+      ? childEntries[0].position.y -
+        (childEntries[childEntries.length - 1].position.y -
+          childEntries[childEntries.length - 1].size.height)
       : entry.size.height;
 
   const h = safeDim(visibleHeight);
@@ -1601,8 +1598,32 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
       return false;
     }
   }
-  const texture =
-    isRenderableImage(proxiedSrc) && useTexture(proxiedSrc);
+  const [texture, setTexture] = React.useState<THREE.Texture | null>(null);
+
+  React.useEffect(() => {
+    setTexture(null);
+    if (!isRenderableImage(proxiedSrc)) return;
+    let cancelled = false;
+    const loader = new THREE.TextureLoader();
+    loader.load(
+      proxiedSrc,
+      (loaded) => {
+        // useTexture (drei) sets this automatically; a bare TextureLoader
+        // does not, which left images rendering blank/washed out under
+        // three's color-managed pipeline.
+        loaded.colorSpace = THREE.SRGBColorSpace;
+        if (!cancelled) setTexture(loaded);
+      },
+      undefined,
+      () => {
+        // Broken/unreachable image — leave texture null so the plain
+        // background box renders instead of crashing the canvas.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [proxiedSrc]);
 
   return (
     <group position={pos} rotation={rot}>
@@ -1619,13 +1640,15 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
         />
       </RoundedBox>
 
-      {proxiedSrc && isRenderableImage(proxiedSrc) && (
+      {/* Mesh only mounts once the texture is ready: creating it earlier
+          with map=undefined bakes a shader program compiled without the
+          USE_MAP define, and later assigning material.map via prop update
+          does not retroactively enable texture sampling — the plane just
+          renders as meshBasicMaterial's plain white default forever. */}
+      {texture && (
         <mesh position={[w / 2, -h / 2, PANEL_DEPTH + 0.004]}>
           <planeGeometry args={[w, h]} />
-          <meshBasicMaterial
-            map={texture || undefined}
-            clippingPlanes={clips}
-          />
+          <meshBasicMaterial map={texture} transparent clippingPlanes={clips} />
         </mesh>
       )}
       <mesh position={[w / 2, -h / 2, 0.002]} rotation={[0, 0, Math.PI / 2]}>
