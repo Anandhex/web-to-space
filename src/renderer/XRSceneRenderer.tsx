@@ -96,6 +96,9 @@ import {
   ClippedText,
   RenderMetricsContext,
   NavigateContext,
+  buildInlineRows,
+  InlineProseRows,
+  useRenderMetrics,
 } from "./primitives";
 import { ThemeContext, useTheme, LIGHT_THEME, type XRTheme } from "./theme";
 import { PanelGradientOverlay } from "./PanelGradient";
@@ -134,6 +137,7 @@ import {
 import {
   flattenInlineWrappers,
   isInlinePrimitive,
+  mergeAdjacentTextRuns,
   angularRotation,
 } from "../layout/utils";
 import {
@@ -974,6 +978,7 @@ function PrimitiveDispatcher({
   const currentPage = React.useContext(CurrentPageContext);
   const fontType = React.useContext(FontContext);
   const theme = useTheme();
+  const metrics = useRenderMetrics();
 
   const renderChild = useCallback(
     (childId: string) => {
@@ -1397,13 +1402,10 @@ function PrimitiveDispatcher({
     }
 
     case "XRList": {
-      // Shared container "shell" panel behind the item tiles — matches the
-      // Meta Horizon UI Set List component (one rounded backplate wrapping
-      // a grid of tiles, rather than each item floating with no container).
+      // Children have panel-absolute positions — dispatch as siblings only,
+      // no shared backing shell behind the item tiles.
       return (
-        <WithSiblingChildren
-          entry={entry}
-          backing={<PanelBacking entry={zeroedEntry(entry)} />}
+        <DispatchChildren
           primitives={primitive.children}
           plan={plan}
           pageState={pageState}
@@ -1516,6 +1518,41 @@ function PrimitiveDispatcher({
             </AtPos>
           );
         }
+
+        // A generic panel with no ARIA role that wraps mixed/pure inline
+        // content (e.g. Wikipedia's <span class="mw-reference-text"><cite>…
+        // </cite></span> — no direct text of its own, so shouldDecomposeContent
+        // never fires on it) is exactly the case stampDescendants already
+        // recognizes as "inline-owning": it deliberately does NOT stamp
+        // positions for its inline children, expecting them to be flowed as
+        // prose by this panel rather than independently dispatched. Without
+        // this branch they fell through to DispatchChildren unconditionally,
+        // and any primitive missing a real plan entry falls back to a shared
+        // default position — producing the garbled, overlapping citation
+        // text seen in Wikipedia reference lists.
+        const flatForInline = flattenInlineWrappers(primitive.children as any[]);
+        const hasAnyInlineChild = flatForInline.some((c: any) =>
+          isInlinePrimitive(c.type),
+        );
+        if (hasAnyInlineChild) {
+          const merged = mergeAdjacentTextRuns(flatForInline as any[]);
+          const rows = buildInlineRows(merged);
+          const m = metrics.paragraph;
+          const w = Math.max(entry.size.width, 0.025);
+          return (
+            <AtPos entry={entry}>
+              <InlineProseRows
+                rows={rows}
+                startY={0}
+                panelWidth={w}
+                fontSize={m.fontSize}
+                lineHeightRatio={m.lineHeightRatio}
+                renderChild={renderChild}
+              />
+            </AtPos>
+          );
+        }
+
         return (
           <DispatchChildren
             primitives={primitive.children}
