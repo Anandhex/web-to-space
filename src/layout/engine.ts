@@ -79,6 +79,26 @@ const INLINE_OWNING_TYPES = new Set([
   "XRButton",
 ]);
 
+// An XRGenericPanel (a role-less wrapper div/span) is ALSO inline-owning when
+// every one of its effective children (after seeing through nested transparent
+// wrappers) is an inline primitive — e.g. Wikipedia's
+// <span class="mw-reference-text"><cite>…</cite></span>. stampDescendants
+// relies on this same check to decide which nodes to skip stamping; every
+// call site that mirrors stampDescendants' decisions (i.e. whether to build a
+// LayoutEntry for a child at all) MUST use this exact helper, or the two
+// passes disagree and children stampDescendants deliberately left unstamped
+// get a bogus fallback LayoutEntry (wrong page, position pinned to the top of
+// the page) instead of none.
+function isInlineOwningNode(node: { type: string; children: unknown[] }): boolean {
+  if (INLINE_OWNING_TYPES.has(node.type)) return true;
+  if (node.type !== "XRGenericPanel" || node.children.length === 0) return false;
+  const flatEffective = flattenInlineWrappers(node.children as any[]);
+  return (
+    flatEffective.length > 0 &&
+    flatEffective.every((c: any) => isInlinePrimitive(c.type))
+  );
+}
+
 // Padding ownership is now driven by PRIMITIVE_CONFIG (ownsXPadding / ownsTopPadding).
 
 function stackChildrenSimple(
@@ -1281,11 +1301,7 @@ function paginateContentPanel(
     // <span><a>link text</a></span> has direct child XRGenericPanel(→XRLink),
     // which is NOT in INLINE_PRIMITIVE_TYPES, but its effective leaf content IS
     // all-inline. The old direct-children check missed this case.
-    const flatEffective = flattenInlineWrappers(node.children as any[]);
-    const isInlineWrapper =
-      node.type === "XRGenericPanel" &&
-      flatEffective.length > 0 &&
-      flatEffective.every((c: any) => isInlinePrimitive(c.type));
+    const isInlineWrapper = isInlineOwningNode(node);
 
     // For XRListItem: check flattened effective children to decide whether
     // the item is block-only. A listitem whose only child is an XRGenericPanel
@@ -1301,10 +1317,7 @@ function paginateContentPanel(
         (c: any) => !isInlinePrimitive(c.type),
       );
 
-    if (
-      (INLINE_OWNING_TYPES.has(node.type) || isInlineWrapper) &&
-      !hasOnlyBlockChildren
-    ) {
+    if (isInlineWrapper && !hasOnlyBlockChildren) {
       // For XRListItem with mixed inline+block children (e.g. prose followed
       // by a nested sub-list), block children must be placed BELOW the inline
       // prose region, not at the listitem's top edge (absY). Without this
@@ -1685,12 +1698,16 @@ function layoutPrimitive(
       // stackChildrenSimple. The renderer uses entry.position uniformly for
       // every node with no special cases.
       //
-      // Inline-owning nodes (XRParagraph, XRHeading, XRListItem, XRBlockQuote)
-      // render their inline children (XRText, XRLink, XRButton) as text runs
-      // internally — those children are NOT independent 3D nodes and must NOT
-      // get LayoutEntries. stampDescendants already skips stamping positions for
-      // them; here we skip producing LayoutEntries for them too.
-      if (INLINE_OWNING_TYPES.has(primitive.type)) {
+      // Inline-owning nodes (XRParagraph, XRHeading, XRListItem, XRBlockQuote,
+      // and an all-inline-children XRGenericPanel wrapper) render their inline
+      // children (XRText, XRLink, XRButton) as text runs internally — those
+      // children are NOT independent 3D nodes and must NOT get LayoutEntries.
+      // stampDescendants already skips stamping positions for them (see
+      // isInlineOwningNode); here we skip producing LayoutEntries for them
+      // too. Using a narrower check here than stampDescendants used to leave
+      // these children with fallback entries (top-of-page position, the
+      // parent's inherited page index) instead of no entry at all.
+      if (isInlineOwningNode(primitive)) {
         // Only recurse into block (non-inline) children — e.g. a sub-list or
         // image inside a list item, which ARE dispatched via renderChild.
         for (const child of primitive.children) {
@@ -1832,10 +1849,7 @@ function layoutPrimitive(
         // Inline children of inline-owning parents (including synthetic XRText
         // added by normalizeLabelNodes) are rendered as text runs by the mesh
         // component — they must not get independent LayoutEntries.
-        if (
-          INLINE_OWNING_TYPES.has(primitive.type) &&
-          isInlinePrimitive(child.type)
-        )
+        if (isInlineOwningNode(primitive) && isInlinePrimitive(child.type))
           continue;
 
         layoutPrimitive(

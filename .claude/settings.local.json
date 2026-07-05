@@ -34,7 +34,18 @@
       "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/web2vr.js\")",
       "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/elements/containerElement.js\")",
       "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/elements/element.js\")",
-      "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/utils/position.js\")"
+      "Bash(curl -s \"https://raw.githubusercontent.com/kikoano/web2vr/master/src/utils/position.js\")",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(gh pr create --title 'fix\\(renderer\\): remove XRList backing shell, fix inline citation flow' --body ' *)",
+      "Bash(brew list *)",
+      "Bash(git merge *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" --max-time 5 https://registry.npmjs.org/tsx)",
+      "Bash(npm i *)",
+      "Bash(git log *)",
+      "Bash(git stash *)"
     ]
   },
   "showThinkingSummaries": true

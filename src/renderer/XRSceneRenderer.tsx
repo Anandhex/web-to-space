@@ -1519,22 +1519,24 @@ function PrimitiveDispatcher({
           );
         }
 
-        // A generic panel with no ARIA role that wraps mixed/pure inline
-        // content (e.g. Wikipedia's <span class="mw-reference-text"><cite>…
-        // </cite></span> — no direct text of its own, so shouldDecomposeContent
-        // never fires on it) is exactly the case stampDescendants already
-        // recognizes as "inline-owning": it deliberately does NOT stamp
-        // positions for its inline children, expecting them to be flowed as
-        // prose by this panel rather than independently dispatched. Without
-        // this branch they fell through to DispatchChildren unconditionally,
-        // and any primitive missing a real plan entry falls back to a shared
-        // default position — producing the garbled, overlapping citation
-        // text seen in Wikipedia reference lists.
+        // A generic panel with no ARIA role that wraps pure inline content
+        // (e.g. Wikipedia's <span class="mw-reference-text"><cite>…</cite>
+        // </span> — no direct text of its own, so shouldDecomposeContent
+        // never fires on it) is exactly the case the layout engine's
+        // isInlineOwningNode (src/layout/engine.ts) already recognizes as
+        // "inline-owning": it deliberately does NOT stamp positions for its
+        // inline children, expecting them to be flowed as prose by this
+        // panel rather than independently dispatched. This check MUST match
+        // isInlineOwningNode exactly (all effective children inline, not
+        // just some) — a mixed panel that engine treats as a normal
+        // container gives its block children real per-child LayoutEntries,
+        // and flowing them through InlineProseRows here instead of
+        // DispatchChildren would discard those stamped positions.
         const flatForInline = flattenInlineWrappers(primitive.children as any[]);
-        const hasAnyInlineChild = flatForInline.some((c: any) =>
-          isInlinePrimitive(c.type),
-        );
-        if (hasAnyInlineChild) {
+        const isAllInlineChildren =
+          flatForInline.length > 0 &&
+          flatForInline.every((c: any) => isInlinePrimitive(c.type));
+        if (isAllInlineChildren) {
           const merged = mergeAdjacentTextRuns(flatForInline as any[]);
           const rows = buildInlineRows(merged);
           const m = metrics.paragraph;
