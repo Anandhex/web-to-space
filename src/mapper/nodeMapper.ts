@@ -179,13 +179,20 @@ function mapSection(
   const looksLikeId = (s: string | null): boolean =>
     !s || /^[\w]+-\d+$/.test(s.trim()) || s.trim().length === 0;
 
+  // Wikipedia's multi-image/gallery templates sometimes carry a bare grid
+  // dimension caption (e.g. "1×2") that structurally resolves as this
+  // section's first heading-role child — without this guard it gets
+  // promoted straight to the section title and renders as a spurious badge.
+  const looksLikeDimensionLabel = (s: string | null): boolean =>
+    !!s && /^\(?\s*\d+\s*[×xX]\s*\d+\s*\)?$/.test(s.trim());
+
   let title: string | null = looksLikeId(node.label) ? null : node.label;
   let titleLevel: number | null = null;
 
   const firstChildId = node.children[0];
   if (firstChildId) {
     const firstChild = ctx.ir.nodes[firstChildId];
-    if (firstChild?.role === "heading") {
+    if (firstChild?.role === "heading" && !looksLikeDimensionLabel(firstChild.label)) {
       title = firstChild.label ?? title;
       titleLevel = firstChild.level;
     }
@@ -399,7 +406,7 @@ function mapCodeBlock(node: IRNode, ctx: MappingContext): XRCodeBlock {
   const primitive: XRCodeBlock = {
     ...baseFrom(node, "XRCodeBlock"),
     type: "XRCodeBlock",
-    children: [],
+    children: resolveChildren(node, ctx),
   };
   registerPrimitive(ctx, primitive, "code→XRCodeBlock");
   return primitive;
@@ -450,6 +457,8 @@ function mapImg(node: IRNode, ctx: MappingContext): XRImage {
     type: "XRImage",
     src: node.attributes.src,
     alt: node.attributes.alt ?? node.label,
+    intrinsicWidth: node.attributes.intrinsicWidth,
+    intrinsicHeight: node.attributes.intrinsicHeight,
     children: [],
   };
   registerPrimitive(ctx, primitive, "img→XRImage");
@@ -481,6 +490,8 @@ function mapFigure(node: IRNode, ctx: MappingContext): XRImage | XRFigure {
       sourceIds: [node.id, imgNode.id],
       src: imgNode.attributes.src,
       alt: imgNode.attributes.alt ?? captionText ?? node.label,
+      intrinsicWidth: imgNode.attributes.intrinsicWidth,
+      intrinsicHeight: imgNode.attributes.intrinsicHeight,
       children: [],
     };
     registerPrimitive(ctx, primitive, "figure:image-only→XRImage");
@@ -509,6 +520,7 @@ function mapMedia(node: IRNode, ctx: MappingContext): XRMediaPlayer {
     type: "XRMediaPlayer",
     mediaType,
     src: node.attributes.src,
+    poster: node.attributes.poster,
     captions: node.attributes.captions,
     // sizingStrategy: absent — Layout's responsibility
     children: [],

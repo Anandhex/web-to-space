@@ -4,7 +4,35 @@ import {
   createEmptyAttributes,
   createEmptyRelations,
   resolveNodeLabel,
+  isAccessibilityHidden,
+  readNodeAttributes,
 } from "./utils";
+
+// Text-extraction fallback used when an inline element turns out to have no
+// rich structure worth preserving as its own node (see the "flatten to text"
+// branches below). A raw `el.textContent` read walks straight through any
+// accessibility-hidden descendant — e.g. Wikipedia mirrors every rendered
+// math formula as visible `<img alt="{\displaystyle ...}">` right next to a
+// `style="display: none"` MathML copy of the same formula for screen
+// readers. Reading `.textContent` on the wrapper wants to pick up the
+// image's neighbouring markup but also picks up that hidden MathML's symbol
+// text *and* its raw TeX annotation, which is what surfaced as garbled
+// fragments in the scene. `<math>` itself is also treated as opaque here,
+// mirroring parser.ts's block-level handling of the same tag.
+function visibleTextContent(element: Element): string {
+  if (isAccessibilityHidden(element)) return "";
+  let text = "";
+  for (const child of Array.from(element.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      text += child.textContent ?? "";
+    } else if (child.nodeType === Node.ELEMENT_NODE) {
+      const el = child as Element;
+      if (el.tagName.toLowerCase() === "math") continue;
+      text += visibleTextContent(el);
+    }
+  }
+  return text;
+}
 
 export interface InlineRun {
   type: "text" | "element";
@@ -168,6 +196,26 @@ export function decomposeInlineContentRecursive(
       // Skip tags that should be ignored
       if (ctx.skipTags.has(tag)) continue;
 
+      // Accessibility-hidden duplicates (aria-hidden, display:none, etc. —
+      // see visibleTextContent above) and raw MathML must never surface as
+      // visible text or a positioned node.
+      if (ctx.config.excludeHiddenContent && isAccessibilityHidden(el)) {
+        continue;
+      }
+      if (tag === "math") continue;
+
+      // <img> isn't in INLINE_TAGS (it's a void element with no text-flow
+      // role of its own), so without this it fell through to the "hit a
+      // block element" branch at the bottom of this loop, which flushes and
+      // BREAKS — dropping the image and every sibling after it in this run.
+      // An inline image (e.g. a small figure or icon sitting mid-sentence)
+      // is exactly the kind of leaf this function exists to preserve.
+      if (tag === "img") {
+        flushText();
+        runs.push({ type: "element", element: el });
+        continue;
+      }
+
       // Check if this is an inline element
       if (ctx.inlineTags.has(tag)) {
         flushText();
@@ -216,10 +264,36 @@ export function decomposeInlineContentRecursive(
           // Simple inline element - just capture it as a single element
           // But check if it's an interactive element that needs special handling
           if (["a", "button", "summary"].includes(tag)) {
-            runs.push({ type: "element", element: el });
+            // An interactive wrapper around nothing but a single <img> (e.g.
+            // Wikipedia's <a class="mw-file-description"><img .../></a> file
+            // links, used on every image) is visually just a picture, not a
+            // text link. Capturing the anchor itself sent it down
+            // flattenInlineRuns' text-link path, which had no image content
+            // to read and fell back to the img's raw outerHTML/alt text —
+            // showing literal markup or a bare alt string like
+            // "altN=4-simplex" in place of the actual image. Capture the
+            // <img> directly so it flows through the same img handling as
+            // any other inline image instead.
+            const meaningfulChildren = Array.from(el.children).filter(
+              (c) => !ctx.skipTags.has(c.tagName.toLowerCase()),
+            );
+            const hasDirectText = Array.from(el.childNodes).some(
+              (n) =>
+                n.nodeType === Node.TEXT_NODE &&
+                (n.textContent ?? "").trim().length > 0,
+            );
+            if (
+              !hasDirectText &&
+              meaningfulChildren.length === 1 &&
+              meaningfulChildren[0].tagName.toLowerCase() === "img"
+            ) {
+              runs.push({ type: "element", element: meaningfulChildren[0] });
+            } else {
+              runs.push({ type: "element", element: el });
+            }
           } else {
             // For non-interactive inline elements, extract their text
-            const text = el.textContent?.trim() ?? "";
+            const text = visibleTextContent(el).trim();
             if (text) {
               // Preserve the semantic type in the text node's attributes
               runs.push({
@@ -342,7 +416,7 @@ export function flattenInlineRuns(
 
         if (hasOnlyText) {
           // Flatten to text
-          const text = el.textContent?.trim() ?? "";
+          const text = visibleTextContent(el).trim();
           if (text) {
             const textId = `${parentId}-text-${ctx.counters.node++}`;
             ctx.nodes[textId] = {
@@ -435,7 +509,7 @@ export function flattenInlineRuns(
 
           const label = shouldHaveLabelForElement(el, role, ctx.config)
             ? resolveNodeLabel(el, ctx.config, ctx.doc) ||
-              el.textContent?.trim() ||
+              visibleTextContent(el).trim() ||
               null
             : null;
 
@@ -446,7 +520,7 @@ export function flattenInlineRuns(
             role,
             level: null,
             label,
-            content: el.textContent?.trim() || null,
+            content: visibleTextContent(el).trim() || null,
             unlabelledYet: label === null,
             landmark: false,
             source: "structural",
@@ -478,9 +552,38 @@ export function flattenInlineRuns(
         let role: IRRole = "generic";
         if (tag === "a") role = "link";
         else if (["button", "summary"].includes(tag)) role = "button";
+        else if (tag === "img") role = "img";
 
-        // For interactive elements, create a proper node
-        if (["a", "button", "summary"].includes(tag)) {
+        // An inline image (see decomposeInlineContentRecursive's "img" case
+        // and its <a><img></a>-unwrapping above) needs its own real node —
+        // falling into the generic "flatten to text" branch below would read
+        // an <img>'s empty textContent and drop it silently, and the
+        // interactive-element branch has no image-specific attributes at
+        // all. mapImg (nodeMapper.ts) reads src/alt/intrinsicWidth/Height
+        // straight off node.attributes, so this only needs to populate those.
+        if (tag === "img") {
+          const label = el.getAttribute("alt") || null;
+          ctx.elementToNodeId.set(el, id);
+          ctx.nodes[id] = {
+            id,
+            role,
+            level: null,
+            label,
+            content: null,
+            unlabelledYet: label === null,
+            landmark: false,
+            source: "structural",
+            confidence: ctx.config.sourceConfidence["structural"] || 0.75,
+            readingIndex: ctx.counters.reading++,
+            readingDepth,
+            parent: parentId,
+            children: [],
+            relations: createEmptyRelations(),
+            state: createEmptyState(),
+            attributes: readNodeAttributes(el, { sourceUrl: ctx.pageUrl }),
+          };
+          nodeIds.push(id);
+        } else if (["a", "button", "summary"].includes(tag)) {
           const content = el.textContent?.trim() ?? null;
           const label = shouldHaveLabelForElement(el, role, ctx.config)
             ? resolveNodeLabel(el, ctx.config, ctx.doc) || content
@@ -514,7 +617,7 @@ export function flattenInlineRuns(
           nodeIds.push(id);
         } else {
           // Non-interactive inline elements - flatten to text
-          const text = el.textContent?.trim() ?? "";
+          const text = visibleTextContent(el).trim();
           if (text) {
             const textId = `${parentId}-text-${ctx.counters.node++}`;
             ctx.nodes[textId] = {

@@ -1141,16 +1141,92 @@ function PrimitiveDispatcher({
           />
         </AtPos>
       );
-    case "XRCodeBlock":
+    case "XRCodeBlock": {
+      // Mirrors the "XRBlockQuote" case above: block-level children need
+      // real panel-absolute LayoutEntry positions and must be dispatched as
+      // true siblings, not drawn by the mesh.
+      const flatCbChildren = flattenInlineWrappers(primitive.children as any[]);
+      const hasAnyInlineCbChild = flatCbChildren.some((c: any) =>
+        isInlinePrimitive(c.type),
+      );
+      const blockCbChildrenForDispatch = flatCbChildren.filter(
+        (c: any) => !isInlinePrimitive(c.type),
+      );
+
+      if (blockCbChildrenForDispatch.length > 0) {
+        return (
+          <WithSiblingChildren
+            entry={entry}
+            backing={
+              <XRCodeBlockMesh
+                primitive={primitive as XRCodeBlock}
+                entry={zeroedEntry(entry)}
+                renderChild={() => null}
+              />
+            }
+            primitives={
+              hasAnyInlineCbChild
+                ? blockCbChildrenForDispatch
+                : primitive.children
+            }
+            plan={plan}
+            pageState={pageState}
+            setPage={setPage}
+            primitiveMap={primitiveMap}
+          />
+        );
+      }
+
       return (
         <AtPos entry={entry}>
           <XRCodeBlockMesh
             primitive={primitive as XRCodeBlock}
             entry={zeroedEntry(entry)}
+            renderChild={renderChild}
           />
         </AtPos>
       );
-    case "XRBlockQuote":
+    }
+    case "XRBlockQuote": {
+      // Mirror the XRListItem block-child dispatch pattern (see the
+      // "XRListItem" case below): XRBlockQuoteMesh only draws content itself
+      // when it's flowed through InlineProseRows (inline children present).
+      // A blockquote wrapping block-level content (e.g. a <p>) has real
+      // panel-absolute LayoutEntry positions for those children that must be
+      // dispatched as true siblings, not drawn by the mesh — otherwise the
+      // block content is silently dropped (only the accent bar renders).
+      const flatBqChildren = flattenInlineWrappers(primitive.children as any[]);
+      const hasAnyInlineBqChild = flatBqChildren.some((c: any) =>
+        isInlinePrimitive(c.type),
+      );
+      const blockBqChildrenForDispatch = flatBqChildren.filter(
+        (c: any) => !isInlinePrimitive(c.type),
+      );
+
+      if (blockBqChildrenForDispatch.length > 0) {
+        return (
+          <WithSiblingChildren
+            entry={entry}
+            backing={
+              <XRBlockQuoteMesh
+                primitive={primitive as XRBlockQuote}
+                entry={zeroedEntry(entry)}
+                renderChild={() => null}
+              />
+            }
+            primitives={
+              hasAnyInlineBqChild
+                ? blockBqChildrenForDispatch
+                : primitive.children
+            }
+            plan={plan}
+            pageState={pageState}
+            setPage={setPage}
+            primitiveMap={primitiveMap}
+          />
+        );
+      }
+
       return (
         <AtPos entry={entry}>
           <XRBlockQuoteMesh
@@ -1160,6 +1236,7 @@ function PrimitiveDispatcher({
           />
         </AtPos>
       );
+    }
     case "XRSeparator":
       return (
         <AtPos entry={entry}>

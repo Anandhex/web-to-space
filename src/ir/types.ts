@@ -96,6 +96,9 @@ export interface IRNodeAttributes {
   haspopup: string | null;
   alt: string | null;
   src: string | null;
+  poster: string | null;
+  intrinsicWidth: number | null;
+  intrinsicHeight: number | null;
   href: string | null;
   live: string | null;
   rowspan: string | null;

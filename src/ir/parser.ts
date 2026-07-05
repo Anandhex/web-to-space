@@ -267,6 +267,27 @@ async function createNode(
   let resolvedConfidence = confidenceForSource(roleInfo.source, ctx.config);
 
   const tag = element.tagName.toLowerCase();
+
+  // Wikipedia (and other MathML-emitting sources) wrap rendered equations in
+  // <math>, whose descendants (<semantics>, <annotation>, <mrow>, ...) are
+  // not in SKIP_TAGS. Recursing into them would extract the <annotation>
+  // element's raw LaTeX source as visible text, which then renders as
+  // overlapping/garbled text in the scene. Treat <math> as an opaque leaf —
+  // never traverse into its MathML subtree — rather than adding it to
+  // SKIP_TAGS, since element.textContent fallbacks elsewhere in this
+  // function would still walk a skipped element's descendants.
+  if (tag === "math") {
+    const textId = `${parentId}-text-${ctx.counters.node++}`;
+    ctx.nodes[textId] = createBaseNode(textId, "generic", parentId, ctx, {
+      content: null,
+      source: "structural",
+      confidence: ctx.config.sourceConfidence["structural"],
+      readingDepth,
+      attributes: { ...createEmptyAttributes() },
+    });
+    return textId;
+  }
+
   const isGenericWrapper = tag === "div" || tag === "span";
   const hasOnlyText = hasOnlyTextContent(element, ctx);
 

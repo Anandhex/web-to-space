@@ -106,6 +106,13 @@ export function readNodeAttributes(
     return new URL(url, context.sourceUrl).href;
   };
 
+  const readIntrinsicDim = (attrName: string, dataAttrName: string): number | null => {
+    const raw = element.getAttribute(attrName) ?? element.getAttribute(dataAttrName);
+    if (!raw) return null;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
   return {
     expanded: element.getAttribute("aria-expanded") ?? null,
     checked: element.getAttribute("aria-checked") ?? null,
@@ -130,6 +137,9 @@ export function readNodeAttributes(
     haspopup: element.getAttribute("aria-haspopup") ?? null,
     alt: element.getAttribute("alt") ?? null,
     src: resolveUrl(element.getAttribute("src")),
+    poster: resolveUrl(element.getAttribute("poster")),
+    intrinsicWidth: readIntrinsicDim("width", "data-file-width"),
+    intrinsicHeight: readIntrinsicDim("height", "data-file-height"),
     href: element.getAttribute("href"),
     live: element.getAttribute("aria-live") ?? null,
     rowspan: element.getAttribute("rowspan") ?? null,
@@ -249,6 +259,9 @@ export function createEmptyAttributes(): IRNodeAttributes {
     haspopup: null,
     alt: null,
     src: null,
+    poster: null,
+    intrinsicWidth: null,
+    intrinsicHeight: null,
     href: null,
     live: null,
     rowspan: null,
@@ -609,7 +622,21 @@ export function isListCandidate(
   if (
     LANDMARK_ROLES.has(role) ||
     INTERACTIVE_ROLES.has(role) ||
-    role === "heading"
+    role === "heading" ||
+    // Table/grid cells (<td>/<th>) carry positional meaning — which row and
+    // column they occupy — that mapTable/mapTableRowIndexed depends on to
+    // reconstruct the grid. Nothing here rejected "cell"/"columnheader"/
+    // "rowheader" before, so a row of structurally-similar cells (a common
+    // shape: image + link + diagram per cell, repeated across a table like
+    // Wikipedia's polytope comparison tables) got swept into a single
+    // synthetic list child instead of staying N separate cells. mapTable then
+    // saw a row with one "cell" where the header row still had N real ones,
+    // mismatching columnCount and rendering the header row as an empty bar
+    // with no visible text. Cells must never be candidates for this
+    // structural list-run grouping.
+    role === "cell" ||
+    role === "columnheader" ||
+    role === "rowheader"
   )
     return false;
 

@@ -5,6 +5,7 @@
 import type {
   SemanticScene,
   XRHeading,
+  XRImage,
   XRMediaPlayer,
   XRPrimitive,
   XRTable,
@@ -28,6 +29,7 @@ import {
   LIST_ITEM_PROSE_INSET,
   listItemLabelBlockHeight,
   mergeAdjacentTextRuns,
+  resolveListColumns,
 } from "./utils";
 
 export { LIST_ITEM_PROSE_INSET };
@@ -233,17 +235,72 @@ function _estimateAlertHeight(
 }
 function _estimateCodeBlockHeight(
   primitive: XRPrimitive,
+  panelUsableWidth: number,
+  metrics: RenderMetrics,
+  config: LayoutConfig,
+  ancestors: Set<string>,
+  scene?: SemanticScene,
+): number {
+  const m = metrics.codeBlock;
+  const lineH = m.fontSize * m.lineHeightRatio;
+  const minH = Math.max(metrics.fallbackElementHeight, lineH + m.verticalPadding);
+  if (primitive.children.length > 0) {
+    return Math.max(
+      minH,
+      estimateMixedContentHeight(
+        flattenAndMerge(primitive.children),
+        panelUsableWidth,
+        panelUsableWidth,
+        metrics,
+        config,
+        ancestors,
+        scene,
+        m,
+      ),
+    );
+  }
+  const text = primitive.content ?? primitive.label ?? "";
+  const lineCount = Math.max(1, text.split("\n").length);
+  return Math.max(minH, lineCount * lineH + m.verticalPadding);
+}
+
+// Icon-sized images (e.g. Wikipedia's Coxeter-Dynkin diagram node/edge glyphs,
+// typically ~9x23px) are structurally <img> elements but visually inline
+// icons, not photos. Reserving the standard fixed photo height per glyph
+// inflates a run of several stacked icons into metres of height — several
+// XRImage children inside one wrapper each independently claiming a full
+// photo's height — which was causing massive page overflow and sibling-row
+// overlap in image galleries built from runs of tiny icon images. Any image
+// whose larger intrinsic dimension is below ICON_MAX_PX is sized off the
+// body-text line height instead of the full-photo fixed height.
+const ICON_MAX_PX = 40;
+
+// Shared with stackChildrenSimple (engine.ts): a container whose children are
+// ALL icon-sized images (e.g. every glyph in a Coxeter-Dynkin diagram run) is
+// laid out as a horizontal strip there instead of the default vertical stack.
+// Same threshold as the height estimate above so a glyph never gets stacked
+// full-width by one code path while being sized as an icon by the other.
+export function isIconSizedImage(primitive: XRPrimitive): boolean {
+  if (primitive.type !== "XRImage") return false;
+  const img = primitive as XRImage;
+  const iw = img.intrinsicWidth;
+  const ih = img.intrinsicHeight;
+  return iw !== null && ih !== null && Math.max(iw, ih) <= ICON_MAX_PX;
+}
+
+function _estimateImageHeight(
+  primitive: XRPrimitive,
   _panelUsableWidth: number,
   metrics: RenderMetrics,
 ): number {
-  const text = primitive.content ?? primitive.label ?? "";
-  const lineCount = Math.max(1, text.split("\n").length);
-  const m = metrics.codeBlock;
-  const lineH = m.fontSize * m.lineHeightRatio;
-  return Math.max(
-    metrics.fallbackElementHeight,
-    lineCount * lineH + m.verticalPadding,
-  );
+  const img = primitive as XRImage;
+  const iw = img.intrinsicWidth;
+  const ih = img.intrinsicHeight;
+  if (iw !== null && ih !== null && Math.max(iw, ih) <= ICON_MAX_PX) {
+    const lineH = metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
+    return Math.min(lineH, lineH * (ih / iw));
+  }
+  return metrics.image.height;
 }
 
 function _estimateFigureHeight(
@@ -531,6 +588,24 @@ export function sumChildrenHeights(
 
   const merged = flattenAndMerge(children);
 
+  // Mirrors stackChildrenSimple's inline icon-image strip (engine.ts): when
+  // every child is an icon-sized image (e.g. a Coxeter-Dynkin diagram's
+  // node/edge glyph run), that container is actually placed as ONE
+  // horizontal row, not a vertical stack. Summing each glyph's height here
+  // as if they were stacked overestimates the reserved space by roughly the
+  // glyph count, budgeting several times more page room than the row
+  // actually occupies once placed.
+  if (merged.length > 1 && merged.every(isIconSizedImage)) {
+    const lineH = metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
+    let rowH = 0;
+    for (const child of merged as unknown as XRImage[]) {
+      const iw = child.intrinsicWidth ?? 1;
+      const ih = child.intrinsicHeight ?? 1;
+      rowH = Math.max(rowH, Math.min(lineH, lineH * (ih / iw)));
+    }
+    return rowH;
+  }
+
   let totalHeight = 0;
   for (let i = 0; i < merged.length; i++) {
     const child = merged[i];
@@ -552,6 +627,50 @@ export function sumChildrenHeights(
     }
   }
   return totalHeight;
+}
+
+// XRList used the generic "children" height strategy (sumChildrenHeights),
+// which sums every item's height sequentially as if the list were a single
+// column. But when the list renders as a multi-column card grid (columns
+// resolved the same way placeListGrid resolves them at placement time), the
+// real total height is only `rows` items tall, not `items` items tall — the
+// naive sum overestimated by roughly a factor of `columns`, over-reserving
+// vertical space during pagination budgeting and leaving genuinely-empty
+// trailing pages once the real grid placement finished sooner than the
+// (wrong) estimate predicted.
+function _estimateListHeight(
+  primitive: XRPrimitive,
+  panelUsableWidth: number,
+  metrics: RenderMetrics,
+  config: LayoutConfig,
+  ancestors: Set<string>,
+  scene?: SemanticScene,
+): number {
+  const paddingContrib = config.panelPaddingTop * 2;
+  if (primitive.children.length === 0) return paddingContrib;
+
+  const childEstimateWidth = Math.max(
+    0.025,
+    panelUsableWidth - config.panelPaddingX * 2,
+  );
+  const columns = resolveListColumns(childEstimateWidth, metrics);
+  const cardWidth = Math.max(
+    0.025,
+    (childEstimateWidth - config.childGapY * (columns - 1)) / columns,
+  );
+  const itemHeights = primitive.children.map((child) =>
+    estimateHeight(child, cardWidth, metrics, config, new Set(ancestors), scene),
+  );
+
+  let totalRowHeight = 0;
+  let rowCount = 0;
+  for (let i = 0; i < itemHeights.length; i += columns) {
+    const rowItems = itemHeights.slice(i, i + columns);
+    totalRowHeight += Math.max(...rowItems);
+    rowCount += 1;
+  }
+  const gapTotal = config.childGapY * Math.max(0, rowCount - 1);
+  return paddingContrib + totalRowHeight + gapTotal;
 }
 
 function _estimateMediaHeight(
@@ -720,7 +839,8 @@ export const PRIMITIVE_CONFIG: Partial<
     slot: "main",
   },
   XRList: {
-    heightStrategy: "children",
+    heightStrategy: "custom",
+    customHandler: _estimateListHeight,
     paginate: "recursive",
     ownsXPadding: true,
     ownsTopPadding: true,
@@ -768,8 +888,8 @@ export const PRIMITIVE_CONFIG: Partial<
     slot: "main",
   },
   XRImage: {
-    heightStrategy: "fixed",
-    fixedHeight: (m) => m.image.height,
+    heightStrategy: "custom",
+    customHandler: _estimateImageHeight,
     paginate: "atomic",
     ownsXPadding: true,
     ownsTopPadding: true,
@@ -777,7 +897,7 @@ export const PRIMITIVE_CONFIG: Partial<
   },
   XRCodeBlock: {
     heightStrategy: "custom",
-    customHandler: (p, w, m) => _estimateCodeBlockHeight(p, w, m),
+    customHandler: _estimateCodeBlockHeight,
     paginate: "atomic",
     ownsXPadding: true,
     ownsTopPadding: true,

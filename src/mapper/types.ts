@@ -281,6 +281,8 @@ export interface XRImage extends XRPrimitiveBase {
   type: "XRImage";
   src: string | null;
   alt: string | null;
+  intrinsicWidth: number | null;
+  intrinsicHeight: number | null;
 }
 
 /**
@@ -470,6 +472,7 @@ export interface XRMediaPlayer extends XRPrimitiveBase {
   type: "XRMediaPlayer";
   mediaType: "video" | "audio";
   src: string | null;
+  poster: string | null;
   captions: string[];
 }
 

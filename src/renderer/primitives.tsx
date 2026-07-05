@@ -190,6 +190,22 @@ const PANEL_DEPTH = 0.01;
 const RIM_DEPTH = 0.0015;
 const RIM_RADIUS = 0.0005; // must be < RIM_DEPTH / 2 = 0.00075
 
+// ── Z-depth layers & render order ───────────────────────────────────────────
+// Text (troika-three-text) and image planes (meshBasicMaterial transparent)
+// are both transparent materials separated by only millimetre-scale Z gaps —
+// too little for THREE's default transparent-object draw-order sort to
+// reliably resolve, which let body text render behind nearby images despite
+// its Z already being numerically closer to camera in some cases. Named
+// layers centralize the existing Z offsets (no behavior change on their
+// own); explicit renderOrder is what actually fixes the occlusion, forcing
+// text to always draw after (in front of) images regardless of sort
+// instability.
+const Z_LAYER_INLINE_TEXT = 0.002;
+const Z_LAYER_BODY_TEXT = PANEL_DEPTH * 0.6;
+const Z_LAYER_IMAGE = PANEL_DEPTH + 0.004;
+const RENDER_ORDER_IMAGE = 1;
+const RENDER_ORDER_TEXT = 2;
+
 // RoundedBox requires radius < min(w, h, depth) / 2 across ALL three dimensions.
 // Use MIN_DIM as the floor for w/h, and safeRadius() to clamp any per-call radius.
 const MIN_DIM = PANEL_RADIUS * 2 + 0.001; // 0.025 m — safe floor for w and h
@@ -669,7 +685,8 @@ export function InlineProseRows({
               anchorX="left"
               {...(colorRanges ? ({ colorRanges } as any) : {})}
               anchorY="top"
-              position={[xInset, rowY, 0.002]}
+              position={[xInset, rowY, Z_LAYER_INLINE_TEXT]}
+              renderOrder={RENDER_ORDER_TEXT}
               fontSize={fontSize}
               color={theme.bodyCol}
               maxWidth={usableWidth}
@@ -785,7 +802,8 @@ export function XRParagraphMesh({
       <ClippedText
         anchorX="left"
         anchorY="top"
-        position={[0.02, -0.018, PANEL_DEPTH * 0.6]}
+        position={[0.02, -0.018, Z_LAYER_BODY_TEXT]}
+        renderOrder={RENDER_ORDER_TEXT}
         fontSize={0.026}
         color={theme.bodyCol}
         maxWidth={w - 0.04}
@@ -795,7 +813,11 @@ export function XRParagraphMesh({
         {primitive.content ?? primitive.label ?? ""}
       </ClippedText>
 
-      {/* Any non-text children (images, lists, etc.) */}
+      {/* Any non-text children (images, lists, etc.) — dispatched as true
+          siblings at their own absolute positions; renderOrder on this
+          paragraph's own text above ensures it never renders behind a
+          same-depth image child regardless of THREE's transparent draw
+          order sort. */}
       {primitive.children.map((child) => renderChild(child.id))}
     </group>
   );
@@ -1187,9 +1209,43 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
   const theme = useTheme();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
-  // const isLarge = primitive.sizingStrategy === "large-panel";
   const isAudio = primitive.mediaType === "audio";
-  // const ICON_SIZE = isLarge ? 0.08 : 0.04;
+  // Icon geometry previously used a literal `1` (metre) base unit, completely
+  // unscaled to the panel's actual (centimetre-scale) size — reading as an
+  // oversized/clipped stub rather than an intentional placeholder. Scale to
+  // a fraction of the panel's smaller dimension instead, clamped to a
+  // sensible range.
+  const ICON_SIZE = Math.min(0.08, Math.max(0.03, Math.min(w, h) * 0.3));
+
+  // Poster/thumbnail background, loaded the same way XRImageMesh loads its
+  // texture — makes the placeholder read as a real media widget rather than
+  // a flat placeholder color, without wiring up actual playback.
+  const proxiedPoster = primitive.poster ? proxyImageSrc(primitive.poster) : "";
+  const [posterTexture, setPosterTexture] = React.useState<THREE.Texture | null>(
+    null,
+  );
+
+  React.useEffect(() => {
+    setPosterTexture(null);
+    if (!proxiedPoster) return;
+    let cancelled = false;
+    const loader = new THREE.TextureLoader();
+    loader.load(
+      proxiedPoster,
+      (loaded) => {
+        loaded.colorSpace = THREE.SRGBColorSpace;
+        if (!cancelled) setPosterTexture(loaded);
+      },
+      undefined,
+      () => {
+        // Broken/unreachable poster — leave null so the plain backing
+        // panel renders instead.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [proxiedPoster]);
 
   return (
     <group position={pos} rotation={rot}>
@@ -1207,13 +1263,29 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
         />
       </RoundedBox>
 
+      {/* Poster thumbnail — sits between the backing panel and the icon
+          overlay so the play/audio icon still reads on top of it. */}
+      {posterTexture && (
+        <mesh
+          position={[w / 2, -h / 2, PANEL_DEPTH * 0.5]}
+          renderOrder={RENDER_ORDER_IMAGE}
+        >
+          <planeGeometry args={[w, h]} />
+          <meshBasicMaterial
+            map={posterTexture}
+            transparent
+            clippingPlanes={clips}
+          />
+        </mesh>
+      )}
+
       {/* Play / audio icon */}
       <group position={[w / 2, -h / 2, PANEL_DEPTH]}>
         {isAudio ? (
           <>
             {[-0.012, 0, 0.012].map((xOff, i) => (
-              <mesh key={i} position={[xOff, 0, 0]}>
-                <boxGeometry args={[0.006, 1 * (0.5 + i * 0.3), 0.002]} />
+              <mesh key={i} position={[xOff, 0, 0]} renderOrder={RENDER_ORDER_TEXT}>
+                <boxGeometry args={[0.006, ICON_SIZE * (0.5 + i * 0.3), 0.002]} />
                 <meshBasicMaterial
                   color={theme.accentCol}
                   transparent
@@ -1224,8 +1296,8 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
             ))}
           </>
         ) : (
-          <mesh rotation={[0, 0, 0]}>
-            <coneGeometry args={[1 * 0.6, 1, 3, 1]} />
+          <mesh rotation={[0, 0, 0]} renderOrder={RENDER_ORDER_TEXT}>
+            <coneGeometry args={[ICON_SIZE * 0.6, ICON_SIZE, 3, 1]} />
             <meshBasicMaterial
               color={theme.accentCol}
               transparent
@@ -1242,6 +1314,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
           anchorX="center"
           anchorY="top"
           position={[w / 2, -h + 0.03, PANEL_DEPTH * 2]}
+          renderOrder={RENDER_ORDER_TEXT}
           fontSize={0.02}
           color={theme.bodyCol}
           maxWidth={w - 0.06}
@@ -1286,9 +1359,14 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
 export interface XRCodeBlockMeshProps {
   primitive: import("../mapper/types").XRCodeBlock;
   entry: LayoutEntry;
+  renderChild: (primitiveId: string) => React.ReactNode;
 }
 
-export function XRCodeBlockMesh({ primitive, entry }: XRCodeBlockMeshProps) {
+export function XRCodeBlockMesh({
+  primitive,
+  entry,
+  renderChild,
+}: XRCodeBlockMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
@@ -1296,6 +1374,19 @@ export function XRCodeBlockMesh({ primitive, entry }: XRCodeBlockMeshProps) {
   const h = safeDim(entry.size.height);
   const CODE_BG = theme.inputBg;
   const CODE_COL = "#116329";
+
+  // Mirrors XRBlockQuoteMesh: children extracted by the parser (e.g. a
+  // synthetic text run, or block-level content) were previously discarded
+  // by the mapper (children: [] hardcoded) — now that they're preserved,
+  // flow inline children through InlineProseRows and let block-only
+  // children be dispatched externally as siblings (see the "XRCodeBlock"
+  // case in XRSceneRenderer.tsx) rather than duplicating them here.
+  const flatChildren = flattenInlineWrappers(primitive.children ?? []);
+  const hasAnyInlineChild = flatChildren.some((c) => isInlinePrimitive(c.type));
+  const hasAnyChildren = (primitive.children ?? []).length > 0;
+  const rows = hasAnyInlineChild
+    ? buildInlineRows(mergeAdjacentTextRuns(flatChildren))
+    : [];
 
   return (
     <group position={pos} rotation={rot}>
@@ -1332,18 +1423,35 @@ export function XRCodeBlockMesh({ primitive, entry }: XRCodeBlockMeshProps) {
         />
       </mesh>
 
-      <ClippedText
-        anchorX="left"
-        anchorY="top"
-        position={[0.018, -0.014, PANEL_DEPTH * 0.6]}
-        fontSize={0.02}
-        color={CODE_COL}
-        maxWidth={w - 0.03}
-        lineHeight={1.6}
-        letterSpacing={0.02}
-      >
-        {primitive.label ?? ""}
-      </ClippedText>
+      {hasAnyInlineChild ? (
+        <InlineProseRows
+          rows={rows}
+          startY={-0.014}
+          panelWidth={w - 0.018}
+          fontSize={0.02}
+          lineHeightRatio={1.6}
+          xInset={0.018}
+          renderChild={renderChild}
+        />
+      ) : hasAnyChildren ? (
+        // Block-only children are dispatched as true positioned siblings by
+        // the caller — render nothing here to avoid duplicating content.
+        null
+      ) : (
+        <ClippedText
+          anchorX="left"
+          anchorY="top"
+          position={[0.018, -0.014, Z_LAYER_BODY_TEXT]}
+          renderOrder={RENDER_ORDER_TEXT}
+          fontSize={0.02}
+          color={CODE_COL}
+          maxWidth={w - 0.03}
+          lineHeight={1.6}
+          letterSpacing={0.02}
+        >
+          {primitive.content ?? primitive.label ?? ""}
+        </ClippedText>
+      )}
     </group>
   );
 }
@@ -1380,6 +1488,7 @@ export function XRBlockQuoteMesh({
   // link segments get accent colouring.
   const flatChildren = flattenInlineWrappers(primitive.children ?? []);
   const hasAnyInlineChild = flatChildren.some((c) => isInlinePrimitive(c.type));
+  const hasAnyChildren = (primitive.children ?? []).length > 0;
   const rows = hasAnyInlineChild
     ? buildInlineRows(mergeAdjacentTextRuns(flatChildren))
     : [];
@@ -1433,6 +1542,12 @@ export function XRBlockQuoteMesh({
           xInset={X_INSET}
           renderChild={renderChild}
         />
+      ) : hasAnyChildren ? (
+        // Block-only children (e.g. a wrapped <p>) are dispatched as true
+        // positioned siblings by the caller (see the "XRBlockQuote" case in
+        // XRSceneRenderer.tsx) — render nothing here to avoid duplicating
+        // their content via the text fallback below.
+        null
       ) : (
         // Fallback: plain blockquote with no structured children.
         // Use content (full visible string) in preference to label (may be
@@ -1440,7 +1555,8 @@ export function XRBlockQuoteMesh({
         <ClippedText
           anchorX="left"
           anchorY="top"
-          position={[X_INSET, -0.018, PANEL_DEPTH * 0.6]}
+          position={[X_INSET, -0.018, Z_LAYER_BODY_TEXT]}
+          renderOrder={RENDER_ORDER_TEXT}
           fontSize={0.024}
           color="#8B6D3F"
           maxWidth={w - 0.04}
@@ -1599,10 +1715,21 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
     }
   }
   const [texture, setTexture] = React.useState<THREE.Texture | null>(null);
+  // Distinguishes "still loading" from "failed to load" — the alt/label text
+  // below is a fallback for when the image can't be shown, not a permanent
+  // caption. Without this, every successfully-rendered image (including ones
+  // with no visible caption on the source page) got its alt text drawn under
+  // it forever, e.g. showing literal alt strings like "altN=4-simplex" or a
+  // bare filename such as "CDel_node.png" as if it were a real caption.
+  const [loadFailed, setLoadFailed] = React.useState(false);
 
   React.useEffect(() => {
     setTexture(null);
-    if (!isRenderableImage(proxiedSrc)) return;
+    setLoadFailed(false);
+    if (!isRenderableImage(proxiedSrc)) {
+      setLoadFailed(true);
+      return;
+    }
     let cancelled = false;
     const loader = new THREE.TextureLoader();
     loader.load(
@@ -1618,6 +1745,7 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
       () => {
         // Broken/unreachable image — leave texture null so the plain
         // background box renders instead of crashing the canvas.
+        if (!cancelled) setLoadFailed(true);
       },
     );
     return () => {
@@ -1646,7 +1774,10 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
           does not retroactively enable texture sampling — the plane just
           renders as meshBasicMaterial's plain white default forever. */}
       {texture && (
-        <mesh position={[w / 2, -h / 2, PANEL_DEPTH + 0.004]}>
+        <mesh
+          position={[w / 2, -h / 2, Z_LAYER_IMAGE]}
+          renderOrder={RENDER_ORDER_IMAGE}
+        >
           <planeGeometry args={[w, h]} />
           <meshBasicMaterial map={texture} transparent clippingPlanes={clips} />
         </mesh>
@@ -1661,11 +1792,12 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
         />
       </mesh>
 
-      {(primitive.alt ?? primitive.label) && (
+      {loadFailed && (primitive.alt ?? primitive.label) && (
         <ClippedText
           anchorX="center"
           anchorY="bottom"
           position={[w / 2, -h + 0.02, PANEL_DEPTH + 0.008]}
+          renderOrder={RENDER_ORDER_TEXT}
           fontSize={0.016}
           color={theme.bodyCol}
           maxWidth={w - 0.04}
@@ -2011,7 +2143,8 @@ export function XRAlertMesh({
         <ClippedText
           anchorX="left"
           anchorY="top"
-          position={[X_INSET, -0.014, PANEL_DEPTH * 0.6]}
+          position={[X_INSET, -0.014, Z_LAYER_BODY_TEXT]}
+          renderOrder={RENDER_ORDER_TEXT}
           fontSize={0.022}
           color={isAssertive ? "#B3261E" : theme.bodyCol}
           maxWidth={w - 0.032}
@@ -2097,17 +2230,6 @@ export function XRTableMesh({
           {primitive.label}
         </ClippedText>
       )}
-
-      <ClippedText
-        anchorX="right"
-        anchorY="middle"
-        position={[w - 0.01, -HEADER_H / 2, PANEL_DEPTH]}
-        fontSize={0.014}
-        color={theme.bodyCol}
-        maxWidth={0.1}
-      >
-        {`${primitive.columnCount}×${primitive.rowCount}`}
-      </ClippedText>
 
       {primitive.children.map((child) => renderChild(child.id))}
     </group>

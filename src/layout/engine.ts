@@ -4,6 +4,7 @@ import type {
   Size2,
   XRPrimitive,
   XRHeading,
+  XRImage,
   XRParagraph,
   XRTable,
   SemanticScene,
@@ -13,6 +14,7 @@ import {
   _estimateTextBearingItemHeight,
   estimateHeight,
   flattenAndMerge,
+  isIconSizedImage,
   LIST_ITEM_PROSE_INSET,
   PRIMITIVE_CONFIG,
 } from "./positionConfigs";
@@ -202,6 +204,47 @@ function stackChildrenSimple(
     // already includes surrounding padding from its parent's estimateHeight.
 
     return { childEntries, totalHeight };
+  }
+
+  // ── Inline icon-image strip ────────────────────────────────────────────────
+  // A wrapper whose children are ALL icon-sized images (e.g. every glyph in a
+  // Wikipedia Coxeter-Dynkin diagram: node-edge-node-edge-...) represents one
+  // horizontally-flowing diagram, not a vertical list of photos. The default
+  // branch below gives every child the full container width and stacks them
+  // one per row — stretching each tiny glyph (often under 10px wide natively)
+  // to the panel's full width and stacking a handful of them into a tall
+  // column of distorted, near-unrecognisable bars instead of one compact
+  // horizontal strip. Lay these out left-to-right at their own
+  // intrinsic-aspect-ratio width instead.
+  if (children.length > 1 && children.every(isIconSizedImage)) {
+    const lineH = metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
+    const childX = ownsXPadding ? config.panelPaddingX : 0;
+    const startY = ownsTopPadding ? -topOffset : 0;
+    let cursorX = childX;
+    let rowH = 0;
+    const childEntries: LayoutEntry[] = [];
+
+    for (const child of children) {
+      const img = child as XRImage;
+      const iw = img.intrinsicWidth ?? 1;
+      const ih = img.intrinsicHeight ?? 1;
+      const h = Math.min(lineH, lineH * (ih / iw));
+      const w = h * (iw / ih);
+      rowH = Math.max(rowH, h);
+
+      childEntries.push({
+        id: child.id,
+        position: { x: cursorX, y: startY, z: 0 },
+        rotation: zeroRotation(),
+        size: { width: w, height: h },
+        curveRadius: 0,
+        worldLocked: true,
+      });
+      cursorX += w;
+    }
+
+    const paddingContrib = ownsTopPadding ? topOffset * 2 : 0;
+    return { childEntries, totalHeight: paddingContrib + rowH };
   }
 
   // ── Default: single-column vertical stack ────────────────────────────────
@@ -1052,7 +1095,21 @@ function paginateContentPanel(
       if (isSectionLike(sc)) {
         if (sc.children.length === 0) continue;
 
-        if (config.sectionStartsOnNewPage !== false && itemsOnPage > 0) {
+        // Don't strand a lone heading alone on the previous page (see the
+        // matching guard in the main pagination loop above) — a top-level
+        // heading is typically wrapped several generic-panel levels deep
+        // from its lead section (e.g. main-node-4 -> node-8 -> node-10 ->
+        // section-1), so this recursive copy of the same "start new page"
+        // logic needs its own stranding guard; fixing only the main loop's
+        // copy leaves this one still forcing the heading onto its own page.
+        const wouldStrandHeading =
+          lastPlacedType === "XRHeading" && itemsOnPage === 1;
+
+        if (
+          config.sectionStartsOnNewPage !== false &&
+          itemsOnPage > 0 &&
+          !wouldStrandHeading
+        ) {
           const absOffsetBase = pageYOffsets[pageIdx] ?? 0;
           pageYOffsets.push(absOffsetBase + VIEWPORT);
           pageIdx += 1;
@@ -1108,6 +1165,12 @@ function paginateContentPanel(
       cursorY -= g + sch;
       pageHeight += g + sch;
       itemsOnPage += 1;
+      // Mirror the main pagination loop's bookkeeping (see below) so the
+      // "don't strand a heading alone" check works inside sections too —
+      // without this, a section's own heading followed by its first real
+      // content child can overflow to the next page with nothing to hold
+      // them together, leaving the heading isolated on its own page.
+      lastPlacedType = sc.type;
 
       // Overflow: advance pageIdx and create continuation nodes if the leaf
       // is text-bearing (XRParagraph with real inline children, or a synthetic
@@ -1166,7 +1229,22 @@ function paginateContentPanel(
     if (isSectionLike(child)) {
       if (child.children.length === 0) continue;
 
-      if (config.sectionStartsOnNewPage !== false && itemsOnPage > 0) {
+      // Don't strand a lone heading alone on the previous page: if the only
+      // thing placed on the current page so far is a heading, let this
+      // section start right after it instead of forcing a break. Without
+      // this, a top-level heading immediately followed by its lead/first
+      // section (the common case — the page title followed by the intro
+      // section) always lands alone on page 1 with the real content pushed
+      // to page 2, since this branch forced nextPage() unconditionally
+      // whenever sectionStartsOnNewPage was set, with no stranding guard.
+      const wouldStrandHeading =
+        lastPlacedType === "XRHeading" && itemsOnPage === 1;
+
+      if (
+        config.sectionStartsOnNewPage !== false &&
+        itemsOnPage > 0 &&
+        !wouldStrandHeading
+      ) {
         nextPage(absoluteY);
         absoluteY = config.panelPaddingTop;
       }
@@ -1406,7 +1484,13 @@ function paginateContentPanel(
             }
           }
           const childAbs = positionMap.get(child.id)!;
+          // See the top-level sweep below: save/restore pageIdx around each
+          // sibling's recursive descent so one child's deeply-nested overflow
+          // correction doesn't leak into how later siblings in this same
+          // loop get paged (same leak placeListGrid already guards against).
+          const pageIdxBeforeChild = pageIdx;
           stampDescendants(child, childAbs.x, childAbs.y, availableWidth);
+          pageIdx = pageIdxBeforeChild;
         }
       }
       return;
@@ -1414,12 +1498,32 @@ function paginateContentPanel(
 
     // If the children are already in positionMap (stamped by splitSection or
     // the main loop), just recurse with their known absolute positions.
-    const firstChild = node.children[0];
-    if (firstChild && positionMap.has(firstChild.id)) {
+    //
+    // Checking only node.children[0] used to miss this: splitSection's
+    // section-like/recursive-container branches `continue` past a child with
+    // zero children without ever calling positionMap.set on it (there's
+    // nothing to render, so nothing to position). If THAT empty child
+    // happens to be first in the array — e.g. a stray empty XRGenericPanel
+    // ahead of a page's real content, which is common for a document's
+    // implicit lead section — the array-order check saw an "unstamped"
+    // first child and wrongly concluded none of this node's children had
+    // been paginated yet, so it fell through to the block below and re-ran
+    // stackChildrenSimple's naive single-page flow over children that
+    // splitSection had already correctly spread across many real pages.
+    // That silently overwrote their correct pageIndex/position with a
+    // freshly (and wrongly) computed one, landing already-paginated content
+    // from an earlier section on the same page as a later, unrelated
+    // section and rendering both superimposed. Checking whether ANY child
+    // is stamped is robust to a skipped-empty child anywhere in the array,
+    // including first.
+    const alreadyStamped = node.children.some((c) => positionMap.has(c.id));
+    if (alreadyStamped) {
       for (const child of node.children) {
         const childAbs = positionMap.get(child.id);
         if (!childAbs) continue;
+        const pageIdxBeforeChild = pageIdx;
         stampDescendants(child, childAbs.x, childAbs.y, availableWidth);
+        pageIdx = pageIdxBeforeChild;
       }
       return;
     }
@@ -1483,17 +1587,29 @@ function paginateContentPanel(
       pageIndexMap[child.id] = childPage;
 
       // Recurse: the child's usable width comes from stackChildrenSimple's
-      // entry, which already accounts for the child's own x-padding.
+      // entry, which already accounts for the child's own x-padding. Save/
+      // restore pageIdx around the call — same leak as the other recursive
+      // sites in this function (a deeply-nested descendant's overflow
+      // correction must not change how the NEXT sibling in this loop pages).
+      const pageIdxBeforeChild = pageIdx;
       stampDescendants(child, panelAbs.x, panelAbs.y, local.size.width);
+      pageIdx = pageIdxBeforeChild;
     }
   }
 
   // Kick off the pass from each top-level child that was placed by the main
   // pagination loop. Their absolute positions are already in positionMap.
+  // stampDescendants can mutate the closured pageIdx via overflowCorrect when
+  // a deeply-nested descendant needs a page that doesn't exist yet — save and
+  // restore around each call so that leak doesn't corrupt the page index for
+  // unrelated later siblings or the final totalPages count (same pattern as
+  // placeListGrid's save/restore around its stampDescendants call above).
   for (const child of children) {
     const abs = positionMap.get(child.id);
     if (!abs) continue;
+    const pageIdxBeforeDescendants = pageIdx;
     stampDescendants(child, abs.x, abs.y, childWidth);
+    pageIdx = pageIdxBeforeDescendants;
   }
 
   const totalPages = pageIdx + 1;
