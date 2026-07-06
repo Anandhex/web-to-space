@@ -73,6 +73,16 @@ export interface LayoutEntry {
   pageEndIndex?: number;
 
   /**
+   * Pages *within* [pageIndex … pageEndIndex] on which this entry is hidden.
+   * Used for mutual exclusion in the complementary slot: the persistent
+   * interstitial aside spans the whole document but yields the slot to a
+   * section-scoped aside while that section is on screen, so those pages are
+   * excluded here. Each tuple is an inclusive `[start, end]` page range.
+   * Absent for entries with no exclusions.
+   */
+  pageExcludeRanges?: Array<[number, number]>;
+
+  /**
    * Resolved table layout strategy.
    * Present only on XRTable entries; tells the renderer which
    * display mode to use.
@@ -115,6 +125,12 @@ export interface LayoutPlan {
   template: LayoutTemplate;
   config: LayoutConfig;
   diagnostics: LayoutDiagnostics;
+  /**
+   * Reference frame the landmark positions are authored in. The renderer wraps
+   * the scene graph in a matching transform. Absent/"world" for the legacy
+   * (non-arrangement) path.
+   */
+  referenceFrame?: ReferenceFrame;
 }
 
 export interface LayoutDiagnostics {
@@ -373,6 +389,63 @@ export type SlotName =
   | "alert";
 
 export type SlotMap = Partial<Record<SlotName, LandmarkSlot>>;
+
+// ─────────────────────────────────────────────────────────────
+// Two-axis view system: reference frames + arrangements
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The spatial reference frame a view's panels live in. `LayoutEntry` positions
+ * are authored relative to this frame; the renderer applies the frame transform
+ * exactly once at the scene-graph root (see ReferenceFrameGroup).
+ *
+ *  - "world" — fixed in the room (identity transform).
+ *  - "body"  — follows the camera's yaw only (turn-to-navigate workspaces).
+ *  - "head"  — follows the full head pose (near-eye HUDs).
+ *  - "hand"  — follows a controller's grip pose (handheld/palm views).
+ */
+export type ReferenceFrame = "world" | "body" | "head" | "hand";
+
+/** Distribution algorithm that turns a SlotRoster into positioned slots. */
+export type Distribution =
+  | "fan"
+  | "focus"
+  | "stack"
+  | "ring"
+  | "corridor"
+  | "palm";
+
+/** Device capability class, used to gate which views a profile may offer. */
+export type DeviceClass = "headset-6dof" | "headset-roomscale" | "glasses";
+
+/**
+ * A single landmark slot's size + reading priority, WITHOUT a position.
+ * Produced by the content template (`rosterFor`) and consumed by an
+ * arrangement's distribution to compute the final SlotMap.
+ */
+export interface SlotSpec {
+  role: SlotName;
+  size: Size2;
+  /** Reading priority in [0..1]; 1 = primary. Drives ordering/depth/angle. */
+  weight: number;
+}
+
+/** Ordered by reading priority, primary first. */
+export type SlotRoster = SlotSpec[];
+
+/**
+ * A declarative view: a reference frame + a distribution algorithm, composed
+ * over whatever content template the scene auto-selects. Adding a view is data,
+ * not a new SlotMap function.
+ */
+export interface Arrangement {
+  /** Stable id — matches the ViewMode string in the UI. */
+  id: string;
+  frame: ReferenceFrame;
+  distribution: Distribution;
+  /** Device classes this view is usable on. */
+  deviceFit: DeviceClass[];
+}
 
 export interface SimpleStackResult {
   /** One entry per child, with page-relative y-positions. */

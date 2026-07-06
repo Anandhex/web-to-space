@@ -19,8 +19,10 @@ import {
   PRIMITIVE_CONFIG,
 } from "./positionConfigs";
 import { selectSlots } from "./slots";
+import { resolveArrangementSlots } from "./arrangements";
 import { selectLayoutTemplate } from "./templates";
 import type {
+  Arrangement,
   DeviceProfile,
   LayoutTemplate,
   RenderMetrics,
@@ -2090,6 +2092,7 @@ export function computeLayoutPlan(
   template?: LayoutTemplate,
   configOverrides?: Partial<LayoutConfig>,
   metricsOverrides?: Partial<RenderMetrics>,
+  arrangement?: Arrangement,
 ): LayoutPlan {
   const config: LayoutConfig = { ...profile.layoutConfig, ...configOverrides };
   const metrics: RenderMetrics = {
@@ -2109,9 +2112,23 @@ export function computeLayoutPlan(
     slotOverflows: [],
   };
 
-  const slots = selectSlots(resolvedTemplate, config, metrics);
+  // Arrangement path (new two-axis views): compose the arrangement's spatial
+  // distribution over the auto-selected content template's slot roster. Legacy
+  // path (no arrangement): the template's own hand-tuned SlotMap.
+  const slots = arrangement
+    ? resolveArrangementSlots(arrangement, resolvedTemplate, config, metrics)
+    : selectSlots(resolvedTemplate, config, metrics);
   const topLevelPrimitives = scene.root.children;
   const usedSlots = new Set<SlotName>();
+
+  // Top-level XRComplementary landmarks (an <aside> that is a sibling of the
+  // page's sections, not nested inside one) classify to the complementary slot.
+  // They are always visible — no page gating — so they'd sit permanently at the
+  // slot's top lane and collide with any section-nested aside the pagination
+  // pass later extracts to the SAME slot. Defer their placement to the unified
+  // complementary-packing pass below so both kinds share one skyline and stack
+  // instead of overlapping.
+  const hoistedComplementaries: XRPrimitive[] = [];
 
   for (const primitive of topLevelPrimitives) {
     let slotName = classifyLandmark(primitive);
@@ -2120,6 +2137,18 @@ export function computeLayoutPlan(
       slotName = "main";
     }
     usedSlots.add(slotName);
+
+    // Only defer when a complementary slot actually exists — otherwise fall
+    // through so the aside still lands somewhere (the main slot) rather than
+    // being dropped, since the packing pass below is gated on compSlot.
+    if (
+      slotName === "complementary" &&
+      primitive.type === "XRComplementary" &&
+      slots.complementary
+    ) {
+      hoistedComplementaries.push(primitive);
+      continue;
+    }
 
     const slot = slots[slotName] ?? slots.main;
     if (!slot) {
@@ -2185,6 +2214,50 @@ export function computeLayoutPlan(
       return null;
     };
 
+    // Document (reading) order index for every primitive — a stable pre-order
+    // DFS over the scene tree. Used to decide which aside sits on top when two
+    // asides are co-visible in the complementary slot (earlier in the document
+    // stacks above later).
+    const docOrder = new Map<string, number>();
+    {
+      let n = 0;
+      const orderTree = (node: XRPrimitive): void => {
+        docOrder.set(node.id, n++);
+        for (const child of node.children) orderTree(child);
+      };
+      orderTree(scene.root);
+    }
+
+    // ── Phase 1: gather every aside destined for the complementary slot ──────
+    // The complementary slot is a single fixed rectangle, so each aside placed
+    // in it lands at the SAME world position by default. Two kinds compete for
+    // it and overlap when co-visible:
+    //   • Hoisted asides  — top-level <aside> landmarks, ALWAYS visible (no page
+    //     gating). Modelled with an all-pages range so they overlap everything.
+    //   • Extracted asides — section-nested <aside>s the pagination pass flowed
+    //     into a content panel; gated to their section's page range.
+    // Collect both with a [gateStart … gateEnd] range (inclusive) so phase 2 can
+    // pack co-visible asides into non-overlapping vertical lanes.
+    type SlotAside = {
+      prim: XRPrimitive;
+      gateStart: number;
+      gateEnd: number;
+      alwaysVisible: boolean;
+      order: number;
+    };
+    const slotAsides: SlotAside[] = [];
+
+    for (const prim of hoistedComplementaries) {
+      slotAsides.push({
+        prim,
+        // Overlaps any gated range, so extracted asides always stack beneath it.
+        gateStart: Number.NEGATIVE_INFINITY,
+        gateEnd: Number.POSITIVE_INFINITY,
+        alwaysVisible: true,
+        order: docOrder.get(prim.id) ?? Number.MAX_SAFE_INTEGER,
+      });
+    }
+
     for (const prim of Object.values(scene.primitives)) {
       if (prim.type !== "XRComplementary") continue;
       const existing = entries[prim.id];
@@ -2216,6 +2289,55 @@ export function computeLayoutPlan(
         }
       }
 
+      slotAsides.push({
+        prim,
+        gateStart,
+        gateEnd,
+        alwaysVisible: false,
+        order: docOrder.get(prim.id) ?? Number.MAX_SAFE_INTEGER,
+      });
+    }
+
+    // ── Phase 2: one aside at a time (mutual exclusion) ─────────────────────
+    // Every slot aside is placed at the SAME fixed slot position; the slot sits
+    // at the content panel's right edge with no room to tile sideways and no way
+    // to page-vary a single primitive's position, so instead we time-share the
+    // slot by page. Higher-priority asides claim their pages first and lower
+    // ones are punched out (pageExcludeRanges) on any page already taken:
+    //   • section-scoped asides (contextual) beat the persistent aside, and
+    //   • earlier-in-document asides beat later ones (so a media aside beats the
+    //     aside nested inside it).
+    // The persistent interstitial aside spans the whole document and fills only
+    // the pages no section aside owns.
+    slotAsides.sort((a, b) => {
+      if (a.alwaysVisible !== b.alwaysVisible) return a.alwaysVisible ? 1 : -1;
+      return a.order - b.order;
+    });
+
+    // Last page of the document, so the persistent aside can span [0 … maxPage].
+    let maxPage = 0;
+    for (const e of Object.values(entries)) {
+      if (e.pageEndIndex !== undefined && e.pageEndIndex > maxPage)
+        maxPage = e.pageEndIndex;
+      else if (e.pageIndex !== undefined && e.pageIndex > maxPage)
+        maxPage = e.pageIndex;
+    }
+
+    // Page ranges already claimed by higher-priority asides.
+    const claimed: Array<[number, number]> = [];
+
+    for (const { prim, gateStart, gateEnd, alwaysVisible } of slotAsides) {
+      const baseStart = alwaysVisible ? 0 : gateStart;
+      const baseEnd = alwaysVisible ? maxPage : gateEnd;
+
+      // Holes where a higher-priority aside already owns the slot.
+      const excludeRanges: Array<[number, number]> = [];
+      for (const [cs, ce] of claimed) {
+        const s = Math.max(cs, baseStart);
+        const e = Math.min(ce, baseEnd);
+        if (s <= e) excludeRanges.push([s, e]);
+      }
+
       layoutPrimitive(
         prim,
         compSlot.position,
@@ -2228,21 +2350,25 @@ export function computeLayoutPlan(
         metrics,
         entries,
         diag,
-        gateStart,
+        baseStart,
       );
 
-      // layoutPrimitive stamped pageIndex = gateStart on the aside and every
-      // descendant. Pin the range end too so the renderer keeps the whole aside
-      // subtree visible for [gateStart … gateEnd].
+      // Stamp the whole subtree with the resolved page window + exclusions so
+      // every descendant gates identically (the container is hidden only when
+      // none of its descendants are visible).
       const asideSubtree = new Set<string>();
       collectSubtreeIds(prim, asideSubtree);
       for (const sid of asideSubtree) {
         const e = entries[sid];
         if (!e) continue;
-        e.pageIndex = gateStart;
-        if (gateEnd > gateStart) e.pageEndIndex = gateEnd;
+        e.pageIndex = baseStart;
+        if (baseEnd > baseStart) e.pageEndIndex = baseEnd;
         else delete e.pageEndIndex;
+        if (excludeRanges.length > 0) e.pageExcludeRanges = excludeRanges;
+        else delete e.pageExcludeRanges;
       }
+
+      claimed.push([baseStart, baseEnd]);
     }
   }
 
@@ -2284,6 +2410,7 @@ export function computeLayoutPlan(
     template: resolvedTemplate,
     config,
     diagnostics: diag,
+    referenceFrame: arrangement?.frame ?? "world",
   };
 }
 

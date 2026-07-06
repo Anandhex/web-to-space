@@ -48,6 +48,7 @@ import React, {
   Suspense,
   useEffect,
   useMemo,
+  useRef,
 } from "react";
 import { Canvas, useThree, useFrame } from "@react-three/fiber";
 import {
@@ -63,6 +64,7 @@ import { parsePageToIR } from "../ir/parser";
 import { parsePageWithVIPS } from "../ir/vips";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../mapper/mapper";
 import { computeLayoutPlan } from "../layout/engine";
+import { getArrangement } from "../layout/arrangements";
 import { DEFAULT_CONFIG } from "../ir/defaults";
 import type { ParserConfig, ParserBackend } from "../ir/types";
 import { applyParserBackend } from "../ir/backends";
@@ -164,14 +166,28 @@ export const FontContext = React.createContext<string | undefined>(undefined);
  * means "not in a paginated context", so everything renders.
  */
 function entryOnPage(
-  entry: { pageIndex?: number; pageEndIndex?: number } | null | undefined,
+  entry:
+    | {
+        pageIndex?: number;
+        pageEndIndex?: number;
+        pageExcludeRanges?: Array<[number, number]>;
+      }
+    | null
+    | undefined,
   currentPage: number,
 ): boolean {
   if (!entry) return false;
   if (entry.pageIndex === undefined) return true;
   if (currentPage === -1) return true;
   const end = entry.pageEndIndex ?? entry.pageIndex;
-  return currentPage >= entry.pageIndex && currentPage <= end;
+  if (currentPage < entry.pageIndex || currentPage > end) return false;
+  // Mutual-exclusion holes: hidden on pages a higher-priority slot aside owns.
+  if (entry.pageExcludeRanges) {
+    for (const [s, e] of entry.pageExcludeRanges) {
+      if (currentPage >= s && currentPage <= e) return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -234,9 +250,25 @@ function zeroedEntry(entry: LayoutEntry): LayoutEntry {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Wraps a mesh in a positioned group using the entry's panel-absolute
- * coordinates. Every leaf primitive uses this — the mesh itself receives
- * zeroedEntry() so it never double-applies the translation.
+ * Exponential-smoothing rate for view-transition morphs (per second). Higher =
+ * snappier. ~10 gives a ~250–400 ms settle that reads as the page reforming
+ * around the user when switching arrangements.
+ */
+const MORPH_RATE = 10;
+/** Below this (metres / radians) a value is snapped to target and considered settled. */
+const MORPH_EPS = 1e-4;
+
+/**
+ * Wraps a mesh in a positioned group using the entry's coordinates. Every leaf
+ * primitive uses this — the mesh itself receives zeroedEntry() so it never
+ * double-applies the translation.
+ *
+ * The group eases toward the entry position/rotation instead of snapping, so
+ * switching views (which rewrites every landmark's position) morphs the panels
+ * between arrangements. Because each primitive eases at the same rate, a panel
+ * and its world-stamped children translate coherently as a unit. On first mount
+ * the group is initialised straight to the target (no fly-in from the origin),
+ * and once settled the per-frame callback early-outs so idle cost is ~one branch.
  */
 function AtPos({
   entry,
@@ -245,17 +277,63 @@ function AtPos({
   entry: LayoutEntry;
   children: React.ReactNode;
 }) {
-  const { x, y, z } = entry.position;
-  const rot: [number, number, number] = [
-    entry.rotation.x,
-    entry.rotation.y,
-    entry.rotation.z,
-  ];
-  return (
-    <group position={[x, y, z]} rotation={rot}>
-      {children}
-    </group>
-  );
+  const ref = useRef<THREE.Group>(null);
+  const targetPos = useRef(new THREE.Vector3());
+  const targetRot = useRef(new THREE.Euler());
+  const inited = useRef(false);
+  const settled = useRef(false);
+
+  // Derive the current target from props every render; a changed target
+  // re-arms the easing loop.
+  targetPos.current.set(entry.position.x, entry.position.y, entry.position.z);
+  targetRot.current.set(entry.rotation.x, entry.rotation.y, entry.rotation.z);
+  settled.current = false;
+
+  React.useLayoutEffect(() => {
+    const g = ref.current;
+    if (g && !inited.current) {
+      g.position.copy(targetPos.current);
+      g.rotation.copy(targetRot.current);
+      inited.current = true;
+      settled.current = true;
+    }
+  });
+
+  useFrame((_, dt) => {
+    const g = ref.current;
+    if (!g || !inited.current || settled.current) return;
+    const a = 1 - Math.exp(-MORPH_RATE * Math.min(dt, 0.1));
+
+    const p = g.position;
+    const tp = targetPos.current;
+    const dpx = tp.x - p.x;
+    const dpy = tp.y - p.y;
+    const dpz = tp.z - p.z;
+    const posSettled = Math.abs(dpx) + Math.abs(dpy) + Math.abs(dpz) < MORPH_EPS;
+    if (posSettled) p.copy(tp);
+    else {
+      p.x += dpx * a;
+      p.y += dpy * a;
+      p.z += dpz * a;
+    }
+
+    const r = g.rotation;
+    const tr = targetRot.current;
+    const drx = tr.x - r.x;
+    const dry = tr.y - r.y;
+    const drz = tr.z - r.z;
+    const rotSettled = Math.abs(drx) + Math.abs(dry) + Math.abs(drz) < MORPH_EPS;
+    if (rotSettled) r.set(tr.x, tr.y, tr.z);
+    else {
+      r.x += drx * a;
+      r.y += dry * a;
+      r.z += drz * a;
+    }
+
+    settled.current = posSettled && rotSettled;
+  });
+
+  return <group ref={ref}>{children}</group>;
 }
 
 function hasDescendant(node: XRPrimitive, targetId: string): boolean {
@@ -388,6 +466,7 @@ function usePipeline(
   parserConfig: Partial<ParserConfig>,
   parserBackend: ParserBackend,
   templateOverride: import("../layout/types").LayoutTemplate | undefined,
+  arrangement: import("../layout/types").Arrangement | undefined,
 ) {
   const [result, setResult] = useState({
     scene: null as SemanticScene | null,
@@ -455,6 +534,8 @@ function usePipeline(
             deviceProfile,
             templateOverride,
             stableConfig,
+            undefined,
+            arrangement,
           );
           if (!cancelled)
             setResult({ scene, plan, error: null, backendLabel: label });
@@ -475,6 +556,8 @@ function usePipeline(
           deviceProfile,
           templateOverride,
           stableConfig,
+          undefined,
+          arrangement,
         );
         if (!cancelled)
           setResult({
@@ -507,6 +590,7 @@ function usePipeline(
     stableParserConfig,
     parserBackend,
     templateOverride,
+    arrangement,
   ]);
 
   return result;
@@ -2006,6 +2090,113 @@ function buildPrimitiveMap(
 }
 
 // ─────────────────────────────────────────────────────────────
+// Reference frame
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Applies a view's spatial reference frame to the whole scene graph exactly
+ * once. `LayoutEntry` positions are authored relative to this frame; wrapping
+ * here keeps the per-primitive "one group, siblings" contract intact.
+ *
+ *  - "world" — identity (fixed in the room).
+ *  - "body"  — follows head yaw + horizontal position (turn-to-navigate).
+ *  - "head"  — follows the full head pose (near-eye).
+ *  - "hand"  — follows the off-hand controller's grip pose (handheld/palm). If
+ *    no controller is tracked (e.g. hand-tracking off, or the grip has no pose),
+ *    it falls back to a head-anchored, yaw-following frame so the view is still
+ *    usable.
+ *
+ * The frame transform is only applied inside an immersive session; in the flat
+ * preview it stays identity so every arrangement is explorable as authored.
+ */
+function ReferenceFrameGroup({
+  frame,
+  children,
+}: {
+  frame: import("../layout/types").ReferenceFrame;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<THREE.Group>(null);
+  const euler = useRef(new THREE.Euler(0, 0, 0, "YXZ"));
+  const gripPos = useRef(new THREE.Vector3());
+  const gripQuat = useRef(new THREE.Quaternion());
+  const gripScale = useRef(new THREE.Vector3());
+
+  /**
+   * Pick the grip space for the off-hand (left for a right-handed user) so the
+   * palm/tablet sits on the non-dominant hand and the dominant hand is free to
+   * point. Falls back to grip 0. Returns null when no grip has a live pose.
+   */
+  function offHandGrip(gl: THREE.WebGLRenderer): THREE.Object3D | null {
+    const session = gl.xr.getSession();
+    let index = 0;
+    if (session) {
+      const sources = Array.from(session.inputSources);
+      const left = sources.findIndex((s) => s.handedness === "left");
+      if (left >= 0) index = left;
+    }
+    const grip = gl.xr.getControllerGrip(index);
+    // three toggles grip.visible based on whether the input source has a pose.
+    if (!grip || grip.visible === false) return null;
+    return grip;
+  }
+
+  useFrame((state) => {
+    const g = ref.current;
+    if (!g) return;
+    const presenting = state.gl.xr.isPresenting;
+    if (!presenting) {
+      if (frame === "hand") {
+        // No headset: park the hand-local layout at a comfortable static anchor
+        // (down-and-right, tilted toward the eye) so the palm view is still
+        // explorable with the mouse in the flat preview.
+        g.position.set(0.18, 1.15, -0.32);
+        g.rotation.set(0.42, -0.32, 0);
+        return;
+      }
+      g.position.set(0, 0, 0);
+      g.rotation.set(0, 0, 0);
+      return;
+    }
+    if (frame === "world") {
+      g.position.set(0, 0, 0);
+      g.rotation.set(0, 0, 0);
+      return;
+    }
+    const cam = state.camera;
+    if (frame === "head") {
+      g.position.copy(cam.position);
+      g.quaternion.copy(cam.quaternion);
+      return;
+    }
+    if (frame === "hand") {
+      const grip = offHandGrip(state.gl);
+      if (grip) {
+        // Anchor the whole arrangement to the controller's grip pose. The grip
+        // and this group are both scene-root children, so matrixWorld is the
+        // local transform we want to mirror.
+        grip.matrixWorld.decompose(
+          gripPos.current,
+          gripQuat.current,
+          gripScale.current,
+        );
+        g.position.copy(gripPos.current);
+        g.quaternion.copy(gripQuat.current);
+        return;
+      }
+      // Fall through to the head-anchored fallback when no grip is tracked.
+    }
+    // body & hand-fallback: follow yaw + horizontal position, keep panels upright.
+    euler.current.setFromQuaternion(cam.quaternion);
+    g.position.set(cam.position.x, 0, cam.position.z);
+    g.quaternion.identity();
+    g.rotation.set(0, euler.current.y, 0);
+  });
+
+  return <group ref={ref}>{children}</group>;
+}
+
+// ─────────────────────────────────────────────────────────────
 // Scene graph
 // ─────────────────────────────────────────────────────────────
 
@@ -2186,6 +2377,23 @@ function XRSceneGraph({
     [plan, primitiveMap, setPage, onExternalNavigate, sourceUrl],
   );
 
+  // The page-paginated content panel drives the current page for gating the
+  // persistent complementary aside, which lives at the top level (a sibling of
+  // the panel, not a child) and so isn't inside the panel's CurrentPageContext.
+  // We re-provide that page around it below so its mutual-exclusion gating —
+  // hiding it on pages a section-scoped aside owns — actually takes effect.
+  const paginatedPanel = React.useMemo(
+    () =>
+      scene.root.children.find(
+        (p) =>
+          p.type === "XRContentPanel" && plan.entries[p.id]?.paginatedByEngine,
+      ) ?? null,
+    [scene.root.children, plan.entries],
+  );
+  const paginatedPanelPage = paginatedPanel
+    ? (pageState[paginatedPanel.id] ?? 0)
+    : -1;
+
   return (
     <NavigateContext.Provider value={navigate}>
       {scene.root.children.map((primitive) => {
@@ -2252,7 +2460,12 @@ function XRSceneGraph({
           );
         }
 
-        return (
+        // A top-level complementary aside that the engine gated to a page
+        // range (pageIndex set) needs the paginated panel's current page in
+        // context so entryOnPage can hide it on excluded pages. Without this
+        // wrapper it renders under the default CurrentPageContext (-1) and is
+        // always visible, overlapping whichever section aside owns the slot.
+        const dispatcher = (
           <PrimitiveDispatcher
             key={primitive.id}
             primitive={primitive}
@@ -2262,6 +2475,21 @@ function XRSceneGraph({
             primitiveMap={primitiveMap}
           />
         );
+        if (
+          primitive.type === "XRComplementary" &&
+          plan.entries[primitive.id]?.pageIndex !== undefined &&
+          paginatedPanelPage !== -1
+        ) {
+          return (
+            <CurrentPageContext.Provider
+              key={primitive.id}
+              value={paginatedPanelPage}
+            >
+              {dispatcher}
+            </CurrentPageContext.Provider>
+          );
+        }
+        return dispatcher;
       })}
     </NavigateContext.Provider>
   );
@@ -2371,9 +2599,17 @@ export function XRSceneRenderer({
       case "theatre":
         return "theatre";
       default:
-        return undefined; // "standard" → auto-select
+        return undefined; // "standard" / arrangement views → auto content template
     }
   }, [viewMode]);
+
+  // Two-axis arrangement views (focus/stack/orbital/palm/gallery) route through
+  // the arrangement path: the spatial distribution composes over whatever
+  // content template the scene auto-selects. Legacy views → undefined.
+  const arrangement = useMemo(
+    () => getArrangement(viewMode),
+    [viewMode],
+  );
 
   // Camera look target for the flat (non-immersive) preview. Panels are
   // top-left anchored, so a panel whose top sits at eyeY hangs *below* the eye
@@ -2404,6 +2640,7 @@ export function XRSceneRenderer({
     parserConfig,
     parserBackend,
     templateOverride,
+    arrangement,
   );
 
   const {
@@ -2650,15 +2887,19 @@ export function XRSceneRenderer({
                     ) : (
                       /* Level 1: reading view — pagination scoped to the focused section */
                       <PageRangeContext.Provider value={cardsSectionRange}>
-                        <XRSceneGraph
-                          scene={scene}
-                          plan={plan}
-                          pageState={pageState}
-                          setPage={setPage}
-                          viewMode={viewMode}
-                          onExternalNavigate={onExternalNavigate}
-                          sourceUrl={url}
-                        />
+                        <ReferenceFrameGroup
+                          frame={plan.referenceFrame ?? "world"}
+                        >
+                          <XRSceneGraph
+                            scene={scene}
+                            plan={plan}
+                            pageState={pageState}
+                            setPage={setPage}
+                            viewMode={viewMode}
+                            onExternalNavigate={onExternalNavigate}
+                            sourceUrl={url}
+                          />
+                        </ReferenceFrameGroup>
                       </PageRangeContext.Provider>
                     ))}
 
@@ -2671,6 +2912,7 @@ export function XRSceneRenderer({
                     <XR3DViewToggle
                       mode={viewMode}
                       onChange={onViewModeChange}
+                      deviceType={deviceType}
                       position={[
                         chromeAnchor.cx,
                         chromeAnchor.bottomY + 1.1,

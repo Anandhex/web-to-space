@@ -1,6 +1,27 @@
 import type { HomeSettings } from "./HomeScreen";
 
-export type ViewMode = "standard" | "carousel" | "cards" | "door" | "theatre";
+export type ViewMode =
+  // Legacy bespoke views (hand-tuned SlotMaps + renderer branches)
+  | "standard"
+  | "carousel"
+  | "cards"
+  | "door"
+  | "theatre"
+  // Two-axis arrangement views (frame + distribution over the content template)
+  | "focus"
+  | "stack"
+  | "orbital"
+  | "palm"
+  | "gallery";
+
+/** ViewModes that route through the arrangement (two-axis) path. */
+export const ARRANGEMENT_VIEW_MODES: ReadonlySet<ViewMode> = new Set<ViewMode>([
+  "focus",
+  "stack",
+  "orbital",
+  "palm",
+  "gallery",
+]);
 
 export interface Tab {
   id: string;

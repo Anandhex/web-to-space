@@ -285,12 +285,27 @@ export function XR3DTabBar({
 // View-mode toggle
 // ─────────────────────────────────────────────────────────────
 
-const VIEW_MODES: { id: ViewMode; label: string }[] = [
-  { id: "standard", label: "Standard" },
-  { id: "carousel", label: "Carousel" },
-  { id: "cards", label: "Cards" },
-  { id: "door", label: "Door" },
-  { id: "theatre", label: "Theatre" },
+type ViewDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
+
+/**
+ * View catalogue for the in-world switcher. `fit` lists the device types the
+ * view is usable on (arrangement views gate on 6DoF / room-scale; legacy
+ * front-facing views work everywhere). Superseded views (cards/door) are kept
+ * in the codebase but omitted here — see docs/views-plan.md.
+ */
+const VIEW_MODES: {
+  id: ViewMode;
+  label: string;
+  fit: ViewDeviceType[];
+}[] = [
+  { id: "standard", label: "Standard", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "carousel", label: "Carousel", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "theatre", label: "Theatre", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "focus", label: "Focus", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "stack", label: "Stack", fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "orbital", label: "Orbital", fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "palm", label: "Palm", fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "gallery", label: "Gallery", fit: ["QUEST_3", "QUEST_PRO"] },
 ];
 
 export interface XR3DViewToggleProps {
@@ -299,11 +314,13 @@ export interface XR3DViewToggleProps {
   position?: [number, number, number];
   tiltX?: number;
   theme?: XRTheme;
+  /** Filters the offered views to those the device can present. */
+  deviceType?: ViewDeviceType;
 }
 
 /**
  * World-space segmented control for the layout view mode. Replaces the flat
- * HTML <ViewToggle>.
+ * HTML <ViewToggle>. Wraps to a second row when many views are offered.
  */
 export function XR3DViewToggle({
   mode,
@@ -311,18 +328,29 @@ export function XR3DViewToggle({
   position = [0, 1.55, -1.02],
   tiltX = -0.1,
   theme = DARK_THEME,
+  deviceType = "QUEST_3",
 }: XR3DViewToggleProps) {
+  const modes = VIEW_MODES.filter((m) => m.fit.includes(deviceType));
   const segW = 0.185;
   const segH = 0.075;
   const gap = 0.012;
-  const total = VIEW_MODES.length * segW + (VIEW_MODES.length - 1) * gap;
-  const startX = -total / 2 + segW / 2;
+  const rowGap = 0.016;
+
+  const perRow = Math.ceil(modes.length / Math.ceil(modes.length / 5));
+  const rows: (typeof modes)[] = [];
+  for (let i = 0; i < modes.length; i += perRow) {
+    rows.push(modes.slice(i, i + perRow));
+  }
+  const widest = Math.max(...rows.map((r) => r.length));
+  const rowWidth = widest * segW + (widest - 1) * gap;
+  const totalH = rows.length * segH + (rows.length - 1) * rowGap;
+  const topY = totalH / 2 - segH / 2;
 
   return (
     <group position={position} rotation={[tiltX, 0, 0]}>
       <Surface
-        width={total + 0.06}
-        height={segH + 0.045}
+        width={rowWidth + 0.06}
+        height={totalH + 0.045}
         radius={0.04}
         color={theme.panelBg}
         flat
@@ -331,19 +359,24 @@ export function XR3DViewToggle({
         origin={[0, 0]}
         z={-0.004}
       />
-      {VIEW_MODES.map((m, i) => (
-        <group key={m.id} position={[startX + i * (segW + gap), 0, 0]}>
-          <XR3DButton
-            width={segW}
-            height={segH}
-            label={m.label}
-            fontSize={0.024}
-            active={mode === m.id}
-            onClick={() => onChange(m.id)}
-            theme={theme}
-          />
-        </group>
-      ))}
+      {rows.map((row, r) => {
+        const rw = row.length * segW + (row.length - 1) * gap;
+        const startX = -rw / 2 + segW / 2;
+        const y = topY - r * (segH + rowGap);
+        return row.map((m, i) => (
+          <group key={m.id} position={[startX + i * (segW + gap), y, 0]}>
+            <XR3DButton
+              width={segW}
+              height={segH}
+              label={m.label}
+              fontSize={0.024}
+              active={mode === m.id}
+              onClick={() => onChange(m.id)}
+              theme={theme}
+            />
+          </group>
+        ));
+      })}
     </group>
   );
 }

@@ -1,20 +1,33 @@
 import React, { useState } from "react";
 import type { ViewMode } from "./viewTypes";
 
+type ViewDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
+
 interface ViewToggleProps {
   mode: ViewMode;
   onChange: (m: ViewMode) => void;
+  /** Filters the offered views to those the device can present. */
+  deviceType?: ViewDeviceType;
 }
 
-const MODES: { id: ViewMode; icon: string; label: string }[] = [
-  { id: "standard",  icon: "▣", label: "Standard"  },
-  { id: "carousel",  icon: "◎", label: "Carousel"  },
-  { id: "cards",     icon: "⊞", label: "Cards"     },
-  { id: "door",      icon: "⊟", label: "Door"      },
-  { id: "theatre",   icon: "⬭", label: "Theatre"   },
+const MODES: {
+  id: ViewMode;
+  icon: string;
+  label: string;
+  fit: ViewDeviceType[];
+}[] = [
+  { id: "standard", icon: "▣", label: "Standard", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "carousel", icon: "◎", label: "Carousel", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "theatre",  icon: "⬭", label: "Theatre",  fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "focus",    icon: "◉", label: "Focus",    fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "stack",    icon: "▤", label: "Stack",    fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "orbital",  icon: "◍", label: "Orbital",  fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "palm",     icon: "✋", label: "Palm",     fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "gallery",  icon: "▦", label: "Gallery",  fit: ["QUEST_3", "QUEST_PRO"] },
 ];
 
-export function ViewToggle({ mode, onChange }: ViewToggleProps) {
+export function ViewToggle({ mode, onChange, deviceType = "QUEST_3" }: ViewToggleProps) {
+  const modes = MODES.filter((m) => m.fit.includes(deviceType));
   const [hoveredId, setHoveredId] = useState<ViewMode | null>(null);
 
   return (
@@ -32,7 +45,7 @@ export function ViewToggle({ mode, onChange }: ViewToggleProps) {
         fontFamily: "system-ui, -apple-system, sans-serif",
       }}
     >
-      {MODES.map(({ id, icon, label }) => {
+      {modes.map(({ id, icon, label }) => {
         const isActive = mode === id;
         const isHovered = hoveredId === id;
         return (
