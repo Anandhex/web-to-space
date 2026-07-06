@@ -62,6 +62,17 @@ export interface LayoutEntry {
   pageIndex?: number;
 
   /**
+   * Inclusive end of a page *range* over which this entry stays visible.
+   * Present only on section-scoped landmarks extracted to a fixed slot
+   * (e.g. an <aside> nested inside a section, re-homed in the complementary
+   * panel): the aside should remain visible for every page its parent
+   * section spans, not just `pageIndex`. When set, the renderer gates on
+   * `pageIndex <= currentPage <= pageEndIndex` instead of an exact match.
+   * Absent for ordinary paginated primitives (single-page gating).
+   */
+  pageEndIndex?: number;
+
+  /**
    * Resolved table layout strategy.
    * Present only on XRTable entries; tells the renderer which
    * display mode to use.

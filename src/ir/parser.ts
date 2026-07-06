@@ -1669,7 +1669,7 @@ export const parsePageToIR = async (
     "main",
     ctx,
   );
-  await buildExternalLinksSection(parsedDoc, mainChildIds, ctx);
+  // await buildExternalLinksSection(parsedDoc, mainChildIds, ctx);
 
   const parsedTitle = parsedDoc.title?.trim() || null;
   landmarkRecords.push({

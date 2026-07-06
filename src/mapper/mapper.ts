@@ -288,10 +288,31 @@ export function mapIRToScene(
 
     sceneChildren.push(rootPrimitive);
 
-    // Append hoisted landmarks after the content panel, preserving
-    // document order among themselves (they come out in the order they
-    // appeared in XRContentPanel.children).
-    sceneChildren.push(...hoisted);
+    // The layout engine has a single global complementary slot. If a page has
+    // more than one top-level <aside>, each hoisted XRComplementary targets
+    // that same slot and the engine bumps the surplus into the MAIN slot —
+    // rendering it directly on top of the content panel (aside title overlaps
+    // the section title). Merge all hoisted complementary landmarks into one
+    // panel so they share the single global slot (stacked), never main.
+    // Section-scoped asides are not hoisted (they stay inside the content
+    // panel and are re-homed at layout time), so this only affects genuine
+    // page-level asides.
+    const complementary = hoisted.filter((h) => h.type === "XRComplementary");
+    const others = hoisted.filter((h) => h.type !== "XRComplementary");
+
+    sceneChildren.push(...others);
+
+    if (complementary.length > 0) {
+      const merged = complementary[0];
+      for (const extra of complementary.slice(1)) {
+        merged.children.push(...extra.children);
+        merged.sourceIds.push(...extra.sourceIds);
+        // Orphan the now-empty surplus container so the engine doesn't try to
+        // place it (its children now live under `merged`).
+        delete ctx.primitives[extra.id];
+      }
+      sceneChildren.push(merged);
+    }
   }
 
   const toc = synthesiseTOC(ir, ctx);

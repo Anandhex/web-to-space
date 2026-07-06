@@ -86,7 +86,14 @@ export default function App() {
     setLoading(true);
     patchActiveTab({ settings });
     try {
-      const res = await fetch(`/api/proxy?url=${encodeURIComponent(targetUrl)}`);
+      // Same-origin URLs (e.g. the built-in /test-elements.html) are fetched
+      // directly — no CORS proxy needed, and the proxy is dev-only anyway.
+      const isSameOrigin = targetUrl.startsWith(window.location.origin);
+      const res = await fetch(
+        isSameOrigin
+          ? targetUrl
+          : `/api/proxy?url=${encodeURIComponent(targetUrl)}`,
+      );
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const html = await res.text();
       patchActiveTab({

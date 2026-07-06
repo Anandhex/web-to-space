@@ -124,7 +124,8 @@ function TabTile({
 }) {
   const [hovered, setHovered] = useState(false);
   const hot = hovered || active;
-  const initial = tab.label === "New Tab" ? "+" : tab.label[0]?.toUpperCase() ?? "•";
+  const initial =
+    tab.label === "New Tab" ? "+" : (tab.label[0]?.toUpperCase() ?? "•");
 
   return (
     <group>
@@ -158,36 +159,14 @@ function TabTile({
         origin={[0, 0]}
       />
 
-      {/* Favicon initial chip */}
-      <group position={[-TAB_W / 2 + 0.055, 0, 0.004]}>
-        <Surface
-          width={0.07}
-          height={0.07}
-          radius={0.018}
-          color={active ? "#0A4A8A" : "#3A3A40"}
-          flat
-          origin={[0, 0]}
-        />
-        <Text
-          position={[0, 0, 0.006]}
-          fontSize={0.04}
-          color={active ? "#BFE0FF" : theme.bodyCol}
-          anchorX="center"
-          anchorY="middle"
-        >
-          {initial}
-        </Text>
-      </group>
-
-      {/* Label */}
       <Text
-        position={[-TAB_W / 2 + 0.1, 0, 0.006]}
+        position={[-TAB_W / 2 + 0.05, 0, 0.006]}
         fontSize={0.036}
         color={active ? "#EAF3FF" : theme.bodyCol}
         anchorX="left"
         anchorY="middle"
-        maxWidth={TAB_W - 0.2}
-        clipRect={[0, -TAB_H, TAB_W - 0.2, TAB_H]}
+        maxWidth={TAB_W}
+        clipRect={[0, -TAB_H, TAB_W, TAB_H]}
       >
         {tab.label}
       </Text>
@@ -256,7 +235,7 @@ export function XR3DTabBar({
   const startX = -rowWidth / 2 + TAB_W / 2;
 
   return (
-    <group position={position} rotation={[tiltX, 0, 0]}>
+    <group position={position} rotation={[-tiltX, 0, 0]}>
       {/* Backing tray */}
       <Surface
         width={rowWidth + 0.12}

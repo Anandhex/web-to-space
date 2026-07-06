@@ -40,9 +40,6 @@
  * that would bleed outside the panel viewport.
  */
 
-const DEFAULT_ROBOTO_FONT =
-  "https://fonts.gstatic.com/s/roboto/v18/KFOmCnqEu92Fr1Mu4mxKKTU1Kg.woff";
-
 const EMPTY_CONFIG: Partial<LayoutConfig> = {};
 
 import React, {
@@ -158,6 +155,26 @@ export const CurrentPageContext = React.createContext<number>(-1);
 export const FontContext = React.createContext<string | undefined>(undefined);
 
 /**
+ * Page-gating predicate. An entry with no `pageIndex` isn't inside a paginated
+ * panel and is always visible. Otherwise it's visible when `currentPage` falls
+ * within the entry's page range — either the single page `pageIndex`, or the
+ * inclusive range `[pageIndex … pageEndIndex]` when `pageEndIndex` is set
+ * (section-scoped asides re-homed in the complementary panel, so they stay
+ * pinned for every page their parent section spans). `currentPage === -1`
+ * means "not in a paginated context", so everything renders.
+ */
+function entryOnPage(
+  entry: { pageIndex?: number; pageEndIndex?: number } | null | undefined,
+  currentPage: number,
+): boolean {
+  if (!entry) return false;
+  if (entry.pageIndex === undefined) return true;
+  if (currentPage === -1) return true;
+  const end = entry.pageEndIndex ?? entry.pageIndex;
+  return currentPage >= entry.pageIndex && currentPage <= end;
+}
+
+/**
  * Active page range [startPage, endPage] (both inclusive, absolute panel page
  * indices) for the currently focused section in cards reading view.
  * null = no restriction (show all pages / full document pagination).
@@ -261,8 +278,7 @@ function hasDescendant(node: XRPrimitive, targetId: string): boolean {
  */
 function isExtractedComplementary(p: XRPrimitive, plan: LayoutPlan): boolean {
   return (
-    p.type === "XRComplementary" &&
-    plan.entries[p.id]?.pageIndex !== undefined
+    p.type === "XRComplementary" && plan.entries[p.id]?.pageIndex !== undefined
   );
 }
 
@@ -397,7 +413,8 @@ function usePipeline(
             scene: null,
             plan: null,
             error: null,
-            backendLabel: parserBackend === "web2vr" ? "Web2VR" : "Browser Panel",
+            backendLabel:
+              parserBackend === "web2vr" ? "Web2VR" : "Browser Panel",
           });
         return;
       }
@@ -414,24 +431,58 @@ function usePipeline(
             ir = await parsePageWithVIPS(html, url!);
             label = "VIPS (Visual Blocks)";
           } else {
-            const transform = applyParserBackend(html, parserBackend, stableParserConfig);
+            const transform = applyParserBackend(
+              html,
+              parserBackend,
+              stableParserConfig,
+            );
             label = transform.label;
-            const resolvedParserConfig = { ...DEFAULT_CONFIG, ...transform.configOverride };
-            ir = await parsePageToIR(transform.html, url!, undefined, resolvedParserConfig);
+            const resolvedParserConfig = {
+              ...DEFAULT_CONFIG,
+              ...transform.configOverride,
+            };
+            ir = await parsePageToIR(
+              transform.html,
+              url!,
+              undefined,
+              resolvedParserConfig,
+            );
           }
 
           scene = mapIRToScene(ir, DEFAULT_MAPPER_CONFIG);
-          const plan = computeLayoutPlan(scene, deviceProfile, templateOverride, stableConfig);
-          if (!cancelled) setResult({ scene, plan, error: null, backendLabel: label });
+          const plan = computeLayoutPlan(
+            scene,
+            deviceProfile,
+            templateOverride,
+            stableConfig,
+          );
+          if (!cancelled)
+            setResult({ scene, plan, error: null, backendLabel: label });
           return;
         } else {
           if (!cancelled)
-            setResult({ scene: null, plan: null, error: "No html or scene provided.", backendLabel: "Custom Pipeline" });
+            setResult({
+              scene: null,
+              plan: null,
+              error: "No html or scene provided.",
+              backendLabel: "Custom Pipeline",
+            });
           return;
         }
 
-        const plan = computeLayoutPlan(scene, deviceProfile, templateOverride, stableConfig);
-        if (!cancelled) setResult({ scene, plan, error: null, backendLabel: "Custom Pipeline" });
+        const plan = computeLayoutPlan(
+          scene,
+          deviceProfile,
+          templateOverride,
+          stableConfig,
+        );
+        if (!cancelled)
+          setResult({
+            scene,
+            plan,
+            error: null,
+            backendLabel: "Custom Pipeline",
+          });
       } catch (err) {
         if (!cancelled)
           setResult({
@@ -447,7 +498,16 @@ function usePipeline(
     return () => {
       cancelled = true;
     };
-  }, [html, sceneIn, url, deviceProfile, stableConfig, stableParserConfig, parserBackend, templateOverride]);
+  }, [
+    html,
+    sceneIn,
+    url,
+    deviceProfile,
+    stableConfig,
+    stableParserConfig,
+    parserBackend,
+    templateOverride,
+  ]);
 
   return result;
 }
@@ -505,8 +565,7 @@ function PaginatingPanelRenderer({
   // Apply the section page range only for the top-level content panel — not
   // for nested sections/articles which have their own per-child pagination.
   const pageRange = React.useContext(PageRangeContext);
-  const effectiveRange =
-    primitive.type === "XRContentPanel" ? pageRange : null;
+  const effectiveRange = primitive.type === "XRContentPanel" ? pageRange : null;
 
   return (
     <CurrentPageContext.Provider value={currentPage}>
@@ -523,20 +582,20 @@ function PaginatingPanelRenderer({
       <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
         <PanelBacking entry={zeroedEntry(entry)} />
         <ClipPlanesContext.Provider value={panelClipPlanes}>
-        <PanelOriginYContext.Provider value={ey}>
-          {primitive.children
-            .filter((child) => !isExtractedComplementary(child, plan))
-            .map((child) => (
-              <PrimitiveDispatcher
-                key={child.id}
-                primitive={child}
-                plan={plan}
-                pageState={pageState}
-                setPage={setPage}
-                primitiveMap={primitiveMap}
-              />
-            ))}
-        </PanelOriginYContext.Provider>
+          <PanelOriginYContext.Provider value={ey}>
+            {primitive.children
+              .filter((child) => !isExtractedComplementary(child, plan))
+              .map((child) => (
+                <PrimitiveDispatcher
+                  key={child.id}
+                  primitive={child}
+                  plan={plan}
+                  pageState={pageState}
+                  setPage={setPage}
+                  primitiveMap={primitiveMap}
+                />
+              ))}
+          </PanelOriginYContext.Provider>
         </ClipPlanesContext.Provider>
         {pagination && pagination.pageCount > 1 && (
           <PaginationControls
@@ -580,7 +639,11 @@ function CarouselGhostPanel({
   const ex = entry.position.x;
   const ey = entry.position.y;
   const ez = entry.position.z;
-  const rot: [number, number, number] = [entry.rotation.x, entry.rotation.y, entry.rotation.z];
+  const rot: [number, number, number] = [
+    entry.rotation.x,
+    entry.rotation.y,
+    entry.rotation.z,
+  ];
 
   const panelClipPlanes = React.useMemo(
     () => buildPanelClipPlanes(ey, entry.size.height),
@@ -607,7 +670,15 @@ function CarouselGhostPanel({
         const compEntry = plan.entries[comp.id];
         if (!compEntry) return null;
         return (
-          <group key={comp.id} position={[compEntry.position.x, compEntry.position.y, compEntry.position.z]} rotation={[0, 0, 0]}>
+          <group
+            key={comp.id}
+            position={[
+              compEntry.position.x,
+              compEntry.position.y,
+              compEntry.position.z,
+            ]}
+            rotation={[0, 0, 0]}
+          >
             {/* extracted comps dimmed alongside parent */}
           </group>
         );
@@ -615,20 +686,20 @@ function CarouselGhostPanel({
       <group position={[ex, ey, ez]} rotation={rot} raycast={() => null}>
         <PanelBacking entry={zeroedEntry(entry)} ghostOpacity={opacity} />
         <ClipPlanesContext.Provider value={panelClipPlanes}>
-        <PanelOriginYContext.Provider value={ey}>
-          {primitive.children
-            .filter((child) => !isExtractedComplementary(child, plan))
-            .map((child) => (
-              <PrimitiveDispatcher
-                key={child.id}
-                primitive={child}
-                plan={plan}
-                pageState={ghostPageState}
-                setPage={_noop}
-                primitiveMap={primitiveMap}
-              />
-            ))}
-        </PanelOriginYContext.Provider>
+          <PanelOriginYContext.Provider value={ey}>
+            {primitive.children
+              .filter((child) => !isExtractedComplementary(child, plan))
+              .map((child) => (
+                <PrimitiveDispatcher
+                  key={child.id}
+                  primitive={child}
+                  plan={plan}
+                  pageState={ghostPageState}
+                  setPage={_noop}
+                  primitiveMap={primitiveMap}
+                />
+              ))}
+          </PanelOriginYContext.Provider>
         </ClipPlanesContext.Provider>
       </group>
     </CurrentPageContext.Provider>
@@ -647,7 +718,7 @@ interface SectionCardInfo {
   id: string;
   label: string;
   pageIndex: number; // absolute start page in the content panel
-  endPage: number;   // absolute end page (inclusive); equals startPage when unknown
+  endPage: number; // absolute end page (inclusive); equals startPage when unknown
   hasSubSections: boolean;
 }
 
@@ -673,7 +744,13 @@ function getSectionCards(
       const hasSubSections = child.children.some(
         (c) => c.type === "XRSection" || c.type === "XRArticle",
       );
-      return { id: child.id, label, pageIndex, endPage: endPages[i], hasSubSections };
+      return {
+        id: child.id,
+        label,
+        pageIndex,
+        endPage: endPages[i],
+        hasSubSections,
+      };
     });
   }
 
@@ -709,7 +786,9 @@ function getSectionCards(
       if (!label) continue;
       const matched = sectionByLabel.get(label.toLowerCase().trim());
       const id = matched?.id ?? link.id;
-      const pageIndex = matched ? (plan.entries[matched.id]?.pageIndex ?? 0) : 0;
+      const pageIndex = matched
+        ? (plan.entries[matched.id]?.pageIndex ?? 0)
+        : 0;
       const endPage = matched
         ? (sectionEndPageMap.get(matched.id) ?? totalPages)
         : totalPages;
@@ -732,7 +811,13 @@ function getSectionCards(
     const hasSubSections = child.children.some(
       (c) => c.type === "XRSection" || c.type === "XRArticle",
     );
-    return { id: child.id, label, pageIndex, endPage: endPages[i], hasSubSections };
+    return {
+      id: child.id,
+      label,
+      pageIndex,
+      endPage: endPages[i],
+      hasSubSections,
+    };
   });
 }
 
@@ -791,7 +876,14 @@ function CameraRig({
   React.useEffect(() => {
     tp.current.set(targetPos[0], targetPos[1], targetPos[2]);
     tl.current.set(targetLook[0], targetLook[1], targetLook[2]);
-  }, [targetPos[0], targetPos[1], targetPos[2], targetLook[0], targetLook[1], targetLook[2]]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [
+    targetPos[0],
+    targetPos[1],
+    targetPos[2],
+    targetLook[0],
+    targetLook[1],
+    targetLook[2],
+  ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useFrame(() => {
     camera.position.lerp(tp.current, 0.08);
@@ -838,7 +930,7 @@ function CameraSnapTo({
 const CARDS_READ_POS: [number, number, number] = [0, 1.5, 0.0];
 const CARDS_READ_LOOK: [number, number, number] = [0, 0.95, -1.2];
 
-const CARD_W = 0.40;
+const CARD_W = 0.4;
 const CARD_H = 0.24;
 const CARD_GAP_X = 0.06;
 const CARD_GAP_Y = 0.05;
@@ -1023,7 +1115,7 @@ function PrimitiveDispatcher({
     // SECOND: If no children are visible, check if this node itself is visible
     const nodeEntry = plan.entries[node.id];
     if (nodeEntry?.pageIndex !== undefined && currentPage !== -1) {
-      return nodeEntry.pageIndex === currentPage;
+      return entryOnPage(nodeEntry, currentPage);
     }
 
     // Node has no pageIndex (not in paginated panel) and no visible children
@@ -1046,8 +1138,8 @@ function PrimitiveDispatcher({
         return null;
       }
     } else {
-      // For leaf nodes: filter by page
-      if (entry.pageIndex !== currentPage && currentPage !== -1) {
+      // For leaf nodes: filter by page (honours a page range when present)
+      if (!entryOnPage(entry, currentPage)) {
         return null;
       }
     }
@@ -1319,10 +1411,7 @@ function PrimitiveDispatcher({
     case "XRSection": {
       const sectionChildEntries = primitive.children
         .map((c) => plan.entries[c.id])
-        .filter(
-          (e): e is LayoutEntry =>
-            !!e && (e.pageIndex === undefined || e.pageIndex === currentPage),
-        );
+        .filter((e): e is LayoutEntry => !!e && entryOnPage(e, currentPage));
       return (
         <WithSiblingChildren
           entry={entry}
@@ -1619,7 +1708,9 @@ function PrimitiveDispatcher({
         // container gives its block children real per-child LayoutEntries,
         // and flowing them through InlineProseRows here instead of
         // DispatchChildren would discard those stamped positions.
-        const flatForInline = flattenInlineWrappers(primitive.children as any[]);
+        const flatForInline = flattenInlineWrappers(
+          primitive.children as any[],
+        );
         const isAllInlineChildren =
           flatForInline.length > 0 &&
           flatForInline.every((c: any) => isInlinePrimitive(c.type));
@@ -1750,7 +1841,11 @@ function GenericPanelMesh({
     <>
       <mesh position={[w / 2, -h / 2, 0]}>
         <planeGeometry args={[w, h]} />
-        <meshStandardMaterial color={theme.panelBg} roughness={0.85} metalness={0} />
+        <meshStandardMaterial
+          color={theme.panelBg}
+          roughness={0.85}
+          metalness={0}
+        />
       </mesh>
       <Text
         font={fontType}
@@ -1789,7 +1884,7 @@ function PaginationControls({
 
   // When a section range is active, clamp navigation and show relative page numbers.
   const firstPage = pageRange?.[0] ?? 0;
-  const lastPage = pageRange?.[1] ?? (pagination.pageCount - 1);
+  const lastPage = pageRange?.[1] ?? pagination.pageCount - 1;
   const sectionPageCount = lastPage - firstPage + 1;
   const relPage = currentPage - firstPage; // 0-based within section
   const atFirst = currentPage <= firstPage;
@@ -2048,9 +2143,12 @@ function XRSceneGraph({
   // ── Carousel: find the main XRContentPanel for 3× rendering ─────
   const mainContentPanel = React.useMemo(() => {
     if (viewMode !== "carousel") return null;
-    return scene.root.children.find(
-      (p) => p.type === "XRContentPanel" && plan.entries[p.id]?.paginatedByEngine,
-    ) ?? null;
+    return (
+      scene.root.children.find(
+        (p) =>
+          p.type === "XRContentPanel" && plan.entries[p.id]?.paginatedByEngine,
+      ) ?? null
+    );
   }, [viewMode, scene.root.children, plan.entries]);
 
   const navigate = useCallback(
@@ -2100,9 +2198,9 @@ function XRSceneGraph({
           const prevEntry: LayoutEntry = {
             ...entry,
             position: {
-              x: entry.position.x - CAROUSEL_GHOST_GAP - entry.size.width,
+              x: entry.position.x - entry.size.width + CAROUSEL_GHOST_GAP * 2.5,
               y: entry.position.y,
-              z: entry.position.z + CAROUSEL_Z_STEP,
+              z: entry.position.z + CAROUSEL_Z_STEP * 3.5,
             },
             rotation: angularRotation(CAROUSEL_GHOST_PREV_ANGLE_DEG),
           };
@@ -2111,7 +2209,7 @@ function XRSceneGraph({
             position: {
               x: entry.position.x + entry.size.width + CAROUSEL_GHOST_GAP,
               y: entry.position.y,
-              z: entry.position.z + CAROUSEL_Z_STEP,
+              z: entry.position.z,
             },
             rotation: angularRotation(CAROUSEL_GHOST_NEXT_ANGLE_DEG),
           };
@@ -2252,13 +2350,28 @@ export function XRSceneRenderer({
   }, [deviceType]);
 
   // Map view mode → explicit layout template override
-  const templateOverride = useMemo((): "document"|"dashboard"|"form"|"landing"|"generic"|"carousel"|"cards"|"door"|"theatre"|undefined => {
+  const templateOverride = useMemo(():
+    | "document"
+    | "dashboard"
+    | "form"
+    | "landing"
+    | "generic"
+    | "carousel"
+    | "cards"
+    | "door"
+    | "theatre"
+    | undefined => {
     switch (viewMode) {
-      case "carousel": return "carousel";
-      case "cards":    return "cards";
-      case "door":     return "door";
-      case "theatre":  return "theatre";
-      default:         return undefined; // "standard" → auto-select
+      case "carousel":
+        return "carousel";
+      case "cards":
+        return "cards";
+      case "door":
+        return "door";
+      case "theatre":
+        return "theatre";
+      default:
+        return undefined; // "standard" → auto-select
     }
   }, [viewMode]);
 
@@ -2279,10 +2392,19 @@ export function XRSceneRenderer({
     plan,
     error: pipelineError,
     backendLabel,
-  } = usePipeline(html, sceneIn, url, deviceProfile, {
-    ...layoutConfig,
-    // sectionStartsOnNewPage: false,
-  }, parserConfig, parserBackend, templateOverride);
+  } = usePipeline(
+    html,
+    sceneIn,
+    url,
+    deviceProfile,
+    {
+      ...layoutConfig,
+      // sectionStartsOnNewPage: false,
+    },
+    parserConfig,
+    parserBackend,
+    templateOverride,
+  );
 
   const {
     sessionState,
@@ -2300,7 +2422,9 @@ export function XRSceneRenderer({
   }, []);
 
   // ── View-mode interaction state ─────────────────────────────
-  const [expandedSectionId, setExpandedSectionId] = useState<string | null>(null);
+  const [expandedSectionId, setExpandedSectionId] = useState<string | null>(
+    null,
+  );
   const [cardsZoom, setCardsZoom] = useState<CardsZoomLevel>(0);
   const [cardsFocusedId, setCardsFocusedId] = useState<string | null>(null);
 
@@ -2315,8 +2439,7 @@ export function XRSceneRenderer({
   // ── Cards zoom derived state ─────────────────────────────────
   const mainPanelId = useMemo(
     () =>
-      scene?.root.children.find((p) => p.type === "XRContentPanel")?.id ??
-      null,
+      scene?.root.children.find((p) => p.type === "XRContentPanel")?.id ?? null,
     [scene],
   );
 
@@ -2418,10 +2541,14 @@ export function XRSceneRenderer({
           </>
         )}
         {parserBackend === "flat" && (
-          <span style={{ marginLeft: "auto", opacity: 0.5 }}>browser iframe</span>
+          <span style={{ marginLeft: "auto", opacity: 0.5 }}>
+            browser iframe
+          </span>
         )}
         {parserBackend === "web2vr" && (
-          <span style={{ marginLeft: "auto", opacity: 0.5 }}>CSS layout → 3D</span>
+          <span style={{ marginLeft: "auto", opacity: 0.5 }}>
+            CSS layout → 3D
+          </span>
         )}
       </div>
 
@@ -2433,7 +2560,9 @@ export function XRSceneRenderer({
               <div style={styles.flatChrome}>
                 <span style={{ opacity: 0.6 }}>◉</span>
                 <span>Browser Panel</span>
-                <span style={{ marginLeft: "auto", opacity: 0.4, fontSize: 10 }}>
+                <span
+                  style={{ marginLeft: "auto", opacity: 0.4, fontSize: 10 }}
+                >
                   No semantic processing · raw HTML
                 </span>
               </div>
@@ -2482,120 +2611,134 @@ export function XRSceneRenderer({
 
             <RenderMetricsContext.Provider value={deviceProfile.renderMetrics}>
               <ThemeContext.Provider value={theme}>
-              <FontContext.Provider value={fontType}>
-                {/* Level 0 (overview): locked fly-out position, no orbit */}
-                {viewMode === "cards" && cardsZoom === 0 && (
-                  <CameraRig
-                    targetPos={[0, 1.5, 1.8]}
-                    targetLook={CARDS_LOOK_TARGET}
-                  />
-                )}
-                {/* Level 1 (reading): snap camera to reading position, then
-                    hand off to OrbitControls so the user can look around */}
-                {viewMode === "cards" && cardsZoom === 1 && (
-                  <CameraSnapTo
-                    position={CARDS_READ_POS}
-                    lookAt={CARDS_READ_LOOK}
-                  />
-                )}
-
-                {/* Web2VR backend: CSS layout extracted from hidden iframe → 3D */}
-                {parserBackend === "web2vr" && html && (
-                  <Web2VRScene html={html} />
-                )}
-
-                {parserBackend !== "web2vr" && scene && plan && (
-                  viewMode === "cards" && cardsZoom === 0 ? (
-                    /* Level 0: overview grid of all top-level section cards */
-                    <CardsGridMesh
-                      cards={topLevelCards}
-                      focusedId={cardsFocusedId}
-                      onCardClick={(id, pageIndex) => {
-                        setCardsFocusedId(id);
-                        setCardsZoom(1);
-                        if (mainPanelId) setPage(mainPanelId, pageIndex);
-                      }}
+                <FontContext.Provider value={fontType}>
+                  {/* Level 0 (overview): locked fly-out position, no orbit */}
+                  {viewMode === "cards" && cardsZoom === 0 && (
+                    <CameraRig
+                      targetPos={[0, 1.5, 1.8]}
+                      targetLook={CARDS_LOOK_TARGET}
                     />
-                  ) : (
-                    /* Level 1: reading view — pagination scoped to the focused section */
-                    <PageRangeContext.Provider value={cardsSectionRange}>
-                      <XRSceneGraph
-                        scene={scene}
-                        plan={plan}
-                        pageState={pageState}
-                        setPage={setPage}
-                        viewMode={viewMode}
-                        onExternalNavigate={onExternalNavigate}
-                        sourceUrl={url}
-                      />
-                    </PageRangeContext.Provider>
-                  )
-                )}
+                  )}
+                  {/* Level 1 (reading): snap camera to reading position, then
+                    hand off to OrbitControls so the user can look around */}
+                  {viewMode === "cards" && cardsZoom === 1 && (
+                    <CameraSnapTo
+                      position={CARDS_READ_POS}
+                      lookAt={CARDS_READ_LOOK}
+                    />
+                  )}
 
-                {/* ── In-world browser chrome (replaces HTML overlays) ────
+                  {/* Web2VR backend: CSS layout extracted from hidden iframe → 3D */}
+                  {parserBackend === "web2vr" && html && (
+                    <Web2VRScene html={html} />
+                  )}
+
+                  {parserBackend !== "web2vr" &&
+                    scene &&
+                    plan &&
+                    (viewMode === "cards" && cardsZoom === 0 ? (
+                      /* Level 0: overview grid of all top-level section cards */
+                      <CardsGridMesh
+                        cards={topLevelCards}
+                        focusedId={cardsFocusedId}
+                        onCardClick={(id, pageIndex) => {
+                          setCardsFocusedId(id);
+                          setCardsZoom(1);
+                          if (mainPanelId) setPage(mainPanelId, pageIndex);
+                        }}
+                      />
+                    ) : (
+                      /* Level 1: reading view — pagination scoped to the focused section */
+                      <PageRangeContext.Provider value={cardsSectionRange}>
+                        <XRSceneGraph
+                          scene={scene}
+                          plan={plan}
+                          pageState={pageState}
+                          setPage={setPage}
+                          viewMode={viewMode}
+                          onExternalNavigate={onExternalNavigate}
+                          sourceUrl={url}
+                        />
+                      </PageRangeContext.Provider>
+                    ))}
+
+                  {/* ── In-world browser chrome (replaces HTML overlays) ────
                     Layout switcher (top) and tab switcher (bottom) form a
                     vertical stack, horizontally centred on the content panel
                     and pulled forward of it (parallax separation), with a
                     breathable gap between the two rows. */}
-                {viewMode && onViewModeChange && (
-                  <XR3DViewToggle
-                    mode={viewMode}
-                    onChange={onViewModeChange}
-                    position={[chromeAnchor.cx, chromeAnchor.bottomY + 0.46, chromeAnchor.z + 0.3]}
-                    tiltX={0.34}
-                  />
-                )}
-                {tabs && activeTabId && onSwitchTab && onCloseTab && onNewTab && (
-                  <XR3DTabBar
-                    tabs={tabs}
-                    activeTabId={activeTabId}
-                    onSwitch={onSwitchTab}
-                    onClose={onCloseTab}
-                    onNewTab={onNewTab}
-                    position={[chromeAnchor.cx, chromeAnchor.bottomY + 0.18, chromeAnchor.z + 0.3]}
-                    tiltX={0.34}
-                  />
-                )}
-
-                {/* OrbitControls: disabled only during cards overview (level 0) */}
-                {sessionState !== "immersive" &&
-                  (viewMode !== "cards" || cardsZoom === 1) && (
-                    <OrbitControls
-                      target={
-                        viewMode === "cards"
-                          ? CARDS_READ_LOOK
-                          : readingLook
-                      }
-                      enablePan
-                      enableDamping
-                      dampingFactor={0.08}
+                  {viewMode && onViewModeChange && (
+                    <XR3DViewToggle
+                      mode={viewMode}
+                      onChange={onViewModeChange}
+                      position={[
+                        chromeAnchor.cx,
+                        chromeAnchor.bottomY + 1.1,
+                        chromeAnchor.z,
+                      ]}
+                      tiltX={0.34}
                     />
                   )}
+                  {tabs &&
+                    activeTabId &&
+                    onSwitchTab &&
+                    onCloseTab &&
+                    onNewTab && (
+                      <XR3DTabBar
+                        tabs={tabs}
+                        activeTabId={activeTabId}
+                        onSwitch={onSwitchTab}
+                        onClose={onCloseTab}
+                        onNewTab={onNewTab}
+                        position={[
+                          chromeAnchor.cx,
+                          chromeAnchor.bottomY - 0.3,
+                          chromeAnchor.z,
+                        ]}
+                        tiltX={0.34}
+                      />
+                    )}
 
-                {/* Debug helpers: grid/gizmo hidden in cards mode entirely */}
-                {sessionState !== "immersive" && viewMode !== "cards" && (
-                  <>
-                    <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
-                      <GizmoViewport
-                        axisColors={["#ff4444", "#44ff44", "#4488ff"]}
-                        labelColor="white"
+                  {/* OrbitControls: disabled only during cards overview (level 0) */}
+                  {sessionState !== "immersive" &&
+                    (viewMode !== "cards" || cardsZoom === 1) && (
+                      <OrbitControls
+                        target={
+                          viewMode === "cards" ? CARDS_READ_LOOK : readingLook
+                        }
+                        enablePan
+                        enableDamping
+                        dampingFactor={0.08}
                       />
-                    </GizmoHelper>
-                    <gridHelper
-                      args={[10, 40, "#1e2d3d", "#111927"]}
-                      position={[0, 0, 0]}
-                    />
-                    <mesh position={[0, 1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
-                      <planeGeometry args={[0.05, 0.05]} />
-                      <meshBasicMaterial
-                        color="#58a6ff"
-                        transparent
-                        opacity={0.6}
+                    )}
+
+                  {/* Debug helpers: grid/gizmo hidden in cards mode entirely */}
+                  {sessionState !== "immersive" && viewMode !== "cards" && (
+                    <>
+                      <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
+                        <GizmoViewport
+                          axisColors={["#ff4444", "#44ff44", "#4488ff"]}
+                          labelColor="white"
+                        />
+                      </GizmoHelper>
+                      <gridHelper
+                        args={[10, 40, "#1e2d3d", "#111927"]}
+                        position={[0, 0, 0]}
                       />
-                    </mesh>
-                  </>
-                )}
-              </FontContext.Provider>
+                      <mesh
+                        position={[0, 1.5, 0]}
+                        rotation={[Math.PI / 2, 0, 0]}
+                      >
+                        <planeGeometry args={[0.05, 0.05]} />
+                        <meshBasicMaterial
+                          color="#58a6ff"
+                          transparent
+                          opacity={0.6}
+                        />
+                      </mesh>
+                    </>
+                  )}
+                </FontContext.Provider>
               </ThemeContext.Provider>
             </RenderMetricsContext.Provider>
           </Suspense>
@@ -2671,7 +2814,9 @@ function DoorTOCNav({
     if (mainPanel) {
       for (const child of mainPanel.children) {
         const heading = child.children.find((c) => c.type === "XRHeading");
-        const label = (heading?.label ?? child.label ?? "").toLowerCase().trim();
+        const label = (heading?.label ?? child.label ?? "")
+          .toLowerCase()
+          .trim();
         const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
         if (label) sectionPageByLabel.set(label, pageIndex);
       }
@@ -2683,7 +2828,8 @@ function DoorTOCNav({
     if (!tocNav) {
       if (mainPanel) {
         for (const child of mainPanel.children) {
-          if (child.type !== "XRSection" && child.type !== "XRArticle") continue;
+          if (child.type !== "XRSection" && child.type !== "XRArticle")
+            continue;
           const heading = child.children.find((c) => c.type === "XRHeading");
           const label = heading?.label ?? child.label ?? child.id;
           const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
@@ -2696,8 +2842,7 @@ function DoorTOCNav({
     for (const link of tocNav.children) {
       const label = link.label ?? link.content ?? "";
       if (!label) continue;
-      const pageIndex =
-        sectionPageByLabel.get(label.toLowerCase().trim()) ?? 0;
+      const pageIndex = sectionPageByLabel.get(label.toLowerCase().trim()) ?? 0;
       result.push({ id: link.id, label, pageIndex });
     }
     return result;
@@ -2727,7 +2872,16 @@ function DoorTOCNav({
         overflowY: "auto",
       }}
     >
-      <div style={{ fontSize: 10, color: "#3a5870", marginBottom: 4, paddingLeft: 4, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+      <div
+        style={{
+          fontSize: 10,
+          color: "#3a5870",
+          marginBottom: 4,
+          paddingLeft: 4,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+        }}
+      >
         Sections
       </div>
       {items.map(({ id, label, pageIndex }) => {
@@ -2755,14 +2909,14 @@ function DoorTOCNav({
             }}
             title={label}
           >
-            {isActive ? "▶ " : "  "}{label}
+            {isActive ? "▶ " : "  "}
+            {label}
           </button>
         );
       })}
     </div>
   );
 }
-
 
 // ─────────────────────────────────────────────────────────────
 // Styles

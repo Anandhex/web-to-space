@@ -408,11 +408,7 @@ export function Surface({
         <mesh
           geometry={rimGeo}
           position={[0, 0, z + Z_SURFACE_RIM - Z_SURFACE]}
-          scale={[
-            (w + 0.0025) / w,
-            (h + 0.0025) / h,
-            1,
-          ]}
+          scale={[(w + 0.0025) / w, (h + 0.0025) / h, 1]}
           renderOrder={RENDER_ORDER_SURFACE}
         >
           <meshBasicMaterial
@@ -423,7 +419,11 @@ export function Surface({
           />
         </mesh>
       )}
-      <mesh geometry={fillGeo} position={[0, 0, z]} renderOrder={RENDER_ORDER_SURFACE}>
+      <mesh
+        geometry={fillGeo}
+        position={[0, 0, z]}
+        renderOrder={RENDER_ORDER_SURFACE}
+      >
         {flat ? (
           <meshBasicMaterial
             color={resolvedTop ? "#ffffff" : color}
@@ -847,7 +847,10 @@ export function InlineProseRows({
   // How many characters fit on one visual line before troika wraps.
   // Used to map charOffset → (visualLine, xInLine) so overlay blocks land
   // on the right wrapped line rather than always at the row's first line.
-  const charsPerLine = Math.max(1, Math.floor(usableWidth / (fontSize * CHAR_W)));
+  const charsPerLine = Math.max(
+    1,
+    Math.floor(usableWidth / (fontSize * CHAR_W)),
+  );
 
   return (
     <>
@@ -856,7 +859,11 @@ export function InlineProseRows({
           return <group key={`b-${i}`}>{renderChild(row.childId)}</group>;
         }
 
-        const { text, colorRanges } = buildRowMeta(row.segments, theme, forceColor);
+        const { text, colorRanges } = buildRowMeta(
+          row.segments,
+          theme,
+          forceColor,
+        );
         const rowY = cursorY;
         cursorY -= lineH;
 
@@ -889,7 +896,11 @@ export function InlineProseRows({
                   }}
                 >
                   <planeGeometry args={[hitW, lineH]} />
-                  <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+                  <meshBasicMaterial
+                    transparent
+                    opacity={0}
+                    depthWrite={false}
+                  />
                 </mesh>,
               );
             }
@@ -1002,7 +1013,13 @@ export function XRParagraphMesh({
     <group position={pos} rotation={rot}>
       {/* Backing panel — flat Horizon card with a subtle top-lighter gradient */}
       {!skipPanel && (
-        <Surface width={w} height={h} color={theme.panelBg} gradient clips={clips} />
+        <Surface
+          width={w}
+          height={h}
+          color={theme.panelBg}
+          gradient
+          clips={clips}
+        />
       )}
 
       {/* Body text - only render content directly if no text children */}
@@ -1118,7 +1135,10 @@ export function XRSectionMesh({
 
       {/* "Continued from previous page" top edge indicator */}
       {isContinuation && (
-        <mesh position={[w / 2, -0.001, Z_LAYER_ACCENT]} renderOrder={RENDER_ORDER_ACCENT}>
+        <mesh
+          position={[w / 2, -0.001, Z_LAYER_ACCENT]}
+          renderOrder={RENDER_ORDER_ACCENT}
+        >
           <planeGeometry args={[w * 0.4, 0.003]} />
           <meshBasicMaterial
             color={theme.accentCol}
@@ -1297,7 +1317,10 @@ function TOCPanel({
 
   // Scrollbar geometry.
   const trackX = w - PADDING * 0.45;
-  const thumbH = Math.max(0.02, visibleH * (visibleH / Math.max(totalH, visibleH)));
+  const thumbH = Math.max(
+    0.02,
+    visibleH * (visibleH / Math.max(totalH, visibleH)),
+  );
   const thumbTravel = visibleH - thumbH;
   const thumbTop =
     contentTop - (maxScroll > 0 ? (scroll / maxScroll) * thumbTravel : 0);
@@ -1423,9 +1446,7 @@ function TOCPanel({
               opacity={0.4}
             />
           </mesh>
-          <mesh
-            position={[trackX, thumbTop - thumbH / 2, Z_LAYER_BODY_TEXT]}
-          >
+          <mesh position={[trackX, thumbTop - thumbH / 2, Z_LAYER_BODY_TEXT]}>
             <planeGeometry args={[0.004, thumbH]} />
             <meshBasicMaterial
               color={theme.mutedTextCol}
@@ -1597,9 +1618,8 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
   // texture — makes the placeholder read as a real media widget rather than
   // a flat placeholder color, without wiring up actual playback.
   const proxiedPoster = primitive.poster ? proxyImageSrc(primitive.poster) : "";
-  const [posterTexture, setPosterTexture] = React.useState<THREE.Texture | null>(
-    null,
-  );
+  const [posterTexture, setPosterTexture] =
+    React.useState<THREE.Texture | null>(null);
 
   React.useEffect(() => {
     setPosterTexture(null);
@@ -1649,8 +1669,14 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
         {isAudio ? (
           <>
             {[-0.012, 0, 0.012].map((xOff, i) => (
-              <mesh key={i} position={[xOff, 0, 0]} renderOrder={RENDER_ORDER_TEXT}>
-                <boxGeometry args={[0.006, ICON_SIZE * (0.5 + i * 0.3), 0.002]} />
+              <mesh
+                key={i}
+                position={[xOff, 0, 0]}
+                renderOrder={RENDER_ORDER_TEXT}
+              >
+                <boxGeometry
+                  args={[0.006, ICON_SIZE * (0.5 + i * 0.3), 0.002]}
+                />
                 <meshBasicMaterial
                   color={theme.accentCol}
                   transparent
@@ -1764,7 +1790,10 @@ export function XRCodeBlockMesh({
       />
 
       {/* Left accent stripe */}
-      <mesh position={[0.005, -h / 2, Z_LAYER_ACCENT]} renderOrder={RENDER_ORDER_ACCENT}>
+      <mesh
+        position={[0.005, -h / 2, Z_LAYER_ACCENT]}
+        renderOrder={RENDER_ORDER_ACCENT}
+      >
         <planeGeometry args={[0.007, h * 0.85]} />
         <meshBasicMaterial
           color={CODE_COL}
@@ -1784,11 +1813,7 @@ export function XRCodeBlockMesh({
           xInset={0.018}
           renderChild={renderChild}
         />
-      ) : hasAnyChildren ? (
-        // Block-only children are dispatched as true positioned siblings by
-        // the caller — render nothing here to avoid duplicating content.
-        null
-      ) : (
+      ) : hasAnyChildren ? null : ( // the caller — render nothing here to avoid duplicating content. // Block-only children are dispatched as true positioned siblings by
         <ClippedText
           anchorX="left"
           anchorY="top"
@@ -1858,7 +1883,10 @@ export function XRBlockQuoteMesh({
       />
 
       {/* Left quote accent bar */}
-      <mesh position={[0.006, -h / 2, Z_LAYER_ACCENT]} renderOrder={RENDER_ORDER_ACCENT}>
+      <mesh
+        position={[0.006, -h / 2, Z_LAYER_ACCENT]}
+        renderOrder={RENDER_ORDER_ACCENT}
+      >
         <planeGeometry args={[0.01, h * 0.8]} />
         <meshBasicMaterial
           color={QUOTE_ACCENT}
@@ -1880,13 +1908,7 @@ export function XRBlockQuoteMesh({
           xInset={X_INSET}
           renderChild={renderChild}
         />
-      ) : hasAnyChildren ? (
-        // Block-only children (e.g. a wrapped <p>) are dispatched as true
-        // positioned siblings by the caller (see the "XRBlockQuote" case in
-        // XRSceneRenderer.tsx) — render nothing here to avoid duplicating
-        // their content via the text fallback below.
-        null
-      ) : (
+      ) : hasAnyChildren ? null : ( // their content via the text fallback below. // XRSceneRenderer.tsx) — render nothing here to avoid duplicating // positioned siblings by the caller (see the "XRBlockQuote" case in // Block-only children (e.g. a wrapped <p>) are dispatched as true
         // Fallback: plain blockquote with no structured children.
         // Use content (full visible string) in preference to label (may be
         // the accessible short-name only, e.g. "Main article:").
@@ -2017,7 +2039,12 @@ export interface XRImageMeshProps {
  * unchanged.
  */
 function proxyImageSrc(src: string): string {
-  if (!src || src.startsWith("data:") || src.startsWith("blob:") || src.startsWith("/")) {
+  if (
+    !src ||
+    src.startsWith("data:") ||
+    src.startsWith("blob:") ||
+    src.startsWith("/")
+  ) {
     return src;
   }
   try {
@@ -2045,7 +2072,12 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
   function isRenderableImage(url: string) {
     // After proxying, external images become same-origin /api/proxy paths.
     if (!url) return false;
-    if (url.startsWith("/") || url.startsWith("data:") || url.startsWith("blob:")) return true;
+    if (
+      url.startsWith("/") ||
+      url.startsWith("data:") ||
+      url.startsWith("blob:")
+    )
+      return true;
     try {
       return new URL(url).origin === window.location.origin;
     } catch {
@@ -2235,63 +2267,57 @@ export function XRListItemMesh({
   return (
     <group position={pos} rotation={rot}>
       <ClipPlanesContext.Provider value={clips}>
-      <Surface
-        width={w}
-        height={h}
-        color={theme.listItemBg}
-        gradient
-        clips={clips}
-      />
+        <Surface width={w} height={h} color={theme.listItemBg} clips={clips} />
 
-      {/* Plain-text list items (no child elements): label rendered below accent band. */}
-      {displayText && (
-        <ClippedText
-          anchorX="left"
-          anchorY="top"
-          position={[LIST_ITEM_PROSE_INSET, CONTENT_Y, PANEL_DEPTH]}
-          fontSize={labelFont.fontSize}
-          color={theme.headingCol}
-          fontWeight="600"
-          lineHeight={labelFont.lineHeightRatio}
-          maxWidth={w - LIST_ITEM_PROSE_INSET * 2}
-          overflowWrap="break-word"
-        >
-          {displayText}
-        </ClippedText>
-      )}
+        {/* Plain-text list items (no child elements): label rendered below accent band. */}
+        {displayText && (
+          <ClippedText
+            anchorX="left"
+            anchorY="top"
+            position={[LIST_ITEM_PROSE_INSET, CONTENT_Y, PANEL_DEPTH]}
+            fontSize={labelFont.fontSize}
+            color={theme.headingCol}
+            fontWeight="600"
+            lineHeight={labelFont.lineHeightRatio}
+            maxWidth={w - LIST_ITEM_PROSE_INSET * 2}
+            overflowWrap="break-word"
+          >
+            {displayText}
+          </ClippedText>
+        )}
 
-      {/* Inline children: flowed as prose starting at CONTENT_Y so the first
+        {/* Inline children: flowed as prose starting at CONTENT_Y so the first
           line always clears the accent band + gap.
           panelWidth is pre-reduced by the right inset so usableWidth = w - 2*xInset,
           giving symmetric left and right margins (same pattern as XRBlockQuoteMesh). */}
-      {inlineRows && (
-        <InlineProseRows
-          rows={inlineRows}
-          startY={CONTENT_Y}
-          panelWidth={w - LIST_ITEM_PROSE_INSET}
-          fontSize={m.fontSize}
-          lineHeightRatio={m.lineHeightRatio}
-          xInset={LIST_ITEM_PROSE_INSET}
-          renderChild={renderChild}
-        />
-      )}
+        {inlineRows && (
+          <InlineProseRows
+            rows={inlineRows}
+            startY={CONTENT_Y}
+            panelWidth={w - LIST_ITEM_PROSE_INSET}
+            fontSize={m.fontSize}
+            lineHeightRatio={m.lineHeightRatio}
+            xInset={LIST_ITEM_PROSE_INSET}
+            renderChild={renderChild}
+          />
+        )}
 
-      {/* Block children from mixed inline+block items (e.g. sub-lists after
+        {/* Block children from mixed inline+block items (e.g. sub-lists after
           a prose run). Engine places these at y=0 relative to the card origin;
           we shift by CONTENT_Y so they start below the accent band. */}
-      {blockChildren.length > 0 && (
-        <group position={[0, CONTENT_Y, 0]}>
-          {blockChildren.map((child: any) => renderChild(child.id))}
-        </group>
-      )}
+        {blockChildren.length > 0 && (
+          <group position={[0, CONTENT_Y, 0]}>
+            {blockChildren.map((child: any) => renderChild(child.id))}
+          </group>
+        )}
 
-      {/* Pure-block items (no inline children at all). Engine also places these
+        {/* Pure-block items (no inline children at all). Engine also places these
           at y=0; same CONTENT_Y shift keeps them below the accent band. */}
-      {!hasAnyInlineChild && primitive.children.length > 0 && (
-        <group position={[0, CONTENT_Y, 0]}>
-          {primitive.children.map((child) => renderChild(child.id))}
-        </group>
-      )}
+        {!hasAnyInlineChild && primitive.children.length > 0 && (
+          <group position={[0, CONTENT_Y, 0]}>
+            {primitive.children.map((child) => renderChild(child.id))}
+          </group>
+        )}
       </ClipPlanesContext.Provider>
     </group>
   );
@@ -2410,7 +2436,10 @@ export function XRAlertMesh({
       />
 
       {/* Left accent bar */}
-      <mesh position={[0.004, -h / 2, Z_LAYER_ACCENT]} renderOrder={RENDER_ORDER_ACCENT}>
+      <mesh
+        position={[0.004, -h / 2, Z_LAYER_ACCENT]}
+        renderOrder={RENDER_ORDER_ACCENT}
+      >
         <planeGeometry args={[0.007, h * 0.8]} />
         <meshBasicMaterial
           color={alertColor}
@@ -2765,7 +2794,13 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
       : {};
 
   return (
-    <group ref={ref} position={pos} rotation={rot} {...handlers} {...clickHandler}>
+    <group
+      ref={ref}
+      position={pos}
+      rotation={rot}
+      {...handlers}
+      {...clickHandler}
+    >
       {hasInlineChildren ? (
         <InlineProseRows
           rows={rows}

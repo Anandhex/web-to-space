@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Renderer Test Page — All Elements &amp; Edge Cases</title>
+</head>
+<body>
+  <!-- ================================================================
+       BANNER LANDMARK  →  XRBanner
+       (top-level page landmark; sliced out of main content but exercises
+        the banner mapping / external-links collection path)
+  ================================================================= -->
+  <header>
+    <p><strong>Test Elements</strong> — a synthetic page exercising every primitive.</p>
+    <nav aria-label="Primary">
+      <a href="https://example.com/one">Nav Link One</a>
+      <a href="https://example.com/two">Nav Link Two</a>
+      <a href="https://example.com/three">Nav Link Three</a>
+      <a href="https://example.com/four" aria-current="page">Nav Link Current</a>
+    </nav>
+  </header>
+
+  <!-- ================================================================
+       MAIN LANDMARK  →  XRContentPanel
+       Everything the parser slices to lives inside <main>.
+  ================================================================= -->
+  <main>
+    <h1>Renderer Test Page</h1>
+    <p>
+      This page deliberately contains one of nearly every HTML construct the
+      parser understands, plus several deliberate edge cases. Use it to smoke
+      test the <em>parser → mapper → layout → renderer</em> pipeline.
+    </p>
+
+    <!-- ============================================================
+         HEADINGS + INFERRED SECTIONS  →  XRHeading / XRSection
+    ============================================================= -->
+    <section aria-labelledby="headings-title">
+      <h2 id="headings-title">1. Headings &amp; Sections</h2>
+      <p>A heading followed by sibling content should infer a section.</p>
+      <h3>Level 3 heading</h3>
+      <p>Body under an H3.</p>
+      <h4>Level 4 heading</h4>
+      <p>Body under an H4.</p>
+      <h5>Level 5 heading</h5>
+      <h6>Level 6 heading</h6>
+      <p>Deeply nested heading levels test the heading-level clamp.</p>
+
+      <!-- ASIDE A: labelled aside nested INSIDE a section, with its own heading -->
+      <aside aria-label="Section 1 sidebar">
+        <h3>Aside inside a section</h3>
+        <p>This complementary aside is nested inside section 1. It should map to
+          XRComplementary even though it lives within a region.</p>
+      </aside>
+    </section>
+
+    <!-- ============================================================
+         INLINE TEXT RUNS  →  XRParagraph / XRText (prose decomposition)
+    ============================================================= -->
+    <section aria-labelledby="inline-title">
+      <h2 id="inline-title">2. Inline &amp; Prose Runs</h2>
+      <p>
+        Prose with <strong>strong</strong>, <b>bold</b>, <em>emphasis</em>,
+        <i>italic</i>, <u>underline</u>, <s>strikethrough</s>,
+        <mark>highlighted</mark>, <small>small</small>, <sub>subscript</sub>,
+        <sup>superscript</sup>, <code>inline code</code>, <kbd>Ctrl+C</kbd>,
+        <samp>sample output</samp>, <var>x</var>, an
+        <abbr title="Accessible Rich Internet Applications">ARIA</abbr>
+        abbreviation, a <cite>citation</cite>, a <q>short quote</q>,
+        <time datetime="2026-07-06">July 6 2026</time>, and a
+        <a href="https://example.com/inline">mid-sentence inline link</a>
+        all flowing together as a single prose run.
+      </p>
+      <p>
+        A paragraph containing <bdi>إيان</bdi> bidirectional isolate,
+        <bdo dir="rtl">reversed text</bdo>, a <dfn>defined term</dfn>, and
+        <ruby>漢<rp>(</rp><rt>kan</rt><rp>)</rp></ruby> ruby annotation.
+      </p>
+    </section>
+
+    <!-- ============================================================
+         PARAGRAPH RUN  →  XRArticle (3+ consecutive <p>)
+    ============================================================= -->
+    <section aria-labelledby="article-title">
+      <h2 id="article-title">3. Paragraph Run → Article</h2>
+      <p>First paragraph of a run. The structural inference layer groups three
+        or more consecutive paragraphs into an inferred article container.</p>
+      <p>Second paragraph continues the prose block with enough text to test
+        the density scoring and estimated reading-time calculation applied to
+        longer paragraphs in the mapper.</p>
+      <p>Third paragraph closes the run so the minimum-paragraph-run threshold
+        of three is satisfied and an XRArticle is emitted.</p>
+      <p>Fourth paragraph — a very long one to push past the ~200 word density
+        cap: lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do
+        eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad
+        minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip
+        ex ea commodo consequat. Duis aute irure dolor in reprehenderit in
+        voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur
+        sint occaecat cupidatat non proident, sunt in culpa qui officia
+        deserunt mollit anim id est laborum. Sed ut perspiciatis unde omnis
+        iste natus error sit voluptatem accusantium doloremque laudantium.</p>
+
+      <!-- ASIDE B: UNLABELLED aside (no aria-label, no heading) — edge case for
+           label inference on a complementary landmark -->
+      <aside>
+        <p>An unlabelled aside with only a paragraph. Tests how the layout
+          engine titles a complementary region that has no accessible name.</p>
+      </aside>
+    </section>
+
+    <!-- ASIDE C: top-level aside BETWEEN two sections (sibling of sections,
+         not nested) — with an inferred link run inside it -->
+    <aside aria-label="Between-section related links">
+      <h2>Interstitial aside</h2>
+      <a href="https://example.com/rel-a">Related A</a>
+      <a href="https://example.com/rel-b">Related B</a>
+      <a href="https://example.com/rel-c">Related C</a>
+    </aside>
+
+    <!-- ============================================================
+         LISTS  →  XRList / XRListItem
+    ============================================================= -->
+    <section aria-labelledby="lists-title">
+      <h2 id="lists-title">4. Lists</h2>
+
+      <h3>Unordered list</h3>
+      <ul>
+        <li>Plain text list item one</li>
+        <li>List item two with a <a href="https://example.com/li">link inside</a></li>
+        <li>List item three with <strong>bold</strong> content</li>
+        <li>List item four</li>
+      </ul>
+
+      <h3>Ordered list</h3>
+      <ol>
+        <li>Step one</li>
+        <li>Step two</li>
+        <li>Step three</li>
+      </ol>
+
+      <h3>Nested list</h3>
+      <ul>
+        <li>Parent item A
+          <ul>
+            <li>Child A-1</li>
+            <li>Child A-2</li>
+          </ul>
+        </li>
+        <li>Parent item B</li>
+        <li>Parent item C</li>
+      </ul>
+
+      <h3>Definition list (edge case)</h3>
+      <dl>
+        <dt>Term</dt>
+        <dd>Definition of the term.</dd>
+        <dt>Another term</dt>
+        <dd>Its definition.</dd>
+      </dl>
+
+      <!-- ASIDE D: aside containing a real <ul> list, nested in the lists section -->
+      <aside aria-label="Lists sidebar">
+        <h3>Aside with a list</h3>
+        <ul>
+          <li>Sidebar item one</li>
+          <li>Sidebar item two</li>
+          <li>Sidebar item three</li>
+        </ul>
+      </aside>
+    </section>
+
+    <!-- ============================================================
+         LINK RUN  →  XRNavigationBar (3+ consecutive <a>, non-anchor)
+    ============================================================= -->
+    <section aria-labelledby="linkrun-title">
+      <h2 id="linkrun-title">5. Inferred Link Run</h2>
+      <a href="https://example.com/a">External Alpha</a>
+      <a href="https://example.com/b">External Bravo</a>
+      <a href="https://example.com/c">External Charlie</a>
+      <a href="https://example.com/d">External Delta</a>
+    </section>
+
+    <!-- ============================================================
+         IMAGES & FIGURES  →  XRImage / XRFigure
+    ============================================================= -->
+    <section aria-labelledby="media-title">
+      <h2 id="media-title">6. Images &amp; Figures</h2>
+      <img src="https://picsum.photos/id/1015/600/400" alt="A river running through a canyon" />
+
+      <figure>
+        <img src="https://picsum.photos/id/1025/500/500" alt="A pug wrapped in a blanket" />
+        <figcaption>Figure 1 — a figure with an image and caption.</figcaption>
+      </figure>
+
+      <figure>
+        <a href="https://example.com/linked-figure">
+          <img src="https://picsum.photos/id/1035/500/300" alt="Linked figure image" />
+        </a>
+        <figcaption>Figure 2 — a linked figure (image wrapped in an anchor).</figcaption>
+      </figure>
+
+      <!-- Edge case: image with no alt text -->
+      <img src="https://picsum.photos/id/1045/400/300" />
+
+      <!-- Edge case: broken image src -->
+      <img src="https://example.com/does-not-exist.png" alt="Broken image (404) — tests fallback" />
+
+      <!-- ASIDE E: NESTED aside-in-aside (complementary inside complementary) -->
+      <aside aria-label="Media sidebar (outer)">
+        <h3>Outer media aside</h3>
+        <p>Outer complementary content.</p>
+        <aside aria-label="Nested credits (inner)">
+          <h4>Inner nested aside</h4>
+          <p>An aside nested directly inside another aside — tests complementary
+            recursion and depth handling.</p>
+        </aside>
+      </aside>
+    </section>
+
+    <!-- ============================================================
+         BLOCKQUOTE + CODE  →  XRBlockQuote / XRCodeBlock
+    ============================================================= -->
+    <section aria-labelledby="quote-title">
+      <h2 id="quote-title">7. Blockquote &amp; Code</h2>
+      <blockquote cite="https://example.com/source">
+        <p>This is a block quotation. It should map to an XRBlockQuote with its
+          own distinct visual treatment and a vertical accent rule.</p>
+        <footer>— A Notable Person</footer>
+      </blockquote>
+
+      <pre><code>function greet(name) {
+  // multi-line code block
+  return `Hello, ${name}!`;
+}
+
+greet("XR");</code></pre>
+
+      <p>And a paragraph with <code>inline &lt;code&gt;</code> after the block.</p>
+    </section>
+
+    <!-- ============================================================
+         SEPARATOR  →  XRSeparator
+    ============================================================= -->
+    <section aria-labelledby="sep-title">
+      <h2 id="sep-title">8. Separator</h2>
+      <p>Content above the rule.</p>
+      <hr />
+      <p>Content below the rule.</p>
+    </section>
+
+    <!-- ============================================================
+         TABLE (DATA)  →  XRTable / XRTableRow / XRTableCell
+    ============================================================= -->
+    <section aria-labelledby="table-title">
+      <h2 id="table-title">9. Data Table</h2>
+      <table>
+        <caption>Device profiles and their fields of view</caption>
+        <thead>
+          <tr>
+            <th scope="col">Device</th>
+            <th scope="col">Type</th>
+            <th scope="col">FOV</th>
+            <th scope="col">Panel Width</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Quest 3</td>
+            <td>Full VR</td>
+            <td>110°</td>
+            <td>2.4 m</td>
+          </tr>
+          <tr>
+            <td>Quest Pro</td>
+            <td>Mixed Reality</td>
+            <td>100°</td>
+            <td>2.2 m</td>
+          </tr>
+          <tr>
+            <td>Ray-Ban Meta</td>
+            <td>AR Glasses</td>
+            <td>40°</td>
+            <td>1.2 m</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Table with colspan / rowspan (edge case)</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th colspan="2">Coordinates</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td rowspan="2">Origin</td>
+            <td>x: 0</td>
+            <td>y: 0</td>
+          </tr>
+          <tr>
+            <td>z: 0</td>
+            <td>w: 1</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============================================================
+         FORM  →  XRFormPanel / XRFormField / controls
+    ============================================================= -->
+    <section aria-labelledby="form-title">
+      <h2 id="form-title">10. Form Controls</h2>
+      <form aria-label="Sample settings form">
+        <fieldset>
+          <legend>Text inputs</legend>
+          <label for="txt">Text box
+            <input type="text" id="txt" name="txt" placeholder="Type here…" value="prefilled" />
+          </label>
+          <label for="email">Email
+            <input type="email" id="email" name="email" placeholder="you@example.com" required />
+          </label>
+          <label for="pw">Password
+            <input type="password" id="pw" name="pw" />
+          </label>
+          <label for="area">Textarea
+            <textarea id="area" name="area" placeholder="Multi-line…">Existing text</textarea>
+          </label>
+          <label for="disabled-txt">Disabled input
+            <input type="text" id="disabled-txt" disabled value="cannot edit" />
+          </label>
+          <label for="readonly-txt">Read-only input
+            <input type="text" id="readonly-txt" readonly value="read only" />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Search</legend>
+          <label for="search">Search box
+            <input type="search" id="search" name="q" placeholder="Search…" />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Numbers &amp; ranges</legend>
+          <label for="num">Spinbutton
+            <input type="number" id="num" name="num" min="0" max="100" value="42" />
+          </label>
+          <label for="range">Slider
+            <input type="range" id="range" name="range" min="0" max="100" value="70" />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Toggles</legend>
+          <label><input type="checkbox" checked /> Checked checkbox</label>
+          <label><input type="checkbox" /> Unchecked checkbox</label>
+          <label><input type="checkbox" disabled /> Disabled checkbox</label>
+          <label><input type="radio" name="r" checked /> Radio A</label>
+          <label><input type="radio" name="r" /> Radio B</label>
+          <div role="switch" aria-checked="true" tabindex="0">ARIA switch (on)</div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Select</legend>
+          <label for="sel">Combobox
+            <select id="sel" name="sel">
+              <option value="1">Option One</option>
+              <option value="2" selected>Option Two</option>
+              <option value="3">Option Three</option>
+            </select>
+          </label>
+        </fieldset>
+
+        <button type="submit">Submit</button>
+        <button type="button">Secondary Button</button>
+        <button type="button" disabled>Disabled Button</button>
+        <button type="button" aria-haspopup="menu">Menu Button ▾</button>
+      </form>
+    </section>
+
+    <!-- ============================================================
+         SEARCH LANDMARK  →  XRFormPanel
+    ============================================================= -->
+    <section aria-labelledby="searchlm-title">
+      <h2 id="searchlm-title">11. Search Landmark</h2>
+      <div role="search" aria-label="Site search">
+        <input type="search" aria-label="Search the site" placeholder="Search everything…" />
+        <button type="submit">Go</button>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         PROGRESS / METER  →  XRProgressBar
+    ============================================================= -->
+    <section aria-labelledby="progress-title">
+      <h2 id="progress-title">12. Progress &amp; Meter</h2>
+      <label for="prog">Upload progress</label>
+      <progress id="prog" value="0.6" max="1">60%</progress>
+      <div role="progressbar" aria-valuenow="35" aria-valuemin="0" aria-valuemax="100">35%</div>
+      <label for="meter">Disk usage</label>
+      <meter id="meter" value="0.8" min="0" max="1">80%</meter>
+    </section>
+
+    <!-- ============================================================
+         TABS  →  XRTabGroup / XRTab / XRTabPanel
+    ============================================================= -->
+    <section aria-labelledby="tabs-title">
+      <h2 id="tabs-title">13. Tabs</h2>
+      <div role="tablist" aria-label="Sample tabs">
+        <button role="tab" aria-selected="true" aria-controls="panel-1" id="tab-1">Tab One</button>
+        <button role="tab" aria-selected="false" aria-controls="panel-2" id="tab-2">Tab Two</button>
+        <button role="tab" aria-selected="false" aria-controls="panel-3" id="tab-3">Tab Three</button>
+      </div>
+      <div role="tabpanel" id="panel-1" aria-labelledby="tab-1">
+        <p>Content of the first tab panel.</p>
+      </div>
+      <div role="tabpanel" id="panel-2" aria-labelledby="tab-2" hidden>
+        <p>Content of the second tab panel.</p>
+      </div>
+      <div role="tabpanel" id="panel-3" aria-labelledby="tab-3" hidden>
+        <p>Content of the third tab panel.</p>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         MENU  →  XRMenu / XRMenuItem
+    ============================================================= -->
+    <section aria-labelledby="menu-title">
+      <h2 id="menu-title">14. Menu</h2>
+      <ul role="menu" aria-label="Actions">
+        <li role="menuitem">New</li>
+        <li role="menuitem">Open</li>
+        <li role="menuitemcheckbox" aria-checked="true">Word wrap</li>
+        <li role="menuitemradio" aria-checked="false">Dark theme</li>
+        <li role="menuitem">Quit</li>
+      </ul>
+    </section>
+
+    <!-- ============================================================
+         TREE  →  XRTree / XRTreeItem
+    ============================================================= -->
+    <section aria-labelledby="tree-title">
+      <h2 id="tree-title">15. Tree</h2>
+      <ul role="tree" aria-label="File tree">
+        <li role="treeitem" aria-expanded="true">src
+          <ul role="group">
+            <li role="treeitem">index.ts</li>
+            <li role="treeitem" aria-expanded="false">components</li>
+          </ul>
+        </li>
+        <li role="treeitem">README.md</li>
+      </ul>
+    </section>
+
+    <!-- ============================================================
+         LIVE REGIONS  →  XRAlert (assertive / polite)
+    ============================================================= -->
+    <section aria-labelledby="alert-title">
+      <h2 id="alert-title">16. Alerts &amp; Status</h2>
+      <div role="alert">Assertive alert — something needs attention now.</div>
+      <div role="status">Polite status — changes saved.</div>
+      <div aria-live="polite">Generic polite live region.</div>
+    </section>
+
+    <!-- ============================================================
+         DIALOG  →  XRDialog
+    ============================================================= -->
+    <section aria-labelledby="dialog-title">
+      <h2 id="dialog-title">17. Dialog</h2>
+      <div role="dialog" aria-modal="true" aria-labelledby="dlg-h">
+        <h3 id="dlg-h">Modal Dialog Title</h3>
+        <p>Dialog body content.</p>
+        <button type="button">Confirm</button>
+        <button type="button">Cancel</button>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         TOOLTIP  →  XRTooltip
+    ============================================================= -->
+    <section aria-labelledby="tooltip-title">
+      <h2 id="tooltip-title">18. Tooltip</h2>
+      <button type="button" aria-describedby="tip">Hover me</button>
+      <div role="tooltip" id="tip">This is a tooltip bubble.</div>
+    </section>
+
+    <!-- ============================================================
+         MEDIA  →  XRMediaPlayer (video / audio)
+    ============================================================= -->
+    <section aria-labelledby="player-title">
+      <h2 id="player-title">19. Media Players</h2>
+      <video src="https://example.com/sample.mp4" poster="https://picsum.photos/id/1005/640/360" controls>
+        <track kind="captions" src="captions.vtt" srclang="en" label="English" />
+      </video>
+      <audio src="https://example.com/sample.mp3" controls></audio>
+    </section>
+
+    <!-- ============================================================
+         COMPLEMENTARY  →  XRComplementary (sidebar)
+    ============================================================= -->
+    <aside aria-label="Related links">
+      <h2>20. Complementary Aside</h2>
+      <p>Sidebar content mapped to XRComplementary.</p>
+      <ul>
+        <li><a href="https://example.com/rel1">Related one</a></li>
+        <li><a href="https://example.com/rel2">Related two</a></li>
+        <li><a href="https://example.com/rel3">Related three</a></li>
+      </ul>
+    </aside>
+
+    <!-- ============================================================
+         EDGE CASES
+    ============================================================= -->
+    <section aria-labelledby="edge-title">
+      <h2 id="edge-title">21. Edge Cases</h2>
+
+      <h3>Deeply nested wrapper chain (piercing)</h3>
+      <div><div><div><span><p>This paragraph is buried under four inert
+        wrapper elements and should be lifted by wrapper piercing.</p></span></div></div></div>
+
+      <h3>Empty elements</h3>
+      <p></p>
+      <div></div>
+      <ul></ul>
+      <span>   </span>
+
+      <h3>aria-hidden content (should be excluded)</h3>
+      <p aria-hidden="true">You should NOT see this — it is aria-hidden.</p>
+      <p style="display:none">You should NOT see this — it is display:none.</p>
+
+      <h3>Very long unbroken token (overflow / clipping)</h3>
+      <p>SupercalifragilisticexpialidocioussupercalifragilisticexpialidociousANTIDISESTABLISHMENTARIANISMpneumonoultramicroscopicsilicovolcanoconiosis</p>
+
+      <h3>Special characters &amp; entities</h3>
+      <p>Ampersand &amp; less-than &lt; greater-than &gt; quote &quot; emoji 🚀🌌🛰️ CJK 空間網路 RTL עברית math ∑∫√π≈∞</p>
+
+      <h3>Presentation-role element (should be elided)</h3>
+      <div role="presentation">
+        <p>But this paragraph inside a presentation container should survive.</p>
+      </div>
+
+      <h3>Unmapped / generic element</h3>
+      <details>
+        <summary>Click to expand (details/summary)</summary>
+        <p>Hidden details content revealed on expand.</p>
+      </details>
+
+      <address>
+        123 Spatial Web Lane<br />
+        Metaverse, XR 00000
+      </address>
+
+      <h3>Standalone anchor (single link, not a run)</h3>
+      <p><a href="https://example.com/solo">A single standalone link should stay an XRLink.</a></p>
+
+      <h3>Same-page anchors (TOC fragments — should NOT become a nav bar)</h3>
+      <a href="#headings-title">Jump to headings</a>
+      <a href="#lists-title">Jump to lists</a>
+      <a href="#table-title">Jump to table</a>
+    </section>
+
+    <!-- ============================================================
+         LONG CONTENT for PAGINATION stress test
+    ============================================================= -->
+    <section aria-labelledby="pagination-title">
+      <h2 id="pagination-title">22. Pagination Stress</h2>
+      <p>The following repeated paragraphs push the content panel past a single
+        page so pagination and the page navigation gate can be exercised.</p>
+      <p>Filler paragraph 1. Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>
+      <p>Filler paragraph 2. Sed do eiusmod tempor incididunt ut labore et dolore.</p>
+      <p>Filler paragraph 3. Ut enim ad minim veniam, quis nostrud exercitation.</p>
+      <p>Filler paragraph 4. Duis aute irure dolor in reprehenderit in voluptate.</p>
+      <p>Filler paragraph 5. Excepteur sint occaecat cupidatat non proident.</p>
+      <p>Filler paragraph 6. Sunt in culpa qui officia deserunt mollit anim id est.</p>
+      <p>Filler paragraph 7. Neque porro quisquam est qui dolorem ipsum quia dolor.</p>
+      <p>Filler paragraph 8. Quis autem vel eum iure reprehenderit qui in ea.</p>
+      <p>Filler paragraph 9. At vero eos et accusamus et iusto odio dignissimos.</p>
+      <p>Filler paragraph 10. Et harum quidem rerum facilis est et expedita distinctio.</p>
+    </section>
+  </main>
+
+  <!-- ================================================================
+       CONTENTINFO LANDMARK  →  XRFooter
+  ================================================================= -->
+  <footer>
+    <p>Test page footer — end of content.</p>
+    <nav aria-label="Footer">
+      <a href="https://example.com/privacy">Privacy</a>
+      <a href="https://example.com/terms">Terms</a>
+      <a href="https://example.com/contact">Contact</a>
+    </nav>
+  </footer>
+</body>
+</html>

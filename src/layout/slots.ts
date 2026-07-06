@@ -389,7 +389,7 @@ function carouselSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
   const mainX = -(MAIN_W / 2);
   const prevGhostX = mainX - GAP - MAIN_W;
   const nextGhostX = mainX + MAIN_W + GAP;
-  const tocX = prevGhostX - GAP - TOC_W;
+  const tocX = prevGhostX - TOC_W + GAP * 7;
   const asideX = nextGhostX + MAIN_W + GAP;
 
   // Facing angles for toc and aside (ghosts handled by the renderer).
@@ -398,7 +398,7 @@ function carouselSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
 
   return {
     toc: {
-      position: { x: tocX, y: eyeY - 0.05, z: -d + 2 * CAROUSEL_Z_STEP },
+      position: { x: tocX, y: eyeY, z: -d + 5.5 * CAROUSEL_Z_STEP },
       rotation: angularRotation(TOC_DEG),
       size: { width: TOC_W, height: metrics.navigationBar.height },
       curveRadius: 0,
@@ -621,7 +621,11 @@ function theatreSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       worldLocked: true,
     },
     navigation: {
-      position: { x: -(mhw + 0.28), y: eyeY - metrics.navigationBar.height - 0.06, z: -(d - 0.25) },
+      position: {
+        x: -(mhw + 0.28),
+        y: eyeY - metrics.navigationBar.height - 0.06,
+        z: -(d - 0.25),
+      },
       rotation: { x: 0, y: 0.5, z: 0 },
       size: { width: 0.32, height: metrics.navigationBar.height },
       curveRadius: 0,

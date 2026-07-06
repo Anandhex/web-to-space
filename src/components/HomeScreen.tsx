@@ -46,7 +46,7 @@ export const DEFAULT_HOME_THEME: HomeTheme = {
   accentDim: "#0A4A8A",
   background: "#161618",
   canvasBg: "#0E0E10",
-  cardBg: "#33333A",
+  cardBg: "#525256",
   cardHover: "#40404A",
   textPrimary: "#F5F5F5",
   textSecondary: "#B4B4BC",
@@ -63,20 +63,20 @@ export const DEFAULT_HOME_SETTINGS: HomeSettings = {
 const LS_KEY = "fsw-home-settings";
 
 function loadStoredSettings(): HomeSettings {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        ...DEFAULT_HOME_SETTINGS,
-        ...parsed,
-        theme: { ...DEFAULT_HOME_THEME, ...(parsed.theme ?? {}) },
-        xrTheme: { ...DARK_THEME, ...(parsed.xrTheme ?? {}) },
-        parserConfig: parsed.parserConfig ?? {},
-        parserBackend: parsed.parserBackend ?? "custom",
-      };
-    }
-  } catch {}
+  // try {
+  //   const raw = localStorage.getItem(LS_KEY);
+  //   if (raw) {
+  //     const parsed = JSON.parse(raw);
+  //     return {
+  //       ...DEFAULT_HOME_SETTINGS,
+  //       ...parsed,
+  //       theme: { ...DEFAULT_HOME_THEME, ...(parsed.theme ?? {}) },
+  //       xrTheme: { ...DARK_THEME, ...(parsed.xrTheme ?? {}) },
+  //       parserConfig: parsed.parserConfig ?? {},
+  //       parserBackend: parsed.parserBackend ?? "custom",
+  //     };
+  //   }
+  // } catch {}
   return DEFAULT_HOME_SETTINGS;
 }
 
@@ -91,7 +91,20 @@ function hexToRgb(hex: string): string {
 // Preset sites
 // ─────────────────────────────────────────────────────────────
 
+// Sentinel URL for the built-in renderer test page. Resolved to an absolute
+// same-origin URL at click time (see handleLoad) so it can be fetched directly
+// without the CORS proxy, and so the parser can resolve relative asset URLs.
+export const TEST_PAGE_TOKEN = "__test_elements__";
+const TEST_PAGE_PATH = "/test-elements.html";
+
 const PRESET_SITES = [
+  {
+    id: "test-elements",
+    title: "▦ Renderer Test Page",
+    subtitle: "Every primitive + edge cases — local smoke test",
+    url: TEST_PAGE_TOKEN,
+    initial: "T",
+  },
   {
     id: "nasa",
     title: "NASA",
@@ -143,6 +156,8 @@ const CARD_POSITIONS: [number, number, number][] = [
   [-1.65, 0.9, -3.0],
   [0, 0.9, -3.0],
   [1.65, 0.9, -3.0],
+  // 7th card (renderer test page) — centred on a third row below the grid.
+  [0, -0.3, -3.0],
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -177,19 +192,6 @@ function SiteCard({
 }: SiteCardProps) {
   const [hovered, setHovered] = useState(false);
   const groupRef = useRef<THREE.Group>(null);
-  const baseY = position[1];
-
-  useFrame((state) => {
-    if (!groupRef.current) return;
-    const t = state.clock.elapsedTime;
-    groupRef.current.position.y = baseY + Math.sin(t * 0.7 + phase) * 0.04;
-    // Lift the card toward the viewer on hover (depth cue) + gentle scale.
-    const targetScale = hovered && !disabled ? 1.04 : 1;
-    const cur = groupRef.current.scale.x;
-    groupRef.current.scale.setScalar(cur + (targetScale - cur) * 0.12);
-    const targetZ = position[2] + (hovered && !disabled ? 0.09 : 0);
-    groupRef.current.position.z += (targetZ - groupRef.current.position.z) * 0.12;
-  });
 
   const active = hovered && !disabled;
   const halfW = CARD_W / 2;
@@ -321,11 +323,7 @@ function SiteCard({
 
 function SceneTitle({ theme }: { theme: HomeTheme }) {
   const groupRef = useRef<THREE.Group>(null);
-  useFrame((state) => {
-    if (!groupRef.current) return;
-    groupRef.current.position.y =
-      3.1 + Math.sin(state.clock.elapsedTime * 0.4) * 0.03;
-  });
+
   return (
     <group ref={groupRef} position={[0, 3.1, -3.0]}>
       <Text
@@ -338,7 +336,7 @@ function SceneTitle({ theme }: { theme: HomeTheme }) {
         From Space to Web
       </Text>
       <Text
-        position={[0, -0.44, 0]}
+        position={[0, -0.3, 0]}
         fontSize={0.1}
         color={theme.accent}
         anchorX="center"
@@ -1247,6 +1245,11 @@ export function HomeScreen({
   function handleLoad(url: string) {
     const raw = url.trim();
     if (!raw) return;
+    // Built-in test page: resolve the sentinel to an absolute same-origin URL.
+    if (raw === TEST_PAGE_TOKEN) {
+      onLoad(window.location.origin + TEST_PAGE_PATH, settings);
+      return;
+    }
     const target = /^https?:\/\//i.test(raw) ? raw : "https://" + raw;
     onLoad(target, settings);
   }
@@ -1319,11 +1322,11 @@ export function HomeScreen({
             onFocusField={() => hiddenInputRef.current?.focus()}
             onSubmit={handleSubmit}
             width={1.3}
-            position={[-0.12, 1.02, 0.6]}
+            position={[-0.12, 0.95, 0.6]}
             tiltX={0.16}
           />
           {/* Compact gear button, right of the search field */}
-          <group position={[0.78, 1.02, 0.6]} rotation={[0.16, 0, 0]}>
+          <group position={[0.78, 0.95, 0.6]} rotation={[0.16, 0, 0]}>
             <XR3DButton
               width={0.15}
               height={0.15}
@@ -1340,7 +1343,7 @@ export function HomeScreen({
               onSwitch={onSwitchTab}
               onClose={onCloseTab}
               onNewTab={onNewTab}
-              position={[0, 0.6, 0.55]}
+              position={[0, 0.7, 0.55]}
               tiltX={0.34}
             />
           )}

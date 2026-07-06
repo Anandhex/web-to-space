@@ -2144,15 +2144,78 @@ export function computeLayoutPlan(
 
   // Extract any XRComplementary nodes that were paginated inside a content
   // panel and re-layout them at the complementary slot with world-space
-  // coordinates. Their pageIndex is preserved so the renderer gates
-  // visibility to the page where the parent section lives.
+  // coordinates.
+  //
+  // Design intent: a section-nested <aside> is *that section's* aside. It must
+  // occupy the complementary panel for as long as its section is on screen, and
+  // be replaced by the next section's aside when the reader moves on. Column
+  // pagination, however, flows the aside as an ordinary block, so it lands on
+  // the page it overflowed onto — typically one page *past* its section body.
+  // Gating on that page shows the aside detached from its own section.
+  //
+  // Fix: gate each extracted aside to its parent section's page RANGE
+  // [firstPage … lastPage] (computed from the section's non-aside descendants),
+  // so it stays pinned in the complementary panel across every page the section
+  // spans. Top-level asides (no parent section) keep their single overflow page.
   const compSlot = slots.complementary;
   if (compSlot) {
+    // Parent pointers over the scene tree — used to find the section that owns
+    // an aside, and to enumerate a subtree's ids.
+    const parentOf = new Map<string, XRPrimitive>();
+    const indexTree = (node: XRPrimitive): void => {
+      for (const child of node.children) {
+        parentOf.set(child.id, node);
+        indexTree(child);
+      }
+    };
+    indexTree(scene.root);
+
+    const collectSubtreeIds = (node: XRPrimitive, out: Set<string>): void => {
+      out.add(node.id);
+      for (const child of node.children) collectSubtreeIds(child, out);
+    };
+
+    const nearestSection = (id: string): XRPrimitive | null => {
+      let cur = parentOf.get(id);
+      while (cur) {
+        if (cur.type === "XRSection") return cur;
+        if (cur.type === "XRContentPanel") return null;
+        cur = parentOf.get(cur.id);
+      }
+      return null;
+    };
+
     for (const prim of Object.values(scene.primitives)) {
       if (prim.type !== "XRComplementary") continue;
       const existing = entries[prim.id];
       if (existing?.pageIndex === undefined) continue;
       const savedPageIndex = existing.pageIndex;
+
+      // Resolve the parent section's page range, excluding the aside's own
+      // (overflowed) descendants so they can't inflate the range end.
+      let gateStart = savedPageIndex;
+      let gateEnd = savedPageIndex;
+      const section = nearestSection(prim.id);
+      if (section) {
+        const asideIds = new Set<string>();
+        collectSubtreeIds(prim, asideIds);
+        const sectionIds = new Set<string>();
+        collectSubtreeIds(section, sectionIds);
+        let min = Infinity;
+        let max = -Infinity;
+        for (const sid of sectionIds) {
+          if (asideIds.has(sid)) continue;
+          const p = entries[sid]?.pageIndex;
+          if (p === undefined) continue;
+          if (p < min) min = p;
+          if (p > max) max = p;
+        }
+        if (min !== Infinity) {
+          gateStart = min;
+          gateEnd = max;
+        }
+      }
+
       layoutPrimitive(
         prim,
         compSlot.position,
@@ -2165,9 +2228,21 @@ export function computeLayoutPlan(
         metrics,
         entries,
         diag,
-        savedPageIndex,
+        gateStart,
       );
-      if (entries[prim.id]) entries[prim.id].pageIndex = savedPageIndex;
+
+      // layoutPrimitive stamped pageIndex = gateStart on the aside and every
+      // descendant. Pin the range end too so the renderer keeps the whole aside
+      // subtree visible for [gateStart … gateEnd].
+      const asideSubtree = new Set<string>();
+      collectSubtreeIds(prim, asideSubtree);
+      for (const sid of asideSubtree) {
+        const e = entries[sid];
+        if (!e) continue;
+        e.pageIndex = gateStart;
+        if (gateEnd > gateStart) e.pageEndIndex = gateEnd;
+        else delete e.pageEndIndex;
+      }
     }
   }
 
