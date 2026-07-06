@@ -1,7 +1,10 @@
 import React, { useState, useRef, Suspense, useEffect } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { Stars, OrbitControls, Text, RoundedBox } from "@react-three/drei";
+import { Stars, OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
+import { Surface } from "../renderer/primitives";
+import { XR3DTabBar, XR3DSearchBar, XR3DButton } from "./XR3DChrome";
+import type { Tab } from "./viewTypes";
 import type { XRDeviceType } from "../renderer/XRSceneRenderer";
 import type { ParserConfig, ParserBackend } from "../ir/types";
 import {
@@ -35,15 +38,18 @@ export interface HomeSettings {
   parserBackend: ParserBackend;
 }
 
+// Meta Horizon OS palette — neutral charcoal surfaces, #0082FB brand accent.
+// Mirrors DARK_THEME in theme.ts so the Home screen reads as the same design
+// language as the 3D document viewer.
 export const DEFAULT_HOME_THEME: HomeTheme = {
-  accent: "#58a6ff",
-  accentDim: "#1e4a8a",
-  background: "#020408",
-  canvasBg: "#030810",
-  cardBg: "#0d1828",
-  cardHover: "#162236",
-  textPrimary: "#e6f1ff",
-  textSecondary: "#7a8a9a",
+  accent: "#0082FB",
+  accentDim: "#0A4A8A",
+  background: "#161618",
+  canvasBg: "#0E0E10",
+  cardBg: "#33333A",
+  cardHover: "#40404A",
+  textPrimary: "#F5F5F5",
+  textSecondary: "#B4B4BC",
 };
 
 export const DEFAULT_HOME_SETTINGS: HomeSettings = {
@@ -155,6 +161,9 @@ interface SiteCardProps {
   theme: HomeTheme;
 }
 
+const CARD_W = 1.34;
+const CARD_H = 0.92;
+
 function SiteCard({
   title,
   subtitle,
@@ -173,20 +182,26 @@ function SiteCard({
   useFrame((state) => {
     if (!groupRef.current) return;
     const t = state.clock.elapsedTime;
-    groupRef.current.position.y = baseY + Math.sin(t * 0.7 + phase) * 0.045;
-    const target = hovered && !disabled ? 1.055 : 1;
+    groupRef.current.position.y = baseY + Math.sin(t * 0.7 + phase) * 0.04;
+    // Lift the card toward the viewer on hover (depth cue) + gentle scale.
+    const targetScale = hovered && !disabled ? 1.04 : 1;
     const cur = groupRef.current.scale.x;
-    groupRef.current.scale.setScalar(cur + (target - cur) * 0.1);
+    groupRef.current.scale.setScalar(cur + (targetScale - cur) * 0.12);
+    const targetZ = position[2] + (hovered && !disabled ? 0.09 : 0);
+    groupRef.current.position.z += (targetZ - groupRef.current.position.z) * 0.12;
   });
 
   const active = hovered && !disabled;
+  const halfW = CARD_W / 2;
+  const halfH = CARD_H / 2;
+  const pad = 0.11;
 
   return (
     <group ref={groupRef} position={position}>
-      <RoundedBox
-        args={[1.25, 0.88, 0.055]}
-        radius={0.055}
-        smoothness={4}
+      {/* Card body — Meta Horizon charcoal surface with top-edge gradient
+          and a hairline rim that lights up to the brand accent on hover. */}
+      <mesh
+        position={[0, 0, 0]}
         onPointerOver={(e) => {
           e.stopPropagation();
           if (!disabled) {
@@ -203,71 +218,102 @@ function SiteCard({
           if (!disabled) onSelect(url);
         }}
       >
-        <meshStandardMaterial
-          color={active ? theme.cardHover : theme.cardBg}
-          emissive={active ? theme.cardHover : theme.background}
-          emissiveIntensity={active ? 0.8 : 0.3}
-          roughness={0.2}
-          metalness={0.5}
-          transparent
-          opacity={0.95}
-        />
-      </RoundedBox>
-
-      <mesh position={[0, 0.37, 0.03]}>
-        <planeGeometry args={[1.2, 0.022]} />
-        <meshBasicMaterial
-          color={active ? theme.accent : theme.accentDim}
-          transparent
-          opacity={active ? 1 : 0.5}
-        />
+        {/* Invisible hit plane so the whole card is clickable */}
+        <planeGeometry args={[CARD_W, CARD_H]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
 
+      <Surface
+        width={CARD_W}
+        height={CARD_H}
+        radius={0.07}
+        color={active ? theme.cardHover : theme.cardBg}
+        flat
+        rimColor={active ? theme.accent : "#5B5B5B"}
+        rimOpacity={active ? 0.9 : 0.6}
+        origin={[0, 0]}
+      />
+
+      {/* Accent initial chip — rounded tile, top-left */}
+      <group position={[-halfW + pad + 0.12, halfH - pad - 0.12, 0.004]}>
+        <Surface
+          width={0.24}
+          height={0.24}
+          radius={0.06}
+          color={active ? "#0A3A66" : "#22303C"}
+          flat
+          rimColor={theme.accent}
+          rimOpacity={active ? 0.9 : 0.5}
+          origin={[0, 0]}
+        />
+        <Text
+          position={[0, 0, 0.006]}
+          fontSize={0.13}
+          color={active ? "#7FC0FF" : theme.accent}
+          anchorX="center"
+          anchorY="middle"
+        >
+          {initial}
+        </Text>
+      </group>
+
+      {/* Title, right of the chip */}
       <Text
-        position={[-0.44, 0.12, 0.04]}
-        fontSize={0.2}
-        color={active ? "#a594f9" : "#6a56d4"}
-        anchorX="center"
-        anchorY="middle"
-      >
-        {initial}
-      </Text>
-      <Text
-        position={[-0.1, 0.17, 0.04]}
-        fontSize={0.1}
+        position={[-halfW + pad + 0.26, halfH - pad - 0.07, 0.006]}
+        fontSize={0.082}
         color={theme.textPrimary}
         anchorX="left"
-        anchorY="middle"
-        maxWidth={0.78}
+        anchorY="top"
+        maxWidth={CARD_W - 0.5}
+        letterSpacing={-0.01}
       >
         {title}
       </Text>
+
+      {/* Subtitle spans the full width below the header */}
       <Text
-        position={[-0.1, -0.1, 0.04]}
-        fontSize={0.068}
+        position={[-halfW + pad, 0.0, 0.006]}
+        fontSize={0.056}
         color={theme.textSecondary}
         anchorX="left"
         anchorY="middle"
-        maxWidth={0.78}
+        maxWidth={CARD_W - 2 * pad}
+        lineHeight={1.3}
       >
         {subtitle}
       </Text>
+
+      {/* Thin divider above the footer row */}
+      <mesh position={[0, -halfH + 0.2, 0.005]}>
+        <planeGeometry args={[CARD_W - 2 * pad, 0.006]} />
+        <meshBasicMaterial
+          color={active ? theme.accent : "#4A4A50"}
+          transparent
+          opacity={active ? 0.7 : 0.4}
+        />
+      </mesh>
+
+      {/* Footer: URL on the left, Open affordance on hover at the right */}
       <Text
-        position={[-0.1, -0.3, 0.04]}
-        fontSize={0.055}
-        color={active ? "#3a7aaa" : "#1a3a5a"}
+        position={[-halfW + pad, -halfH + 0.11, 0.006]}
+        fontSize={0.044}
+        color={active ? "#6FA8D8" : "#7A7A80"}
         anchorX="left"
         anchorY="middle"
-        maxWidth={0.9}
+        maxWidth={CARD_W - 0.45}
       >
-        {url}
+        {url.replace(/^https?:\/\//, "")}
       </Text>
-
       {active && (
-        <mesh position={[0, 0, -0.003]}>
-          <planeGeometry args={[1.27, 0.9]} />
-          <meshBasicMaterial color={theme.accent} transparent opacity={0.1} />
-        </mesh>
+        <Text
+          position={[halfW - pad, -halfH + 0.11, 0.006]}
+          fontSize={0.05}
+          color={theme.accent}
+          anchorX="right"
+          anchorY="middle"
+        >
+          Open →
+        </Text>
       )}
     </group>
   );
@@ -1166,12 +1212,29 @@ function SettingsPanel({
 export interface HomeScreenProps {
   onLoad: (url: string, settings: HomeSettings) => void;
   loading: boolean;
+  /** Open tabs — rendered as the in-world 3D tab switcher. */
+  tabs?: Tab[];
+  activeTabId?: string;
+  onSwitchTab?: (id: string) => void;
+  onCloseTab?: (id: string) => void;
+  onNewTab?: () => void;
 }
 
-export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
+export function HomeScreen({
+  onLoad,
+  loading,
+  tabs,
+  activeTabId,
+  onSwitchTab,
+  onCloseTab,
+  onNewTab,
+}: HomeScreenProps) {
   const [inputValue, setInputValue] = useState("");
   const [settings, setSettings] = useState<HomeSettings>(loadStoredSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
+  // Hidden HTML input that captures keystrokes for the in-world search field.
+  const hiddenInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     try {
@@ -1204,7 +1267,7 @@ export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
     >
       {/* 3D Scene */}
       <Canvas
-        camera={{ position: [0, 1.5, 2.8], fov: 65, near: 0.01, far: 200 }}
+        camera={{ position: [0, 1.5, 2.8], fov: 65, near: 0.3, far: 200 }}
         gl={{ antialias: true }}
         style={{ position: "absolute", inset: 0 }}
       >
@@ -1247,127 +1310,80 @@ export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
               theme={theme}
             />
           ))}
+
+          {/* ── In-world chrome: search, settings, tab switcher ──── */}
+          <XR3DSearchBar
+            value={inputValue}
+            focused={searchFocused}
+            loading={loading}
+            onFocusField={() => hiddenInputRef.current?.focus()}
+            onSubmit={handleSubmit}
+            width={1.3}
+            position={[-0.12, 1.02, 0.6]}
+            tiltX={0.16}
+          />
+          {/* Compact gear button, right of the search field */}
+          <group position={[0.78, 1.02, 0.6]} rotation={[0.16, 0, 0]}>
+            <XR3DButton
+              width={0.15}
+              height={0.15}
+              label="⚙"
+              fontSize={0.07}
+              active={settingsOpen}
+              onClick={() => setSettingsOpen((o) => !o)}
+            />
+          </group>
+          {tabs && activeTabId && onSwitchTab && onCloseTab && onNewTab && (
+            <XR3DTabBar
+              tabs={tabs}
+              activeTabId={activeTabId}
+              onSwitch={onSwitchTab}
+              onClose={onCloseTab}
+              onNewTab={onNewTab}
+              position={[0, 0.6, 0.55]}
+              tiltX={0.34}
+            />
+          )}
         </Suspense>
 
+        {/* Rotation disabled — the scene stays fixed so the in-world chrome
+            keeps a stable position in front of the user. */}
         <OrbitControls
-          target={[0, 1.5, -2.5]}
+          target={[0, 1.4, -2.5]}
           enablePan={false}
           enableZoom={false}
-          autoRotate
-          autoRotateSpeed={0.25}
-          maxPolarAngle={Math.PI * 0.58}
-          minPolarAngle={Math.PI * 0.38}
+          enableRotate={false}
           dampingFactor={0.05}
           enableDamping
         />
       </Canvas>
 
-      {/* Search bar overlay */}
-      <div
+      {/* Hidden input backing the in-world 3D search field. Kept in the DOM
+          (not display:none, so it can hold focus) but visually invisible;
+          clicking the 3D field focuses it and keystrokes flow here. */}
+      <input
+        ref={hiddenInputRef}
+        value={inputValue}
+        onChange={(e) => setInputValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") handleSubmit();
+        }}
+        onFocus={() => setSearchFocused(true)}
+        onBlur={() => setSearchFocused(false)}
+        disabled={loading}
+        aria-label="Enter a URL to explore in 3D"
         style={{
           position: "fixed",
-          bottom: 36,
-          left: "50%",
-          transform: "translateX(-50%)",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "10px 18px",
-          background: "rgba(8, 14, 24, 0.88)",
-          border: `1px solid rgba(${hexToRgb(theme.accent)}, 0.22)`,
-          borderRadius: 28,
-          backdropFilter: "blur(20px)",
-          WebkitBackdropFilter: "blur(20px)",
-          boxShadow: `0 0 40px rgba(${hexToRgb(theme.accent)}, 0.08), 0 4px 24px rgba(0,0,0,0.6)`,
-          width: 480,
-          zIndex: 100,
-          boxSizing: "border-box",
+          bottom: 0,
+          left: 0,
+          width: 1,
+          height: 1,
+          opacity: 0,
+          border: "none",
+          outline: "none",
+          pointerEvents: "none",
         }}
-      >
-        <span
-          style={{
-            color: "#3a7aaa",
-            fontSize: 15,
-            flexShrink: 0,
-            lineHeight: 1,
-          }}
-        >
-          ⊕
-        </span>
-        <input
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") handleSubmit();
-          }}
-          placeholder="Enter a URL to explore in 3D…"
-          disabled={loading}
-          style={{
-            flex: 1,
-            background: "transparent",
-            border: "none",
-            color: theme.textPrimary,
-            fontSize: 14,
-            outline: "none",
-            fontFamily: "system-ui, -apple-system, sans-serif",
-            caretColor: theme.accent,
-            minWidth: 0,
-          }}
-        />
-        <button
-          onClick={handleSubmit}
-          disabled={loading || !inputValue.trim()}
-          style={{
-            padding: "6px 16px",
-            background:
-              loading || !inputValue.trim()
-                ? "rgba(20, 35, 55, 0.5)"
-                : "rgba(15, 35, 65, 0.9)",
-            border: `1px solid rgba(${hexToRgb(theme.accent)}, 0.3)`,
-            color: loading || !inputValue.trim() ? "#3a5a7a" : theme.accent,
-            borderRadius: 16,
-            cursor: loading || !inputValue.trim() ? "not-allowed" : "pointer",
-            fontSize: 13,
-            fontFamily: "system-ui, sans-serif",
-            whiteSpace: "nowrap",
-            transition: "all 0.2s",
-            flexShrink: 0,
-          }}
-        >
-          {loading ? "Loading…" : "Launch →"}
-        </button>
-      </div>
-
-      {/* Settings button */}
-      <button
-        onClick={() => setSettingsOpen((o) => !o)}
-        style={{
-          position: "fixed",
-          bottom: 36,
-          right: settingsOpen ? 376 : 36,
-          padding: "10px 16px",
-          background: settingsOpen
-            ? `rgba(${hexToRgb(theme.accent)}, 0.15)`
-            : "rgba(8, 14, 24, 0.88)",
-          border: `1px solid rgba(${hexToRgb(theme.accent)}, ${settingsOpen ? "0.5" : "0.22"})`,
-          borderRadius: 28,
-          backdropFilter: "blur(20px)",
-          WebkitBackdropFilter: "blur(20px)",
-          color: theme.accent,
-          cursor: "pointer",
-          fontSize: 14,
-          fontFamily: "system-ui, sans-serif",
-          display: "flex",
-          alignItems: "center",
-          gap: 7,
-          zIndex: 100,
-          transition: "right 0.25s, background 0.2s, border-color 0.2s",
-          boxShadow: `0 4px 24px rgba(0,0,0,0.4)`,
-        }}
-      >
-        <span style={{ fontSize: 15 }}>⚙</span>
-        <span>Settings</span>
-      </button>
+      />
 
       {/* Settings panel */}
       {settingsOpen && (

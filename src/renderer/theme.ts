@@ -81,7 +81,10 @@ export const DARK_THEME: XRTheme = {
   bodyCol: "#D8D8D8",
   accentCol: "#0082FB",
   emphasisCol: "#F5F5F5",
-  navBg: "#4B4B4B",
+  // Nav/sidebar surface — kept in the same charcoal family as panelBg (only a
+  // hair lighter) so the TOC/nav panels read as the same material as the main
+  // content panel rather than a distinct, lighter, blue-tinted surface.
+  navBg: "#3A3A3A",
   mediaBg: "#0B0C0F",
   rimHighlight: "#5B9BFF",
   panelEmissive: "#000000",

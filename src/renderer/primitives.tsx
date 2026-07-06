@@ -15,8 +15,12 @@
  * • All geometry is in metres (WebXR coordinate system).
  * • Text is rendered via @react-three/drei <Text> (troika-three-text),
  *   which handles word-wrap and GPU SDF text natively in WebGL/XR.
- * • Panels use <RoundedBox> from drei for soft-edged matte, beveled
- *   card aesthetics that read well in both inline preview and headset.
+ * • Panels use the flat <Surface> primitive (rounded-rect ShapeGeometry) for
+ *   Horizon OS card aesthetics: generous depth-independent corners plus an
+ *   optional MultiGradientUI top-lighter gradient. All panels share one
+ *   monotonic Z-depth ladder + renderOrder scheme (see constants) so
+ *   near-coplanar transparent content never bleeds through under THREE's
+ *   unstable transparent-sort.
  * • Every primitive receives its resolved position/size from LayoutEntry
  *   (not from SpatialPlacement) — the renderer always applies the plan.
  * • Components are intentionally stateless. Interaction state (hover,
@@ -36,8 +40,8 @@
  */
 
 import React, { useRef, useContext, createContext } from "react";
-import { Text, RoundedBox, Html } from "@react-three/drei";
-import { useFrame } from "@react-three/fiber";
+import { Text } from "@react-three/drei";
+import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 
 // ─────────────────────────────────────────────────────────────
@@ -180,54 +184,268 @@ import { useTheme, type XRTheme } from "./theme";
 // so they can be swapped live from a <ThemePanel> — only fixed panel
 // geometry (radii/depths, not colour) belongs here.
 
-// Corner radius — soft rounding matching Horizon OS cards, kept small so
-// panels read as thin flat sheets rather than extruded blocks.
+// Corner radius — soft rounding matching Horizon OS cards.
+//
+// Horizon OS surfaces are Unity Canvas quads: FLAT rounded rectangles whose
+// corner radius is a generous fraction of the surface's shorter edge. The
+// old panels used drei <RoundedBox>, whose radius is a 3D bevel constrained
+// to `< depth / 2`; with PANEL_DEPTH = 0.01 that hard-capped every corner at
+// 5 mm no matter the panel size, so a half-metre panel rounded the same tiny
+// amount as a chip and read as a square block — and "pill" buttons weren't
+// actually pills. Panels now render through <Surface> (a flat rounded-rect
+// ShapeGeometry, see below) whose radius is decoupled from depth, so we can
+// use a Horizon-scale radius. PANEL_RADIUS is kept only as a small floor for
+// the few remaining legacy <RoundedBox> call sites.
 const PANEL_RADIUS = 0.004;
-// PANEL_DEPTH must satisfy: PANEL_DEPTH > 2 * PANEL_RADIUS (drei constraint)
 const PANEL_DEPTH = 0.01;
 
-// RIM border strip on panel edges
-const RIM_DEPTH = 0.0015;
-const RIM_RADIUS = 0.0005; // must be < RIM_DEPTH / 2 = 0.00075
+// Horizon rounds ~1/12 of the shorter edge, clamped to a sane metric range so
+// large content panels don't turn into lozenges and tiny chips still round
+// visibly.
+const CORNER_FRACTION = 1 / 12;
+const CORNER_MIN = 0.006;
+const CORNER_MAX = 0.03;
 
-// ── Z-depth layers & render order ───────────────────────────────────────────
-// Text (troika-three-text) and image planes (meshBasicMaterial transparent)
-// are both transparent materials separated by only millimetre-scale Z gaps —
-// too little for THREE's default transparent-object draw-order sort to
-// reliably resolve, which let body text render behind nearby images despite
-// its Z already being numerically closer to camera in some cases. Named
-// layers centralize the existing Z offsets (no behavior change on their
-// own); explicit renderOrder is what actually fixes the occlusion, forcing
-// text to always draw after (in front of) images regardless of sort
-// instability.
-const Z_LAYER_INLINE_TEXT = 0.002;
-const Z_LAYER_BODY_TEXT = PANEL_DEPTH * 0.6;
-const Z_LAYER_IMAGE = PANEL_DEPTH + 0.004;
-const RENDER_ORDER_IMAGE = 1;
-const RENDER_ORDER_TEXT = 2;
+// ── Z-depth ladder & render order ────────────────────────────────────────────
+// A single monotonic stack of depth bands shared by every primitive. All
+// panels are near-coplanar in XR (millimetre-scale Z gaps), and troika text +
+// transparent image planes rely on THREE's transparent-object sort, which is
+// unstable at those gaps — content bled through panels and through each other.
+// Two rules fix it and MUST be kept in lockstep:
+//   1. Each visual role sits at its own Z band, strictly increasing toward the
+//      viewer: surface fill → accent/stripe → content text → image → overlay.
+//   2. renderOrder increases the same way, so the draw order is deterministic
+//      regardless of camera-distance sort. Never place two different roles at
+//      the same (Z, renderOrder).
+// Bands are expressed as offsets in front of a surface's front face (z = 0 in
+// panel-local space; surfaces themselves are pushed slightly behind via
+// Z_SURFACE).
+const Z_SURFACE = -0.0006; // panel fill sits just behind the content plane
+const Z_SURFACE_RIM = Z_SURFACE - 0.0004; // border peeks out behind the fill
+const Z_LAYER_ACCENT = 0.0008; // accent bars / stripes / selection pills
+const Z_LAYER_INLINE_TEXT = 0.002; // inline prose runs
+const Z_LAYER_BODY_TEXT = 0.0028; // block body text
+const Z_LAYER_IMAGE = 0.0034; // image / poster planes
+const Z_LAYER_OVERLAY_TEXT = 0.0046; // labels/icons drawn on top of imagery
 
-// RoundedBox requires radius < min(w, h, depth) / 2 across ALL three dimensions.
-// Use MIN_DIM as the floor for w/h, and safeRadius() to clamp any per-call radius.
+const RENDER_ORDER_SURFACE = 0;
+const RENDER_ORDER_ACCENT = 1;
+const RENDER_ORDER_IMAGE = 2;
+const RENDER_ORDER_TEXT = 3;
+
+// Flat rounded-rect ShapeGeometry rounds freely, but a degenerate w/h still
+// produces NaN corners — floor both to a small safe minimum.
 const MIN_DIM = PANEL_RADIUS * 2 + 0.001; // 0.025 m — safe floor for w and h
 
-/** Clamp a layout dimension to a safe minimum for RoundedBox. */
+/** Clamp a layout dimension to a safe minimum. */
 function safeDim(v: number): number {
   return Number.isFinite(v) && v > MIN_DIM ? v : MIN_DIM;
 }
 
 /**
- * Compute the largest radius that satisfies the drei RoundedBox constraint
- * radius < min(w, h, depth) / 2 for all three box dimensions.
- * Caps at the requested `desiredRadius` and floors at 0.001.
+ * Horizon-scale corner radius for a flat surface of the given size.
+ * Depth-independent (unlike safeRadius): a fraction of the shorter edge,
+ * clamped, then capped at just under half the shorter edge so a fully-rounded
+ * pill (radius = h/2) is still expressible for short/wide controls.
  */
-function safeRadius(
-  desiredRadius: number,
+function cornerRadius(
   w: number,
   h: number,
-  depth: number,
+  desired = Math.min(w, h) * CORNER_FRACTION,
 ): number {
-  const maxAllowed = Math.min(w, h, depth) / 2 - 0.0001;
-  return Math.max(0.001, Math.min(desiredRadius, maxAllowed));
+  const capped = Math.min(desired, CORNER_MAX, Math.min(w, h) / 2 - 0.0002);
+  return Math.max(CORNER_MIN, Math.min(capped, Math.min(w, h) / 2 - 0.0002));
+}
+
+// ─────────────────────────────────────────────────────────────
+// Surface — flat rounded-rectangle Horizon card
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Build a flat rounded-rectangle THREE.Shape centred at the origin.
+ * Corner radius rounds freely (no coupling to any extrusion depth), which is
+ * what lets Horizon-scale corners exist at all — see the PANEL_RADIUS note.
+ */
+function roundedRectShape(w: number, h: number, r: number): THREE.Shape {
+  const s = new THREE.Shape();
+  const x = -w / 2;
+  const y = -h / 2;
+  const rr = Math.max(0.0001, Math.min(r, w / 2 - 0.0001, h / 2 - 0.0001));
+  s.moveTo(x + rr, y);
+  s.lineTo(x + w - rr, y);
+  s.quadraticCurveTo(x + w, y, x + w, y + rr);
+  s.lineTo(x + w, y + h - rr);
+  s.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+  s.lineTo(x + rr, y + h);
+  s.quadraticCurveTo(x, y + h, x, y + h - rr);
+  s.lineTo(x, y + rr);
+  s.quadraticCurveTo(x, y, x + rr, y);
+  return s;
+}
+
+/**
+ * Rounded-rect ShapeGeometry with an optional baked vertical gradient
+ * (Horizon's MultiGradientUI look — top edge a touch lighter than the body).
+ *
+ * The gradient is baked into per-vertex colours so it costs no extra draw
+ * call and works with troika/standard materials via `vertexColors`. When no
+ * gradient is requested the geometry carries no colour attribute and the
+ * material's flat `color` shows through unchanged.
+ */
+function useSurfaceGeometry(
+  w: number,
+  h: number,
+  r: number,
+  topColor?: string,
+  bottomColor?: string,
+): THREE.ShapeGeometry {
+  return React.useMemo(() => {
+    const geo = new THREE.ShapeGeometry(roundedRectShape(w, h, r), 12);
+    if (topColor && bottomColor) {
+      const top = new THREE.Color(topColor);
+      const bot = new THREE.Color(bottomColor);
+      const pos = geo.attributes.position;
+      const colors = new Float32Array(pos.count * 3);
+      const c = new THREE.Color();
+      for (let i = 0; i < pos.count; i++) {
+        // y runs -h/2 (bottom) → +h/2 (top); t = 0 at bottom, 1 at top.
+        const t = (pos.getY(i) + h / 2) / h;
+        c.copy(bot).lerp(top, THREE.MathUtils.clamp(t, 0, 1));
+        colors[i * 3] = c.r;
+        colors[i * 3 + 1] = c.g;
+        colors[i * 3 + 2] = c.b;
+      }
+      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    }
+    geo.computeBoundingSphere();
+    return geo;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [w, h, r, topColor, bottomColor]);
+}
+
+/** Lighten a hex colour in HSL space — used to derive a gradient's top stop. */
+function liftColor(hex: string, amount = 0.05): string {
+  const c = new THREE.Color(hex);
+  c.offsetHSL(0, 0, amount);
+  return `#${c.getHexString()}`;
+}
+
+export interface SurfaceProps {
+  /** Panel width/height in metres (already safeDim'd by the caller). */
+  width: number;
+  height: number;
+  /** Corner radius; defaults to the Horizon-scale cornerRadius(w, h). */
+  radius?: number;
+  /** Flat fill colour (also the gradient's bottom stop when a gradient is on). */
+  color: string;
+  /** Explicit gradient top stop — enables the MultiGradientUI look. */
+  topColor?: string;
+  /** Convenience: derive a subtle lighter top stop from `color` automatically. */
+  gradient?: boolean;
+  opacity?: number;
+  roughness?: number;
+  metalness?: number;
+  /**
+   * Render the fill unlit (meshBasicMaterial) so it shows exactly its colour
+   * regardless of scene lighting — a truly flat UI-canvas look. Used for
+   * buttons/controls that should read as flat solid chips rather than
+   * light-shaded cards. roughness/metalness are ignored when set.
+   */
+  flat?: boolean;
+  /** Thin outline drawn just behind the fill. */
+  rimColor?: string;
+  rimOpacity?: number;
+  /**
+   * Front-face Z of the fill in panel-local space. Defaults to Z_SURFACE so
+   * the fill sits just behind the content plane (z = 0). Callers on the depth
+   * ladder should not need to override this.
+   */
+  z?: number;
+  /**
+   * Group origin. Panels are laid out top-left, so the default places the
+   * centred geometry at [w/2, -h/2] — matching the old <RoundedBox> call
+   * sites this replaces. Pass a custom origin for centred controls.
+   */
+  origin?: [number, number];
+  clips?: THREE.Plane[];
+}
+
+/**
+ * The canonical Horizon OS card surface: a flat, generously-rounded quad with
+ * an optional top-lighter gradient and hairline rim, placed on the shared
+ * depth ladder. Replaces the per-primitive <RoundedBox> + material stacks so
+ * every panel rounds, gradients, and z-orders identically.
+ */
+export function Surface({
+  width,
+  height,
+  radius,
+  color,
+  topColor,
+  gradient = false,
+  opacity = 1,
+  roughness = 0.9,
+  metalness = 0,
+  flat = false,
+  rimColor,
+  rimOpacity = 0.9,
+  z = Z_SURFACE,
+  origin,
+  clips,
+}: SurfaceProps) {
+  const w = safeDim(width);
+  const h = safeDim(height);
+  const r = radius ?? cornerRadius(w, h);
+  const ox = origin ? origin[0] : w / 2;
+  const oy = origin ? origin[1] : -h / 2;
+  const resolvedTop = topColor ?? (gradient ? liftColor(color) : undefined);
+  const fillGeo = useSurfaceGeometry(w, h, r, resolvedTop, color);
+  const rimGeo = useSurfaceGeometry(w, h, r);
+
+  return (
+    <group position={[ox, oy, 0]}>
+      {rimColor && (
+        <mesh
+          geometry={rimGeo}
+          position={[0, 0, z + Z_SURFACE_RIM - Z_SURFACE]}
+          scale={[
+            (w + 0.0025) / w,
+            (h + 0.0025) / h,
+            1,
+          ]}
+          renderOrder={RENDER_ORDER_SURFACE}
+        >
+          <meshBasicMaterial
+            color={rimColor}
+            transparent
+            opacity={rimOpacity}
+            clippingPlanes={clips}
+          />
+        </mesh>
+      )}
+      <mesh geometry={fillGeo} position={[0, 0, z]} renderOrder={RENDER_ORDER_SURFACE}>
+        {flat ? (
+          <meshBasicMaterial
+            color={resolvedTop ? "#ffffff" : color}
+            vertexColors={!!resolvedTop}
+            transparent={opacity < 1}
+            opacity={opacity}
+            clippingPlanes={clips}
+          />
+        ) : (
+          <meshStandardMaterial
+            color={resolvedTop ? "#ffffff" : color}
+            vertexColors={!!resolvedTop}
+            transparent={opacity < 1}
+            opacity={opacity}
+            roughness={roughness}
+            metalness={metalness}
+            clippingPlanes={clips}
+          />
+        )}
+      </mesh>
+    </group>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -782,20 +1000,9 @@ export function XRParagraphMesh({
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Backing panel — matte beveled card */}
+      {/* Backing panel — flat Horizon card with a subtle top-lighter gradient */}
       {!skipPanel && (
-        <RoundedBox
-          args={[w, h, PANEL_DEPTH]}
-          radius={PANEL_RADIUS}
-          position={[w / 2, -h / 2, -PANEL_DEPTH / 2]}
-        >
-          <meshStandardMaterial
-            color={theme.panelBg}
-            roughness={0.85}
-            metalness={0}
-            clippingPlanes={clips}
-          />
-        </RoundedBox>
+        <Surface width={w} height={h} color={theme.panelBg} gradient clips={clips} />
       )}
 
       {/* Body text - only render content directly if no text children */}
@@ -907,22 +1114,11 @@ export function XRSectionMesh({
           identical 4-layer glass slabs at nearly the same Z depth, reading
           as a solid "brick" when viewed edge-on. One flat layer per section
           keeps nested containers visually quiet and avoids that compounding. */}
-      <RoundedBox
-        args={[w, h, PANEL_DEPTH]}
-        radius={PANEL_RADIUS}
-        position={[w / 2, -h / 2, -PANEL_DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={theme.panelBg}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      <Surface width={w} height={h} color={theme.panelBg} clips={clips} />
 
       {/* "Continued from previous page" top edge indicator */}
       {isContinuation && (
-        <mesh position={[w / 2, -0.001, 0.002]}>
+        <mesh position={[w / 2, -0.001, Z_LAYER_ACCENT]} renderOrder={RENDER_ORDER_ACCENT}>
           <planeGeometry args={[w * 0.4, 0.003]} />
           <meshBasicMaterial
             color={theme.accentCol}
@@ -946,6 +1142,301 @@ export interface XRNavigationMeshProps {
   primitive: XRNavigationBar;
   entry: LayoutEntry;
   onNavigate?: (href: string) => void;
+}
+
+interface TOCPanelProps {
+  items: XRLink[];
+  w: number;
+  h: number;
+  pos: THREE.Vector3;
+  rot: THREE.Euler;
+  label: string;
+  clips: THREE.Plane[];
+  onNavigate?: (href: string) => void;
+}
+
+/**
+ * Scrollable vertical table-of-contents panel.
+ *
+ * The item list can exceed the panel height, so items live in a group whose Y
+ * is driven by a `scroll` offset and are clipped to a fixed viewport region
+ * below the header via world-space horizontal clip planes. Scrolling is driven
+ * by wheel input in the inline preview; the same setScroll is where an XR
+ * controller thumbstick would hook in. A thin scrollbar on the right edge
+ * signals position and only appears when the content actually overflows.
+ *
+ * The clip planes are world-space horizontal (normal along Y). This stays
+ * correct while the panel is only yawed to face the user (a Y-axis rotation
+ * leaves world-Y aligned with the panel's vertical axis); a pitched/rolled
+ * panel would need panel-local planes instead.
+ */
+function TOCPanel({
+  items,
+  w,
+  h,
+  pos,
+  rot,
+  label,
+  clips,
+  onNavigate,
+}: TOCPanelProps) {
+  const theme = useTheme();
+
+  const ITEM_H = 0.052;
+  const ITEM_GAP = 0.006;
+  const INDENT_STEP = 0.018; // metres per depth level
+  const PADDING = 0.014;
+  const HEADER_H = PADDING * 3; // label band above the scroll viewport
+  const BOTTOM_PAD = PADDING;
+
+  const step = ITEM_H + ITEM_GAP;
+  const contentTop = -HEADER_H; // local Y of the scroll viewport's top edge
+  const visibleH = Math.max(step, h - HEADER_H - BOTTOM_PAD);
+  const totalH = items.length * step;
+  const maxScroll = Math.max(0, totalH - visibleH);
+  const scrollable = maxScroll > 1e-6;
+
+  const [scroll, setScroll] = React.useState(0);
+  // Re-clamp if the content or viewport size changes out from under us.
+  React.useEffect(() => {
+    setScroll((s) => THREE.MathUtils.clamp(s, 0, maxScroll));
+  }, [maxScroll]);
+
+  // Clip planes bounding the scroll viewport (header bottom → panel bottom).
+  //
+  // They MUST be derived from the panel's real world transform, which is NOT
+  // available as `pos` here: this mesh receives a zeroedEntry() (pos = rot = 0)
+  // while an outer <AtPos> applies the true world position/rotation. So instead
+  // of hardcoding a world Y, we keep two stable Plane instances, define them in
+  // the panel's LOCAL frame, and re-project them through the group's
+  // matrixWorld every frame (mutated in place — troika/standard materials
+  // already hold these instances, so they pick up the update with no
+  // re-render). This is also correct under arbitrary yaw/pitch.
+  const groupRef = React.useRef<THREE.Group>(null);
+  const clipPlanes = React.useMemo(
+    () => [
+      new THREE.Plane(new THREE.Vector3(0, -1, 0), 0), // keep y ≤ viewport top
+      new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), // keep y ≥ viewport bottom
+    ],
+    [],
+  );
+  const itemClips = React.useMemo(
+    () => [...clips, ...clipPlanes],
+    [clips, clipPlanes],
+  );
+  // Local-frame viewport bounds (fixed; items scroll within this band).
+  const topLocalY = contentTop;
+  const bottomLocalY = -(h - BOTTOM_PAD);
+  useFrame(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    // Force the world matrix current regardless of where useFrame sits relative
+    // to the renderer's own matrix update (matters in the XR animation loop and
+    // on the very first frame).
+    g.updateWorldMatrix(true, false);
+    const m = g.matrixWorld;
+    clipPlanes[0].set(new THREE.Vector3(0, -1, 0), topLocalY);
+    clipPlanes[0].applyMatrix4(m);
+    clipPlanes[1].set(new THREE.Vector3(0, 1, 0), -bottomLocalY);
+    clipPlanes[1].applyMatrix4(m);
+  });
+
+  const handleWheel = React.useCallback(
+    (e: { deltaY: number; stopPropagation: () => void }) => {
+      if (!scrollable) return;
+      e.stopPropagation();
+      setScroll((s) =>
+        THREE.MathUtils.clamp(s + e.deltaY * 0.0002, 0, maxScroll),
+      );
+    },
+    [scrollable, maxScroll],
+  );
+
+  // Drag-to-scroll: press and drag the panel up/down. Works with a mouse in
+  // the flat preview AND an XR controller ray (both surface as R3F pointer
+  // events), so it's the primary, discoverable scroll gesture — the wheel is a
+  // convenience on top. Grab-style: content follows the pointer (drag down →
+  // earlier items). Screen-Y based, so the factor is approximate and tuned for
+  // a panel at typical reading distance.
+  const { gl } = useThree();
+  const dragging = React.useRef(false);
+  const lastPointerY = React.useRef(0);
+  // Set once a drag actually moves, so the item under the pointer can suppress
+  // its click on release (drag-to-scroll must not also navigate).
+  const didDrag = React.useRef(false);
+
+  const handleDragStart = React.useCallback(
+    (e: any) => {
+      if (!scrollable) return;
+      e.stopPropagation();
+      dragging.current = true;
+      didDrag.current = false;
+      lastPointerY.current = e.clientY ?? e.nativeEvent?.clientY ?? 0;
+      gl.domElement.setPointerCapture?.(e.pointerId);
+    },
+    [scrollable, gl],
+  );
+  const handleDragMove = React.useCallback(
+    (e: any) => {
+      if (!dragging.current) return;
+      const y = e.clientY ?? e.nativeEvent?.clientY ?? 0;
+      const dy = y - lastPointerY.current;
+      if (Math.abs(dy) > 1) didDrag.current = true;
+      lastPointerY.current = y;
+      setScroll((s) => THREE.MathUtils.clamp(s - dy * 0.0016, 0, maxScroll));
+    },
+    [maxScroll],
+  );
+  const handleDragEnd = React.useCallback(
+    (e: any) => {
+      dragging.current = false;
+      gl.domElement.releasePointerCapture?.(e.pointerId);
+    },
+    [gl],
+  );
+
+  // Scrollbar geometry.
+  const trackX = w - PADDING * 0.45;
+  const thumbH = Math.max(0.02, visibleH * (visibleH / Math.max(totalH, visibleH)));
+  const thumbTravel = visibleH - thumbH;
+  const thumbTop =
+    contentTop - (maxScroll > 0 ? (scroll / maxScroll) * thumbTravel : 0);
+
+  return (
+    <group ref={groupRef} position={pos} rotation={rot}>
+      {/* Panel backing — uses panelBg (identical to the XRContentPanel) so the
+          TOC/nav reads as the same panel material as the main content, not a
+          distinct surface. navBg is reserved for the small item chips. */}
+      <Surface width={w} height={h} color={theme.panelBg} clips={clips} />
+
+      {/* Panel label (fixed header, not scrolled) */}
+      <ClippedText
+        anchorX="left"
+        anchorY="top"
+        position={[PADDING, -PADDING, Z_LAYER_BODY_TEXT]}
+        fontSize={0.014}
+        color={theme.bodyCol}
+        fontWeight="700"
+        letterSpacing={0.08}
+      >
+        {label.toUpperCase()}
+      </ClippedText>
+
+      {/* Transparent scroll-capture surface over the viewport. Sits in front
+          of the backing but behind the item rows, so item clicks still win for
+          navigation while wheel + drag events (which the rows don't handle)
+          fall through to here. */}
+      <mesh
+        position={[w / 2, contentTop - visibleH / 2, Z_LAYER_ACCENT]}
+        onWheel={handleWheel as any}
+        onPointerDown={handleDragStart}
+        onPointerMove={handleDragMove}
+        onPointerUp={handleDragEnd}
+        onPointerLeave={handleDragEnd}
+      >
+        <planeGeometry args={[w, visibleH]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+
+      {/* Scrolling item rows, clipped to the viewport */}
+      <ClipPlanesContext.Provider value={itemClips}>
+        <group position={[0, scroll, 0]}>
+          {items.map((item, i) => {
+            const itemY = contentTop - i * step;
+            const indent = PADDING + (item.depth ?? 0) * INDENT_STEP;
+            const isCurrent = item.isCurrent;
+            const itemW = w - indent - PADDING;
+
+            return (
+              <group
+                key={item.id}
+                position={[indent, itemY, Z_LAYER_INLINE_TEXT]}
+                onClick={() => {
+                  // Suppress navigation if this "click" was the end of a drag.
+                  if (didDrag.current) {
+                    didDrag.current = false;
+                    return;
+                  }
+                  if (item.href) onNavigate?.(item.href);
+                }}
+              >
+                {/* Hit-area plane for easier pointing */}
+                <mesh position={[itemW / 2, -ITEM_H / 2, 0.0005]}>
+                  <planeGeometry args={[itemW, ITEM_H]} />
+                  <meshBasicMaterial
+                    transparent
+                    opacity={0}
+                    depthWrite={false}
+                    clippingPlanes={itemClips}
+                  />
+                </mesh>
+
+                {/* Selected-row highlight — solid, high-contrast rounded pill. */}
+                {isCurrent && (
+                  <Surface
+                    width={itemW + PADDING * 0.6}
+                    height={ITEM_H * 0.92}
+                    radius={cornerRadius(
+                      itemW + PADDING * 0.6,
+                      ITEM_H * 0.92,
+                      (ITEM_H * 0.92) / 2,
+                    )}
+                    color={theme.emphasisCol}
+                    origin={[itemW / 2 - PADDING * 0.3, -ITEM_H / 2]}
+                    clips={itemClips}
+                  />
+                )}
+                <ClippedText
+                  anchorX="left"
+                  anchorY="top"
+                  position={[0, 0, 0.002]}
+                  fontSize={item.depth === 0 ? 0.022 : 0.018}
+                  color={
+                    isCurrent
+                      ? theme.panelBg
+                      : item.depth === 0
+                        ? theme.headingCol
+                        : theme.bodyCol
+                  }
+                  fontWeight={
+                    isCurrent ? "700" : item.depth === 0 ? "600" : "400"
+                  }
+                  maxWidth={itemW}
+                  lineHeight={1.3}
+                >
+                  {item.label ?? ""}
+                </ClippedText>
+              </group>
+            );
+          })}
+        </group>
+      </ClipPlanesContext.Provider>
+
+      {/* Scrollbar (only when content overflows) */}
+      {scrollable && (
+        <group>
+          <mesh position={[trackX, contentTop - visibleH / 2, Z_LAYER_ACCENT]}>
+            <planeGeometry args={[0.004, visibleH]} />
+            <meshBasicMaterial
+              color={theme.panelRim}
+              transparent
+              opacity={0.4}
+            />
+          </mesh>
+          <mesh
+            position={[trackX, thumbTop - thumbH / 2, Z_LAYER_BODY_TEXT]}
+          >
+            <planeGeometry args={[0.004, thumbH]} />
+            <meshBasicMaterial
+              color={theme.mutedTextCol}
+              transparent
+              opacity={0.9}
+            />
+          </mesh>
+        </group>
+      )}
+    </group>
+  );
 }
 
 /**
@@ -972,107 +1463,19 @@ export function XRNavigationMesh({
 
   const isTOC = h > w;
 
-  // ── Vertical TOC layout ──────────────────────────────────────────────────
+  // ── Vertical TOC layout — scrollable container ────────────────────────────
   if (isTOC) {
-    const ITEM_H = 0.052;
-    const ITEM_GAP = 0.006;
-    const INDENT_STEP = 0.018; // metres per depth level
-    const PADDING = 0.014;
-
     return (
-      <group position={pos} rotation={rot}>
-        {/* Panel backing — matte beveled card */}
-        <RoundedBox
-          args={[w, h, PANEL_DEPTH]}
-          radius={PANEL_RADIUS}
-          position={[w / 2, -h / 2, -PANEL_DEPTH / 2]}
-        >
-          <meshStandardMaterial
-            color={theme.navBg}
-            roughness={0.85}
-            metalness={0}
-            clippingPlanes={clips}
-          />
-        </RoundedBox>
-
-        {/* Panel label */}
-        <ClippedText
-          anchorX="left"
-          anchorY="top"
-          position={[PADDING, -PADDING, PANEL_DEPTH]}
-          fontSize={0.014}
-          color={theme.bodyCol}
-          fontWeight="700"
-          letterSpacing={0.08}
-        >
-          {(primitive.label ?? "Contents").toUpperCase()}
-        </ClippedText>
-
-        {/* TOC items — vertical stack */}
-        {items.map((item, i) => {
-          const itemY = -(PADDING * 3 + i * (ITEM_H + ITEM_GAP));
-          const indent = PADDING + (item.depth ?? 0) * INDENT_STEP;
-          const isCurrent = item.isCurrent;
-          const itemW = w - indent - PADDING;
-
-          return (
-            <group
-              key={item.id}
-              position={[indent, itemY, PANEL_DEPTH * 0.5]}
-              onClick={() => {
-                if (item.href) onNavigate?.(item.href);
-              }}
-            >
-              {/* Hit-area plane for easier pointing */}
-              <mesh position={[itemW / 2, -ITEM_H / 2, -0.001]}>
-                <planeGeometry args={[itemW, ITEM_H]} />
-                <meshBasicMaterial
-                  transparent
-                  opacity={0}
-                  clippingPlanes={clips}
-                />
-              </mesh>
-
-              {/* Selected-row highlight — solid, high-contrast rounded pill.
-                  Matches the Horizon UI Set's "Select" menu-item state (as
-                  opposed to its lighter Default/Hover/Pressed states): a
-                  filled dark pill with light text, not just a subtle tint. */}
-              {isCurrent && (
-                <RoundedBox
-                  args={[itemW + PADDING * 0.6, ITEM_H * 0.92, PANEL_DEPTH * 0.3]}
-                  radius={safeRadius(0.01, itemW + PADDING * 0.6, ITEM_H * 0.92, PANEL_DEPTH * 0.3)}
-                  position={[itemW / 2 - PADDING * 0.3, -ITEM_H / 2, -0.001]}
-                >
-                  <meshStandardMaterial
-                    color={theme.emphasisCol}
-                    roughness={0.85}
-                    metalness={0}
-                    clippingPlanes={clips}
-                  />
-                </RoundedBox>
-              )}
-              <ClippedText
-                anchorX="left"
-                anchorY="top"
-                position={[0, 0, 0.002]}
-                fontSize={item.depth === 0 ? 0.022 : 0.018}
-                color={
-                  isCurrent
-                    ? theme.panelBg
-                    : item.depth === 0
-                      ? theme.headingCol
-                      : theme.bodyCol
-                }
-                fontWeight={isCurrent ? "700" : item.depth === 0 ? "600" : "400"}
-                maxWidth={itemW}
-                lineHeight={1.3}
-              >
-                {item.label ?? ""}
-              </ClippedText>
-            </group>
-          );
-        })}
-      </group>
+      <TOCPanel
+        items={items}
+        w={w}
+        h={h}
+        pos={pos}
+        rot={rot}
+        label={primitive.label ?? "Contents"}
+        clips={clips}
+        onNavigate={onNavigate}
+      />
     );
   }
 
@@ -1095,19 +1498,9 @@ export function XRNavigationMesh({
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Nav panel backing — matte beveled card */}
-      <RoundedBox
-        args={[w, h, PANEL_DEPTH]}
-        radius={PANEL_RADIUS}
-        position={[w / 2, -h / 2, -PANEL_DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={theme.navBg}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      {/* Nav panel backing — uses panelBg so it matches the XRContentPanel
+          material (navBg stays for the item chips). */}
+      <Surface width={w} height={h} color={theme.panelBg} clips={clips} />
 
       {/* Nav chips */}
       {items.map((item, i) => {
@@ -1121,7 +1514,6 @@ export function XRNavigationMesh({
             ? entry.curveRadius * (1 - Math.cos(chipAngle))
             : 0;
         const isCurrent = item.isCurrent;
-        const chipDepth = 0.01;
 
         return (
           <group
@@ -1129,45 +1521,29 @@ export function XRNavigationMesh({
             position={[chipX, -h / 2, chipZ + PANEL_DEPTH * 0.5]}
             rotation={[0, -chipAngle, 0]}
           >
-            {/* Chip body — pill shape. Current/active chip uses the same
+            {/* Chip body — flat pill. Current/active chip uses the same
                 monochrome "Primary Button" treatment as XRButtonMesh (solid
                 emphasisCol fill, panelBg text) — the Horizon UI Set reserves
                 colour (blue/red) for links and destructive actions, not
-                general primary controls. */}
-            <RoundedBox
-              args={[chipW, CHIP_H, chipDepth]}
-              radius={safeRadius(CHIP_H / 2, chipW, CHIP_H, chipDepth)}
-            >
-              <meshStandardMaterial
-                color={isCurrent ? theme.emphasisCol : theme.navBg}
-                transparent
-                opacity={isCurrent ? 0.98 : 0.95}
-                roughness={isCurrent ? 0.35 : 0.6}
-                metalness={0}
-                clippingPlanes={clips}
-              />
-            </RoundedBox>
-
-            {/* Chip border — grey rim for inactive */}
-            {!isCurrent && (
-              <RoundedBox
-                args={[chipW + 0.001, CHIP_H + 0.001, chipDepth * 0.3]}
-                radius={safeRadius(CHIP_H / 2, chipW + 0.001, CHIP_H + 0.001, chipDepth * 0.3)}
-                position={[0, 0, -chipDepth * 0.4]}
-              >
-                <meshBasicMaterial
-                  color={theme.panelRim}
-                  transparent
-                  opacity={0.8}
-                  clippingPlanes={clips}
-                />
-              </RoundedBox>
-            )}
+                general primary controls. Inactive chips get a hairline rim. */}
+            <Surface
+              width={chipW}
+              height={CHIP_H}
+              radius={cornerRadius(chipW, CHIP_H, CHIP_H / 2)}
+              color={isCurrent ? theme.emphasisCol : theme.navBg}
+              gradient={!isCurrent}
+              opacity={isCurrent ? 1 : 0.96}
+              roughness={isCurrent ? 0.4 : 0.7}
+              rimColor={!isCurrent ? theme.panelRim : undefined}
+              rimOpacity={0.8}
+              origin={[0, 0]}
+              clips={clips}
+            />
 
             <ClippedText
               anchorX="center"
               anchorY="middle"
-              position={[0, 0, chipDepth / 2 + 0.002]}
+              position={[0, 0, Z_LAYER_BODY_TEXT]}
               fontSize={0.018}
               color={isCurrent ? theme.panelBg : theme.bodyCol}
               maxWidth={chipW - 0.016}
@@ -1249,25 +1625,14 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Backing panel — matte beveled card */}
-      <RoundedBox
-        args={[w, h, PANEL_DEPTH]}
-        radius={PANEL_RADIUS}
-        position={[w / 2, -h / 2, -PANEL_DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={theme.mediaBg}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      {/* Backing panel — flat Horizon card (kept dark behind media) */}
+      <Surface width={w} height={h} color={theme.mediaBg} clips={clips} />
 
       {/* Poster thumbnail — sits between the backing panel and the icon
           overlay so the play/audio icon still reads on top of it. */}
       {posterTexture && (
         <mesh
-          position={[w / 2, -h / 2, PANEL_DEPTH * 0.5]}
+          position={[w / 2, -h / 2, Z_LAYER_IMAGE]}
           renderOrder={RENDER_ORDER_IMAGE}
         >
           <planeGeometry args={[w, h]} />
@@ -1280,7 +1645,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
       )}
 
       {/* Play / audio icon */}
-      <group position={[w / 2, -h / 2, PANEL_DEPTH]}>
+      <group position={[w / 2, -h / 2, Z_LAYER_OVERLAY_TEXT]}>
         {isAudio ? (
           <>
             {[-0.012, 0, 0.012].map((xOff, i) => (
@@ -1313,7 +1678,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
         <ClippedText
           anchorX="center"
           anchorY="top"
-          position={[w / 2, -h + 0.03, PANEL_DEPTH * 2]}
+          position={[w / 2, -h + 0.03, Z_LAYER_OVERLAY_TEXT]}
           renderOrder={RENDER_ORDER_TEXT}
           fontSize={0.02}
           color={theme.bodyCol}
@@ -1390,30 +1755,16 @@ export function XRCodeBlockMesh({
 
   return (
     <group position={pos} rotation={rot}>
-      <RoundedBox
-        args={[w, h, PANEL_DEPTH]}
-        radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH)}
-        position={[w / 2, -h / 2, -PANEL_DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={CODE_BG}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
-
-      {/* Card border */}
-      <RoundedBox
-        args={[w, h, RIM_DEPTH]}
-        radius={safeRadius(RIM_RADIUS, w, h, RIM_DEPTH)}
-        position={[w / 2, -h / 2, -PANEL_DEPTH - RIM_DEPTH / 2]}
-      >
-        <meshBasicMaterial color={theme.panelRim} transparent opacity={0.9} clippingPlanes={clips} />
-      </RoundedBox>
+      <Surface
+        width={w}
+        height={h}
+        color={CODE_BG}
+        rimColor={theme.panelRim}
+        clips={clips}
+      />
 
       {/* Left accent stripe */}
-      <mesh position={[0.005, -h / 2, PANEL_DEPTH / 2 - 0.001]}>
+      <mesh position={[0.005, -h / 2, Z_LAYER_ACCENT]} renderOrder={RENDER_ORDER_ACCENT}>
         <planeGeometry args={[0.007, h * 0.85]} />
         <meshBasicMaterial
           color={CODE_COL}
@@ -1497,30 +1848,17 @@ export function XRBlockQuoteMesh({
 
   return (
     <group position={pos} rotation={rot}>
-      <RoundedBox
-        args={[w, h, PANEL_DEPTH]}
-        radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH)}
-        position={[w / 2, -h / 2, -PANEL_DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={theme.panelBg}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
-
-      {/* Card border */}
-      <RoundedBox
-        args={[w, h, RIM_DEPTH]}
-        radius={safeRadius(RIM_RADIUS, w, h, RIM_DEPTH)}
-        position={[w / 2, -h / 2, -PANEL_DEPTH - RIM_DEPTH / 2]}
-      >
-        <meshBasicMaterial color={theme.panelRim} transparent opacity={0.9} clippingPlanes={clips} />
-      </RoundedBox>
+      <Surface
+        width={w}
+        height={h}
+        color={theme.panelBg}
+        gradient
+        rimColor={theme.panelRim}
+        clips={clips}
+      />
 
       {/* Left quote accent bar */}
-      <mesh position={[0.006, -h / 2, PANEL_DEPTH / 2 - 0.001]}>
+      <mesh position={[0.006, -h / 2, Z_LAYER_ACCENT]} renderOrder={RENDER_ORDER_ACCENT}>
         <planeGeometry args={[0.01, h * 0.8]} />
         <meshBasicMaterial
           color={QUOTE_ACCENT}
@@ -1755,18 +2093,7 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
 
   return (
     <group position={pos} rotation={rot}>
-      <RoundedBox
-        args={[w, h, PANEL_DEPTH]}
-        radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH)}
-        position={[w / 2, -h / 2, -PANEL_DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={IMG_BG}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      <Surface width={w} height={h} color={IMG_BG} clips={clips} />
 
       {/* Mesh only mounts once the texture is ready: creating it earlier
           with map=undefined bakes a shader program compiled without the
@@ -1796,7 +2123,7 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
         <ClippedText
           anchorX="center"
           anchorY="bottom"
-          position={[w / 2, -h + 0.02, PANEL_DEPTH + 0.008]}
+          position={[w / 2, -h + 0.02, Z_LAYER_OVERLAY_TEXT]}
           renderOrder={RENDER_ORDER_TEXT}
           fontSize={0.016}
           color={theme.bodyCol}
@@ -1908,18 +2235,13 @@ export function XRListItemMesh({
   return (
     <group position={pos} rotation={rot}>
       <ClipPlanesContext.Provider value={clips}>
-      <RoundedBox
-        args={[w, h, PANEL_DEPTH * 1.5]}
-        radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH * 1.5)}
-        position={[w / 2, -h / 2, -PANEL_DEPTH * 0.75]}
-      >
-        <meshStandardMaterial
-          color={theme.listItemBg}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      <Surface
+        width={w}
+        height={h}
+        color={theme.listItemBg}
+        gradient
+        clips={clips}
+      />
 
       {/* Plain-text list items (no child elements): label rendered below accent band. */}
       {displayText && (
@@ -1992,7 +2314,6 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
   const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
-  const BTN_DEPTH = 0.016;
   const isDisabled = primitive.state?.disabled;
 
   // Read label text from the synthetic child when available (added by
@@ -2011,30 +2332,24 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
   // white/light pill with dark content; blue/red are reserved for links and
   // destructive actions respectively, not general primary controls.
   const btnColor = isDisabled ? theme.disabledBg : theme.emphasisCol;
-  const pillRadius = safeRadius(h / 2, w, h, BTN_DEPTH);
 
   return (
     <group ref={ref} position={pos} rotation={rot} {...handlers}>
-      {/* Pill body */}
-      <RoundedBox
-        args={[w, h, BTN_DEPTH]}
-        radius={pillRadius}
-        position={[w / 2, -h / 2, 0]}
-      >
-        <meshStandardMaterial
-          color={btnColor}
-          transparent
-          opacity={isDisabled ? 0.6 : 0.98}
-          roughness={0.35}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      {/* Pill body — flat, unlit, fully-rounded Horizon primary button */}
+      <Surface
+        width={w}
+        height={h}
+        radius={cornerRadius(w, h, h / 2)}
+        color={btnColor}
+        opacity={isDisabled ? 0.6 : 1}
+        flat
+        clips={clips}
+      />
 
       <ClippedText
         anchorX="center"
         anchorY="middle"
-        position={[w / 2, -h / 2, BTN_DEPTH + 0.002]}
+        position={[w / 2, -h / 2, Z_LAYER_BODY_TEXT]}
         fontSize={metrics.button.font.fontSize}
         color={isDisabled ? theme.mutedTextCol : theme.panelBg}
         fontWeight="600"
@@ -2086,30 +2401,16 @@ export function XRAlertMesh({
 
   return (
     <group position={pos} rotation={rot}>
-      <RoundedBox
-        args={[w, h, PANEL_DEPTH]}
-        radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH)}
-        position={[w / 2, -h / 2, -PANEL_DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={alertBg}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
-
-      {/* Card border */}
-      <RoundedBox
-        args={[w, h, RIM_DEPTH]}
-        radius={safeRadius(RIM_RADIUS, w, h, RIM_DEPTH)}
-        position={[w / 2, -h / 2, -PANEL_DEPTH - RIM_DEPTH / 2]}
-      >
-        <meshBasicMaterial color={theme.panelRim} transparent opacity={0.9} clippingPlanes={clips} />
-      </RoundedBox>
+      <Surface
+        width={w}
+        height={h}
+        color={alertBg}
+        rimColor={theme.panelRim}
+        clips={clips}
+      />
 
       {/* Left accent bar */}
-      <mesh position={[0.004, -h / 2, PANEL_DEPTH / 2 - 0.001]}>
+      <mesh position={[0.004, -h / 2, Z_LAYER_ACCENT]} renderOrder={RENDER_ORDER_ACCENT}>
         <planeGeometry args={[0.007, h * 0.8]} />
         <meshBasicMaterial
           color={alertColor}
@@ -2181,47 +2482,30 @@ export function XRTableMesh({
 
   return (
     <group position={pos} rotation={rot}>
-      <RoundedBox
-        args={[w, h, PANEL_DEPTH]}
-        radius={safeRadius(PANEL_RADIUS, w, h, PANEL_DEPTH)}
-        position={[w / 2, -h / 2, -PANEL_DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={theme.panelBg}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      <Surface
+        width={w}
+        height={h}
+        color={theme.panelBg}
+        gradient
+        rimColor={theme.panelRim}
+        clips={clips}
+      />
 
-      {/* Card border */}
-      <RoundedBox
-        args={[w, h, RIM_DEPTH]}
-        radius={safeRadius(RIM_RADIUS, w, h, RIM_DEPTH)}
-        position={[w / 2, -h / 2, -PANEL_DEPTH - RIM_DEPTH / 2]}
-      >
-        <meshBasicMaterial color={theme.panelRim} transparent opacity={0.9} clippingPlanes={clips} />
-      </RoundedBox>
-
-      {/* Header row — slightly elevated */}
-      <RoundedBox
-        args={[w, HEADER_H, PANEL_DEPTH * 1.2]}
-        radius={safeRadius(PANEL_RADIUS, w, HEADER_H, PANEL_DEPTH * 1.2)}
-        position={[w / 2, -HEADER_H / 2, -PANEL_DEPTH * 0.3]}
-      >
-        <meshStandardMaterial
-          color={theme.navBg}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      {/* Header row — a recessed nav-toned band across the top */}
+      <Surface
+        width={w}
+        height={HEADER_H}
+        color={theme.navBg}
+        origin={[w / 2, -HEADER_H / 2]}
+        z={Z_LAYER_ACCENT}
+        clips={clips}
+      />
 
       {primitive.label && (
         <ClippedText
           anchorX="left"
           anchorY="middle"
-          position={[0.014, -HEADER_H / 2, PANEL_DEPTH]}
+          position={[0.014, -HEADER_H / 2, Z_LAYER_BODY_TEXT]}
           fontSize={0.018}
           color={theme.headingCol}
           fontWeight="600"
@@ -2270,26 +2554,21 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
         </ClippedText>
       )}
 
-      <RoundedBox
-        args={[w, INPUT_H, PANEL_DEPTH]}
-        radius={safeRadius(0.008, w, INPUT_H, PANEL_DEPTH)}
-        position={[w / 2, -h + INPUT_H / 2, 0]}
-      >
-        <meshStandardMaterial
-          color={INPUT_BG}
-          transparent={!!primitive.state?.disabled}
-          opacity={primitive.state?.disabled ? 0.5 : 1}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      <Surface
+        width={w}
+        height={INPUT_H}
+        color={INPUT_BG}
+        rimColor={theme.panelRim}
+        opacity={primitive.state?.disabled ? 0.5 : 1}
+        origin={[w / 2, -h + INPUT_H / 2]}
+        clips={clips}
+      />
 
       {primitive.placeholder && (
         <ClippedText
           anchorX="left"
           anchorY="middle"
-          position={[0.01, -h + INPUT_H / 2, PANEL_DEPTH + 0.001]}
+          position={[0.01, -h + INPUT_H / 2, Z_LAYER_BODY_TEXT]}
           fontSize={0.016}
           color={theme.mutedTextCol}
           maxWidth={w - 0.02}
@@ -2325,31 +2604,24 @@ export function XRTabGroupMesh({
 
   return (
     <group position={pos} rotation={rot}>
-      <RoundedBox
-        args={[w, TAB_H, PANEL_DEPTH]}
-        radius={safeRadius(PANEL_RADIUS, w, TAB_H, PANEL_DEPTH)}
-        position={[w / 2, -TAB_H / 2, -PANEL_DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={theme.navBg}
-          roughness={0.85}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      {/* Tab bar — recessed nav-toned strip */}
+      <Surface
+        width={w}
+        height={TAB_H}
+        color={theme.navBg}
+        origin={[w / 2, -TAB_H / 2]}
+        clips={clips}
+      />
 
-      <RoundedBox
-        args={[w, h - TAB_H, PANEL_DEPTH]}
-        radius={safeRadius(PANEL_RADIUS, w, h - TAB_H, PANEL_DEPTH)}
-        position={[w / 2, -(TAB_H + (h - TAB_H) / 2), -PANEL_DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={theme.panelBg}
-          roughness={0.9}
-          metalness={0}
-          clippingPlanes={clips}
-        />
-      </RoundedBox>
+      {/* Content panel below the tab bar */}
+      <Surface
+        width={w}
+        height={h - TAB_H}
+        color={theme.panelBg}
+        gradient
+        origin={[w / 2, -(TAB_H + (h - TAB_H) / 2)]}
+        clips={clips}
+      />
 
       {primitive.children.map((child) => renderChild(child.id))}
     </group>

@@ -535,11 +535,13 @@ function doorSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
   const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
   const d = cfg.viewingDistance;
   const ha = cfg.comfortHalfAngleDeg;
+  const MAIN_W = 1.4;
+  const mainX = -(MAIN_W / 2); // centre the panel on the viewer's gaze axis
   return {
     banner: {
-      position: { x: 0, y: eyeY + 0.52, z: -d },
+      position: { x: mainX, y: eyeY + 0.52, z: -d },
       rotation: zeroRotation(),
-      size: { width: 1.4, height: metrics.banner.height },
+      size: { width: MAIN_W, height: metrics.banner.height },
       curveRadius: d * 0.8,
       worldLocked: true,
     },
@@ -558,16 +560,16 @@ function doorSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       worldLocked: true,
     },
     main: {
-      position: { x: 0, y: eyeY, z: -d },
+      position: { x: mainX, y: eyeY, z: -d },
       rotation: zeroRotation(),
-      size: { width: 1.4, height: cfg.maxPanelViewportHeight },
+      size: { width: MAIN_W, height: cfg.maxPanelViewportHeight },
       curveRadius: d * 0.8,
       worldLocked: true,
     },
     footer: {
-      position: { x: 0, y: eyeY - cfg.maxPanelViewportHeight * 0.6, z: -d },
+      position: { x: mainX, y: eyeY - cfg.maxPanelViewportHeight * 0.6, z: -d },
       rotation: zeroRotation(),
-      size: { width: 1.4, height: metrics.footer.height },
+      size: { width: MAIN_W, height: metrics.footer.height },
       curveRadius: d * 0.8,
       worldLocked: true,
     },
@@ -608,26 +610,29 @@ function theatreSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       curveRadius: d * 2.0,
       worldLocked: true,
     },
+    // TOC and aside flank the wide panel *outside* its horizontal extent
+    // (|x| > mhw) so they never overlap the main content, angled inward and
+    // pulled slightly toward the viewer to wrap the theatre around the user.
     toc: {
-      position: { x: -0.55, y: eyeY + 0.05, z: -(d - 0.1) },
-      rotation: { x: 0, y: 0.25, z: 0 },
+      position: { x: -(mhw + 0.28), y: eyeY, z: -(d - 0.25) },
+      rotation: { x: 0, y: 0.5, z: 0 },
       size: { width: 0.36, height: metrics.navigationBar.height },
       curveRadius: 0,
-      worldLocked: false,
+      worldLocked: true,
     },
     navigation: {
-      position: { x: -0.55, y: eyeY - 0.18, z: -(d - 0.1) },
-      rotation: { x: 0, y: 0.25, z: 0 },
+      position: { x: -(mhw + 0.28), y: eyeY - metrics.navigationBar.height - 0.06, z: -(d - 0.25) },
+      rotation: { x: 0, y: 0.5, z: 0 },
       size: { width: 0.32, height: metrics.navigationBar.height },
       curveRadius: 0,
-      worldLocked: false,
+      worldLocked: true,
     },
     complementary: {
-      position: { x: 0.55, y: eyeY + 0.05, z: -(d - 0.1) },
-      rotation: { x: 0, y: -0.25, z: 0 },
+      position: { x: mhw + 0.28, y: eyeY, z: -(d - 0.25) },
+      rotation: { x: 0, y: -0.5, z: 0 },
       size: { width: 0.42, height: cfg.maxPanelViewportHeight * 0.7 },
       curveRadius: 0,
-      worldLocked: false,
+      worldLocked: true,
     },
     alert: {
       position: { x: 0, y: eyeY - 0.5, z: -(d - 0.15) },
@@ -660,6 +665,38 @@ function theatreSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
   };
 }
 
+/**
+ * Landmark slots use a top-left x origin: `position.x` is the panel's LEFT
+ * edge, so a slot authored at `x: 0` actually sits centred at `+width/2` —
+ * pushing wide panels off to the right of the viewer. For the page-style
+ * templates (single stacked column: main + banner + footer), re-anchor those
+ * panels so they're horizontally centred on the gaze axis. The peripheral
+ * slots (toc / nav / complementary) are intentionally off to the side and are
+ * left untouched.
+ */
+function centreStackedPanels(map: SlotMap): SlotMap {
+  for (const key of ["main", "banner", "footer"] as const) {
+    const slot = map[key];
+    if (slot) slot.position.x = -slot.size.width / 2;
+  }
+  // Keep the left-hand TOC sidebar clear of the now-centred main panel. Panels
+  // use a TOP-LEFT x origin, so a panel at position.x spans [x, x + width]:
+  // the main's left edge is main.position.x and the TOC's right edge is
+  // toc.position.x + toc.size.width. If the TOC would intrude past the main's
+  // left edge, shift it left so its right edge clears with a small gap.
+  const main = map.main;
+  const toc = map.toc;
+  if (main && toc) {
+    const gap = 0.08;
+    const mainLeft = main.position.x;
+    const tocRight = toc.position.x + toc.size.width;
+    if (tocRight > mainLeft - gap) {
+      toc.position.x = mainLeft - gap - toc.size.width;
+    }
+  }
+  return map;
+}
+
 export function selectSlots(
   template: LayoutTemplate,
   cfg: LayoutConfig,
@@ -667,13 +704,13 @@ export function selectSlots(
 ): SlotMap {
   switch (template) {
     case "document":
-      return documentSlots(cfg, metrics);
+      return centreStackedPanels(documentSlots(cfg, metrics));
     case "dashboard":
-      return dashboardSlots(cfg, metrics);
+      return centreStackedPanels(dashboardSlots(cfg, metrics));
     case "form":
-      return formSlots(cfg, metrics);
+      return centreStackedPanels(formSlots(cfg, metrics));
     case "landing":
-      return landingSlots(cfg, metrics);
+      return centreStackedPanels(landingSlots(cfg, metrics));
     case "carousel":
       return carouselSlots(cfg, metrics);
     case "cards":
@@ -683,6 +720,6 @@ export function selectSlots(
     case "theatre":
       return theatreSlots(cfg, metrics);
     default:
-      return genericSlots(cfg, metrics);
+      return centreStackedPanels(genericSlots(cfg, metrics));
   }
 }

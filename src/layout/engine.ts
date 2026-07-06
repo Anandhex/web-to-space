@@ -36,7 +36,6 @@ import type {
 import {
   computeWordsPerLine,
   countWords,
-  estimateInlineFlowHeight,
   flattenInlineWrappers,
   isInlinePrimitive,
   resolveListColumns,
@@ -79,6 +78,14 @@ const INLINE_OWNING_TYPES = new Set([
   "XRBlockQuote",
   "XRLink",
   "XRButton",
+  // NOTE: XRTableCell's heightStrategy is "mixed" too (estimateMixedContentHeight
+  // with metrics.paragraph), which has the same estimate/position mismatch as
+  // the types above — a cell's inline content (e.g. a "5" text node followed
+  // by a "{3,3}" link) gets stacked as separate full-width rows instead of
+  // flowing on one line. Adding "XRTableCell" here fixes that, but on this
+  // codebase's large Wikipedia tables it currently makes the layout pass slow
+  // enough to trip the WebGL context's hang detection (visible as "Context
+  // Lost" in the console) — needs a perf pass before it can be turned on.
 ]);
 
 // An XRGenericPanel (a role-less wrapper div/span) is ALSO inline-owning when
@@ -91,6 +98,32 @@ const INLINE_OWNING_TYPES = new Set([
 // passes disagree and children stampDescendants deliberately left unstamped
 // get a bogus fallback LayoutEntry (wrong page, position pinned to the top of
 // the page) instead of none.
+// Font metrics an inline-owning node's own prose is rendered with — needed
+// to size the inline runs that separate its block children (see
+// stampDescendants' block-positioning pass below). Must match whatever
+// estimateHeight/_estimate*Height picks for the same node type, or the
+// positions computed here will disagree with the space already reserved
+// during height estimation.
+function inlineOwnerFontMetrics(
+  node: { type: string; level?: number | null },
+  metrics: RenderMetrics,
+): PrimitiveFontMetrics {
+  switch (node.type) {
+    case "XRHeading": {
+      const level = (node.level ?? 2) as 1 | 2 | 3 | 4 | 5 | 6;
+      return metrics.heading[level] ?? metrics.heading[2] ?? metrics.paragraph;
+    }
+    case "XRBlockQuote":
+      return metrics.blockQuote;
+    case "XRLink":
+      return metrics.link.font;
+    case "XRButton":
+      return metrics.button.font;
+    default:
+      return metrics.paragraph;
+  }
+}
+
 function isInlineOwningNode(node: { type: string; children: unknown[] }): boolean {
   if (INLINE_OWNING_TYPES.has(node.type)) return true;
   if (node.type !== "XRGenericPanel" || node.children.length === 0) return false;
@@ -99,6 +132,31 @@ function isInlineOwningNode(node: { type: string; children: unknown[] }): boolea
     flatEffective.length > 0 &&
     flatEffective.every((c: any) => isInlinePrimitive(c.type))
   );
+}
+
+// Whether a child of an inline-owning node is rendered as part of the
+// parent's merged prose text run (by flattenInlineWrappers, inside the mesh
+// component) rather than as an independent positioned 3D node. True for the
+// obvious inline primitives (XRText/XRLink/XRButton) AND for an
+// XRGenericPanel wrapper whose own effective children are all inline (e.g.
+// Wikipedia's <span class="frac">, which the mapper can't classify as
+// inline and falls through to XRGenericPanel, but which
+// flattenInlineWrappers still sees through when rendering prose).
+//
+// stampDescendants and layoutPrimitive both decide, independently, which
+// children of an inline-owning node get a LayoutEntry. They MUST agree, or
+// one produces no entry (correctly, nothing to position) while the other
+// still calls layoutPrimitive on it and falls back to a bogus top-of-page
+// position for every such child — collapsing all of them onto the same
+// point instead of leaving them unpositioned.
+function isFlattenedIntoProse(child: {
+  type: string;
+  children: unknown[];
+}): boolean {
+  if (isInlinePrimitive(child.type)) return true;
+  if (child.type !== "XRGenericPanel") return false;
+  const flat = flattenInlineWrappers(child.children as any[]);
+  return flat.length > 0 && flat.every((c: any) => isInlinePrimitive(c.type));
 }
 
 // Padding ownership is now driven by PRIMITIVE_CONFIG (ownsXPadding / ownsTopPadding).
@@ -1396,67 +1454,77 @@ function paginateContentPanel(
       );
 
     if (isInlineWrapper && !hasOnlyBlockChildren) {
-      // For XRListItem with mixed inline+block children (e.g. prose followed
-      // by a nested sub-list), block children must be placed BELOW the inline
-      // prose region, not at the listitem's top edge (absY). Without this
-      // correction the sub-list y === parent y, overlapping the rendered text.
+      // Any inline-owning node (XRParagraph, XRHeading, XRListItem,
+      // XRBlockQuote, XRLink, XRButton) can carry block children interleaved
+      // with its inline prose — e.g. a Wikipedia <span class="frac"> that the
+      // mapper can't classify as inline (falls through to XRGenericPanel), or
+      // a list item's lead-in text followed by a nested sub-list. Those block
+      // children ARE dispatched via renderChild and need a real
+      // panel-absolute Y that accounts for however much inline prose precedes
+      // and separates them — otherwise every block child in the same node
+      // collapses onto the same Y (absY), rendering superimposed on top of
+      // each other instead of stacked.
       //
-      // For other inline-owning types (XRParagraph, XRHeading, XRBlockQuote)
-      // the absY fallback is acceptable: those rarely carry block children and
-      // the mesh's own renderChild call manages exact Y in those cases.
-      let blockCursorY = absY;
+      // This mirrors estimateInlineFlowHeight's run-based flush algorithm
+      // (utils.ts) so the positions computed here agree with the space that
+      // algorithm already reserved during height estimation.
+      const flatForPositioning = flattenAndMerge(node.children);
+      const m = inlineOwnerFontMetrics(node, metrics);
+      const itemWidth =
+        node.type === "XRListItem"
+          ? Math.max(0.025, availableWidth - LIST_ITEM_PROSE_INSET)
+          : availableWidth;
+      const wordsPerLine = computeWordsPerLine(itemWidth, m);
+      const lineH = m.fontSize * m.lineHeightRatio;
 
-      if (node.type === "XRListItem") {
-        // Flatten + merge inline children the same way estimateHeight does for
-        // XRListItem, so the prose height we compute here agrees with the space
-        // already reserved in the layout plan.
-        const flat = flattenAndMerge(node.children);
-        const m = metrics.paragraph;
-        const itemWidth = Math.max(
-          0.025,
-          availableWidth - LIST_ITEM_PROSE_INSET,
-        );
-        const wordsPerLine = computeWordsPerLine(itemWidth, m);
-        const lineH = m.fontSize * m.lineHeightRatio;
-
-        // Collect the inline prefix: every child before the first block item.
-        const inlinePrefix: typeof flat = [];
-        for (const fc of flat) {
-          if (!isInlinePrimitive((fc as any).type)) break;
-          inlinePrefix.push(fc);
-        }
-
-        if (inlinePrefix.length > 0) {
-          const proseH = estimateInlineFlowHeight(
-            inlinePrefix as Parameters<typeof estimateInlineFlowHeight>[0],
-            wordsPerLine,
-            lineH,
-            0, // no verticalPadding — matches estimateHeight's XRListItem branch
-            () => metrics.fallbackElementHeight,
-            0, // pure-inline prefix: no inter-segment gaps
+      const blockPositions = new Map<string, { y: number; h: number }>();
+      {
+        let cursorY = absY;
+        let inlineWords = 0;
+        let firstSegment = true;
+        const flushInline = () => {
+          if (inlineWords === 0) return;
+          const lineCount = Math.max(
+            1,
+            Math.ceil(inlineWords / Math.max(1, wordsPerLine)),
           );
-          // First block child starts below the prose, separated by childGapY.
-          blockCursorY = absY - proseH - config.childGapY;
+          if (!firstSegment) cursorY -= config.childGapY;
+          cursorY -= lineCount * lineH;
+          firstSegment = false;
+          inlineWords = 0;
+        };
+        for (const fc of flatForPositioning) {
+          if (isInlinePrimitive((fc as any).type)) {
+            const wc =
+              (fc as any).wordCount != null && (fc as any).wordCount > 0
+                ? (fc as any).wordCount
+                : countWords((fc as any).text ?? (fc as any).label ?? "");
+            inlineWords += wc;
+          } else {
+            flushInline();
+            if (!firstSegment) cursorY -= config.childGapY;
+            const h = estimateHeight(
+              fc as XRPrimitive,
+              availableWidth,
+              metrics,
+              config,
+              new Set(),
+              scene,
+            );
+            blockPositions.set(fc.id, { y: cursorY, h });
+            cursorY -= h;
+            firstSegment = false;
+          }
         }
       }
 
       for (const child of node.children) {
-        if (!isInlinePrimitive(child.type)) {
-          // If this child is an XRGenericPanel whose effective leaf content is
-          // all-inline, the mesh renders it via flattenInlineWrappers as part
-          // of the prose run — it is NOT dispatched via renderChild and should
-          // NOT be stamped as a positioned 3D node.
-          if (child.type === "XRGenericPanel") {
-            const flatChild = flattenInlineWrappers(child.children as any[]);
-            const childIsInlineWrapper =
-              flatChild.length > 0 &&
-              flatChild.every((c: any) => isInlinePrimitive(c.type));
-            if (childIsInlineWrapper) continue;
-          }
+        if (!isFlattenedIntoProse(child)) {
           // Block child inside an inline-owning container: it IS dispatched
           // via renderChild and needs a panel-absolute position.
           if (!positionMap.has(child.id)) {
-            const rawBlockY = node.type === "XRListItem" ? blockCursorY : absY;
+            const placed = blockPositions.get(child.id);
+            const rawBlockY = placed?.y ?? absY;
             const parentPage = pageIndexMap[node.id] ?? 0;
             // XRListItem block children must stay on the same page as the item:
             // overflowCorrect mutates the outer pageIdx, which would cause
@@ -1468,20 +1536,18 @@ function paginateContentPanel(
                 : overflowCorrect(rawBlockY, parentPage);
             const panelAbs: Vec3 = { x: absX, y: childRelY, z: 0 };
             positionMap.set(child.id, panelAbs);
-            const childH = estimateHeight(
-              child,
-              availableWidth,
-              metrics,
-              config,
-              new Set(),
-              scene,
-            );
+            const childH =
+              placed?.h ??
+              estimateHeight(
+                child,
+                availableWidth,
+                metrics,
+                config,
+                new Set(),
+                scene,
+              );
             heightMap.set(child.id, childH);
             pageIndexMap[child.id] = childPage;
-            if (node.type === "XRListItem") {
-              // Advance cursor for any subsequent block children.
-              blockCursorY = panelAbs.y - childH - config.childGapY;
-            }
           }
           const childAbs = positionMap.get(child.id)!;
           // See the top-level sweep below: save/restore pageIdx around each
@@ -1820,14 +1886,17 @@ function layoutPrimitive(
       // children are NOT independent 3D nodes and must NOT get LayoutEntries.
       // stampDescendants already skips stamping positions for them (see
       // isInlineOwningNode); here we skip producing LayoutEntries for them
-      // too. Using a narrower check here than stampDescendants used to leave
-      // these children with fallback entries (top-of-page position, the
-      // parent's inherited page index) instead of no entry at all.
+      // too. Must use the exact same check as stampDescendants
+      // (isFlattenedIntoProse) — a narrower check (e.g. isInlinePrimitive
+      // alone) misses XRGenericPanel wrappers that flatten into prose (like
+      // a Wikipedia <span class="frac">), leaving those children with bogus
+      // fallback entries (top-of-page position, every one of them landing on
+      // the exact same point) instead of no entry at all.
       if (isInlineOwningNode(primitive)) {
         // Only recurse into block (non-inline) children — e.g. a sub-list or
         // image inside a list item, which ARE dispatched via renderChild.
         for (const child of primitive.children) {
-          if (isInlinePrimitive(child.type)) continue;
+          if (isFlattenedIntoProse(child)) continue;
           const childPos =
             placedPositionMap.get(child.id) ?? topOfPagePos(config);
           const childPageIndex = pageIndexMap?.[child.id] ?? inheritedPageIndex;
@@ -1963,9 +2032,11 @@ function layoutPrimitive(
         const childLayoutEntry = childEntries[i];
         if (!childLayoutEntry) continue;
         // Inline children of inline-owning parents (including synthetic XRText
-        // added by normalizeLabelNodes) are rendered as text runs by the mesh
-        // component — they must not get independent LayoutEntries.
-        if (isInlineOwningNode(primitive) && isInlinePrimitive(child.type))
+        // added by normalizeLabelNodes, and XRGenericPanel wrappers that
+        // flatten into prose — see isFlattenedIntoProse) are rendered as text
+        // runs by the mesh component — they must not get independent
+        // LayoutEntries.
+        if (isInlineOwningNode(primitive) && isFlattenedIntoProse(child))
           continue;
 
         layoutPrimitive(

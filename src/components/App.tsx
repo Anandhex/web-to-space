@@ -5,8 +5,6 @@ import {
   type HomeSettings,
   DEFAULT_HOME_SETTINGS,
 } from "./HomeScreen";
-import { TabBar } from "./TabBar";
-import { ViewToggle } from "./ViewToggle";
 import { ComparePanel } from "./ComparePanel";
 import {
   type Tab,
@@ -130,6 +128,11 @@ export default function App() {
         <HomeScreen
           onLoad={loadUrl}
           loading={loading}
+          tabs={tabs}
+          activeTabId={activeTabId}
+          onSwitchTab={setActiveTabId}
+          onCloseTab={handleCloseTab}
+          onNewTab={handleNewTab}
         />
       ) : hasContent ? (
         <>
@@ -177,8 +180,8 @@ export default function App() {
               gap: 8,
             }}
           >
-            <ViewToggle mode={viewMode} onChange={setViewMode} />
-
+            {/* View-mode switching now lives in the 3D world (XR3DViewToggle).
+                Only the parser-comparison launcher remains as an HTML overlay. */}
             <button
               onClick={() => setShowCompare((v) => !v)}
               style={{
@@ -210,8 +213,14 @@ export default function App() {
             parserConfig={activeTab.settings.parserConfig}
             parserBackend={activeTab.settings.parserBackend}
             viewMode={viewMode}
+            onViewModeChange={setViewMode}
             onPlanReady={onPlanReady}
             onExternalNavigate={openInNewTab}
+            tabs={tabs}
+            activeTabId={activeTabId}
+            onSwitchTab={setActiveTabId}
+            onCloseTab={handleCloseTab}
+            onNewTab={handleNewTab}
           />
         </>
       ) : (
@@ -258,14 +267,9 @@ export default function App() {
         />
       )}
 
-      {/* Tab bar — always visible */}
-      <TabBar
-        tabs={tabs}
-        activeTabId={activeTabId}
-        onSwitch={setActiveTabId}
-        onClose={handleCloseTab}
-        onNewTab={handleNewTab}
-      />
+      {/* Tab switcher is rendered in 3D on both screens now:
+          XR3DTabBar inside the Home canvas and inside the XRSceneRenderer
+          canvas. No HTML tab bar remains. */}
     </div>
   );
 }

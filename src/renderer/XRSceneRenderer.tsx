@@ -99,6 +99,7 @@ import {
   buildInlineRows,
   InlineProseRows,
   useRenderMetrics,
+  Surface,
 } from "./primitives";
 import { ThemeContext, useTheme, LIGHT_THEME, type XRTheme } from "./theme";
 import { PanelGradientOverlay } from "./PanelGradient";
@@ -146,7 +147,8 @@ import {
   CAROUSEL_GHOST_GAP,
   CAROUSEL_Z_STEP,
 } from "../layout/slots";
-import type { ViewMode } from "../components/viewTypes";
+import type { ViewMode, Tab } from "../components/viewTypes";
+import { XR3DTabBar, XR3DViewToggle } from "../components/XR3DChrome";
 
 // ─────────────────────────────────────────────────────────────
 // Contexts
@@ -185,11 +187,19 @@ export interface XRSceneRendererProps {
    */
   parserBackend?: ParserBackend;
   viewMode?: ViewMode;
+  /** Called when the in-world view-mode toggle changes the layout mode. */
+  onViewModeChange?: (m: ViewMode) => void;
   onPlanReady?: (plan: LayoutPlan) => void;
   /** Called when a non-anchor link is clicked; defaults to window.open if omitted. */
   onExternalNavigate?: (href: string) => void;
   /** XR primitive colour palette. Defaults to LIGHT_THEME (Meta Horizon UI Set). */
   theme?: XRTheme;
+  /** In-world tab switcher wiring. When provided, a 3D tab bar is rendered. */
+  tabs?: Tab[];
+  activeTabId?: string;
+  onSwitchTab?: (id: string) => void;
+  onCloseTab?: (id: string) => void;
+  onNewTab?: () => void;
 }
 
 type PageState = Record<string, number>;
@@ -1775,12 +1785,6 @@ function PaginationControls({
   const theme = useTheme();
   const w = entry.size.width;
   const h = entry.size.height;
-  // Round icon buttons (chevron-only) — matches the Horizon UI Set's
-  // circular media-transport button language (rewind/play/forward-10 in the
-  // "Content Modules" reference) rather than a wide labelled pill.
-  const BTN_SIZE = 0.044;
-  const barY = -(h + BTN_SIZE / 2 + 0.016);
-  const SPREAD = Math.min(w / 2 - BTN_SIZE * 0.6, 0.22);
   const fontType = React.useContext(FontContext);
 
   // When a section range is active, clamp navigation and show relative page numbers.
@@ -1791,29 +1795,48 @@ function PaginationControls({
   const atFirst = currentPage <= firstPage;
   const atLast = currentPage >= lastPage;
 
+  // Single rounded control bar (Horizon "segmented pill"): the two circular
+  // chevron buttons and the page indicator share one recessed, rounded panel
+  // instead of floating as three separate spread-out elements.
+  const BAR_W = 0.24;
+  const BAR_H = 0.06;
+  const BTN_SIZE = 0.042;
+  const PAD_X = 0.014;
+  const btnX = BAR_W / 2 - PAD_X - BTN_SIZE / 2;
+  const barY = -(h + BAR_H / 2 + 0.02);
+
   return (
     <group position={[w / 2, barY, 0.005]}>
+      {/* Rounded control-bar backing */}
+      <Surface
+        width={BAR_W}
+        height={BAR_H}
+        radius={BAR_H / 2}
+        color={theme.navBg}
+        gradient
+        rimColor={theme.panelRim}
+        origin={[0, 0]}
+      />
+
+      {/* Previous */}
       <group
-        position={[-SPREAD, 0, 0]}
+        position={[-btnX, 0, 0.006]}
         onClick={() => onPageChange(Math.max(firstPage, currentPage - 1))}
       >
-        <RoundedBox
-          args={[BTN_SIZE, BTN_SIZE, 0.006]}
+        <Surface
+          width={BTN_SIZE}
+          height={BTN_SIZE}
           radius={BTN_SIZE / 2}
-        >
-          <meshStandardMaterial
-            color={atFirst ? theme.disabledBg : theme.emphasisCol}
-            transparent
-            opacity={0.95}
-            roughness={0.35}
-            metalness={0}
-          />
-        </RoundedBox>
+          color={atFirst ? theme.disabledBg : theme.emphasisCol}
+          opacity={atFirst ? 0.6 : 1}
+          flat
+          origin={[0, 0]}
+        />
         <Text
           font={fontType}
           anchorX="center"
           anchorY="middle"
-          position={[-0.001, 0, 0.005]}
+          position={[0, 0, 0.004]}
           fontSize={0.02}
           color={atFirst ? theme.mutedTextCol : theme.panelBg}
         >
@@ -1821,40 +1844,37 @@ function PaginationControls({
         </Text>
       </group>
 
+      {/* Page indicator */}
       <Text
         font={fontType}
         anchorX="center"
         anchorY="middle"
-        position={[0, 0, 0]}
+        position={[0, 0, 0.006]}
         fontSize={0.016}
         color={theme.bodyCol}
       >
         {`${relPage + 1} / ${sectionPageCount}`}
       </Text>
 
+      {/* Next */}
       <group
-        position={[SPREAD, 0, 0]}
-        onClick={() =>
-          onPageChange(Math.min(lastPage, currentPage + 1))
-        }
+        position={[btnX, 0, 0.006]}
+        onClick={() => onPageChange(Math.min(lastPage, currentPage + 1))}
       >
-        <RoundedBox
-          args={[BTN_SIZE, BTN_SIZE, 0.006]}
+        <Surface
+          width={BTN_SIZE}
+          height={BTN_SIZE}
           radius={BTN_SIZE / 2}
-        >
-          <meshStandardMaterial
-            color={atLast ? theme.disabledBg : theme.emphasisCol}
-            transparent
-            opacity={0.95}
-            roughness={0.35}
-            metalness={0}
-          />
-        </RoundedBox>
+          color={atLast ? theme.disabledBg : theme.emphasisCol}
+          opacity={atLast ? 0.6 : 1}
+          flat
+          origin={[0, 0]}
+        />
         <Text
           font={fontType}
           anchorX="center"
           anchorY="middle"
-          position={[0.001, 0, 0.005]}
+          position={[0, 0, 0.004]}
           fontSize={0.02}
           color={atLast ? theme.mutedTextCol : theme.panelBg}
         >
@@ -2208,9 +2228,15 @@ export function XRSceneRenderer({
   parserConfig = {},
   parserBackend = "custom",
   viewMode,
+  onViewModeChange,
   onPlanReady,
   onExternalNavigate,
   theme = LIGHT_THEME,
+  tabs,
+  activeTabId,
+  onSwitchTab,
+  onCloseTab,
+  onNewTab,
 }: XRSceneRendererProps) {
   // 1. Resolve Device Profile locally
   const deviceProfile = useMemo(() => {
@@ -2235,6 +2261,18 @@ export function XRSceneRenderer({
       default:         return undefined; // "standard" → auto-select
     }
   }, [viewMode]);
+
+  // Camera look target for the flat (non-immersive) preview. Panels are
+  // top-left anchored, so a panel whose top sits at eyeY hangs *below* the eye
+  // line — aiming at eyeY frames the panel in the bottom of the viewport. Aim
+  // at the panel's vertical centre instead so content reads head-on. Derived
+  // from the active profile so it adapts across devices (Quest vs Ray-Ban).
+  const readingLook = useMemo((): [number, number, number] => {
+    const cfg = deviceProfile.layoutConfig;
+    const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
+    const centerY = eyeY - cfg.maxPanelViewportHeight / 2;
+    return [0, centerY, -cfg.viewingDistance];
+  }, [deviceProfile]);
 
   const {
     scene,
@@ -2281,6 +2319,29 @@ export function XRSceneRenderer({
       null,
     [scene],
   );
+
+  // Anchor for the in-world chrome stack (layout switcher + tab switcher):
+  // horizontally centred on the main content panel and pulled forward of it,
+  // so the two controls sit centred under the panel as a vertical stack rather
+  // than pinned to the world origin. Falls back to the world centre when there
+  // is no content panel (e.g. landing/form layouts).
+  const chromeAnchor = useMemo(() => {
+    const cfg = deviceProfile.layoutConfig;
+    const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
+    const fallback = {
+      cx: 0,
+      z: -cfg.viewingDistance,
+      bottomY: eyeY - cfg.maxPanelViewportHeight,
+    };
+    const e = mainPanelId ? plan?.entries[mainPanelId] : null;
+    if (!e) return fallback;
+    const viewportH = Math.min(e.size.height, cfg.maxPanelViewportHeight);
+    return {
+      cx: e.position.x + e.size.width / 2,
+      z: e.position.z,
+      bottomY: e.position.y - viewportH,
+    };
+  }, [deviceProfile, mainPanelId, plan]);
 
   const topLevelCards = useMemo(
     () => (scene && plan ? getSectionCards(scene, plan, null) : []),
@@ -2400,16 +2461,21 @@ export function XRSceneRenderer({
         >
           <Suspense fallback={null}>
             <XRSessionBinder session={session} />
-            <ambientLight intensity={0.4} />
+            {/* Even, mostly-neutral lighting so panels read as one flat
+                material regardless of how far each is tilted toward the user.
+                A strong directional + saturated blue point light previously
+                shaded angled panels (e.g. the TOC) noticeably lighter/bluer
+                than the head-on content panel. */}
+            <ambientLight intensity={0.72} />
             <directionalLight
               position={[0, 3, 2]}
-              intensity={0.8}
+              intensity={0.42}
               castShadow={false}
             />
             <pointLight
               position={[0, 1.5, -1.2]}
-              intensity={0.6}
-              color="#58a6ff"
+              intensity={0.28}
+              color="#9ec5ff"
               distance={4}
             />
             <Environment preset="city" />
@@ -2466,6 +2532,31 @@ export function XRSceneRenderer({
                   )
                 )}
 
+                {/* ── In-world browser chrome (replaces HTML overlays) ────
+                    Layout switcher (top) and tab switcher (bottom) form a
+                    vertical stack, horizontally centred on the content panel
+                    and pulled forward of it (parallax separation), with a
+                    breathable gap between the two rows. */}
+                {viewMode && onViewModeChange && (
+                  <XR3DViewToggle
+                    mode={viewMode}
+                    onChange={onViewModeChange}
+                    position={[chromeAnchor.cx, chromeAnchor.bottomY + 0.46, chromeAnchor.z + 0.3]}
+                    tiltX={0.34}
+                  />
+                )}
+                {tabs && activeTabId && onSwitchTab && onCloseTab && onNewTab && (
+                  <XR3DTabBar
+                    tabs={tabs}
+                    activeTabId={activeTabId}
+                    onSwitch={onSwitchTab}
+                    onClose={onCloseTab}
+                    onNewTab={onNewTab}
+                    position={[chromeAnchor.cx, chromeAnchor.bottomY + 0.18, chromeAnchor.z + 0.3]}
+                    tiltX={0.34}
+                  />
+                )}
+
                 {/* OrbitControls: disabled only during cards overview (level 0) */}
                 {sessionState !== "immersive" &&
                   (viewMode !== "cards" || cardsZoom === 1) && (
@@ -2473,7 +2564,7 @@ export function XRSceneRenderer({
                       target={
                         viewMode === "cards"
                           ? CARDS_READ_LOOK
-                          : [0, 1.4, -1.2]
+                          : readingLook
                       }
                       enablePan
                       enableDamping

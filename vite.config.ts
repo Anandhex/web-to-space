@@ -42,7 +42,7 @@ function corsProxyPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [corsProxyPlugin(), react()],
+  plugins: [corsProxyPlugin(), react(), basicSsl()],
   server: {
     // 0.0.0.0 so a headset on the same LAN can reach this machine's HTTPS
     // dev server directly (e.g. https://<your-ip>:5173) — WebXR requires a
