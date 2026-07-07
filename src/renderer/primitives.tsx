@@ -77,6 +77,17 @@ export function useClipPlanes(): THREE.Plane[] {
  */
 export const PanelOriginYContext = createContext<number>(0);
 
+/**
+ * Whether XRListItem cards may add their own world-space self-clip planes
+ * (see XRListItemMesh.cardClips). That optimisation assumes the card carries a
+ * panel-absolute Y so `panelOriginY + panelRelativeY` reconstructs its true
+ * world Y. Inside a non-paginating landmark panel (e.g. XRComplementary) items
+ * carry PARENT-relative Y instead, so that sum is wrong and the self-clip would
+ * cull the card entirely. Such panels set this false; the card then relies on
+ * the panel's own ClipPlanesContext bounds alone.
+ */
+export const CardSelfClipContext = createContext<boolean>(true);
+
 import type {
   XRHeading,
   XRParagraph,
@@ -174,7 +185,7 @@ export const NavigateContext = createContext<((href: string) => void) | null>(
   null,
 );
 
-import { CurrentPageContext, FontContext } from "./XRSceneRenderer";
+import { FontContext } from "./XRSceneRenderer";
 import { useTheme, type XRTheme } from "./theme";
 
 // ─────────────────────────────────────────────────────────────
@@ -704,7 +715,19 @@ export function buildInlineRows(children: any[]): InlineRow[] {
 
   for (const child of children) {
     if (isInlinePrimitive(child.type)) {
-      const text: string = child.text ?? child.label ?? child.content ?? "";
+      // Collapse HTML inline whitespace: the parser keeps source newlines and
+      // indentation inside prose text runs (e.g. "\n        A paragraph…"),
+      // and troika renders each "\n" as a HARD line break — inflating the
+      // paragraph well past the word-count-based height the engine reserved,
+      // so it overlaps the next block. Browsers collapse any run of whitespace
+      // in inline flow to a single space; do the same here so wrapping is
+      // driven only by maxWidth and matches the height estimate.
+      const text: string = (
+        child.text ??
+        child.label ??
+        child.content ??
+        ""
+      ).replace(/\s+/g, " ");
       if (child.type === "XRLink") {
         currentSegs.push({ kind: "link", text, href: child.href ?? null });
       } else {
@@ -956,7 +979,6 @@ export function XRParagraphMesh({
   primitive,
   entry,
   renderChild,
-  getChildEntry,
 }: XRParagraphMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
@@ -1100,7 +1122,6 @@ export function XRSectionMesh({
   childEntries,
   renderChild,
   isContinuation,
-  hasMore,
 }: XRSectionMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
@@ -2209,6 +2230,7 @@ export function XRListItemMesh({
   // world-space Y bounds on top of the inherited page bounds contains any
   // such overflow to the card itself instead of letting it escape downward.
   const panelOriginY = useContext(PanelOriginYContext);
+  const cardSelfClip = useContext(CardSelfClipContext);
   const cardClips = React.useMemo(() => {
     const topY = panelOriginY + panelRelativeY;
     const bottomY = topY - h;
@@ -2218,8 +2240,11 @@ export function XRListItemMesh({
     ];
   }, [panelOriginY, panelRelativeY, h]);
   const clips = React.useMemo(
-    () => [...pageClips, ...cardClips],
-    [pageClips, cardClips],
+    // In a parent-relative landmark panel the card's Y isn't panel-absolute, so
+    // its self-clip bounds would be wrong and cull it — fall back to the
+    // panel's own clip planes only (see CardSelfClipContext).
+    () => (cardSelfClip ? [...pageClips, ...cardClips] : pageClips),
+    [pageClips, cardClips, cardSelfClip],
   );
   // Where content starts relative to the card top edge.
   // = LIST_ITEM_ACCENT_INSET + LIST_ITEM_ACCENT_H + LIST_ITEM_CONTENT_PAD.
@@ -2564,9 +2589,18 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
   const theme = useTheme();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
-  const INPUT_H = Math.min(0.038, h * 0.6);
-  const INPUT_BG = theme.inputBg;
+  const disabled = primitive.state?.disabled === true;
+  const readonly = primitive.state?.readonly === true;
+  const invalid = primitive.state?.invalid === true;
+  const INPUT_H = Math.min(0.04, h * 0.62);
+  const cy = -h + INPUT_H / 2;
   const label = primitive.resolvedLabel ?? primitive.label ?? "";
+  // Meta-style filled field: the typed value (content) reads as body text,
+  // the placeholder as muted; a readonly/disabled field dims its fill.
+  const value = (primitive.content ?? "").trim();
+  const isSpin = primitive.controlType === "spinbutton";
+  const stepperW = isSpin ? INPUT_H : 0;
+  const fieldW = w - stepperW - (isSpin ? 0.006 : 0);
 
   return (
     <group position={pos} rotation={rot}>
@@ -2574,37 +2608,415 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
         <ClippedText
           anchorX="left"
           anchorY="bottom"
-          position={[0, -(h - INPUT_H) + 0.002, 0.002]}
-          fontSize={0.016}
-          color={theme.bodyCol}
+          position={[0.004, -(h - INPUT_H) + 0.006, Z_LAYER_BODY_TEXT]}
+          fontSize={0.015}
+          color={theme.mutedTextCol}
           maxWidth={w}
+          letterSpacing={0.01}
         >
           {label}
         </ClippedText>
       )}
 
       <Surface
-        width={w}
+        width={fieldW}
         height={INPUT_H}
-        color={INPUT_BG}
-        rimColor={theme.panelRim}
-        opacity={primitive.state?.disabled ? 0.5 : 1}
-        origin={[w / 2, -h + INPUT_H / 2]}
+        radius={0.008}
+        color={theme.inputBg}
+        rimColor={invalid ? "#E5484D" : theme.panelRim}
+        opacity={disabled ? 0.45 : readonly ? 0.75 : 1}
+        origin={[fieldW / 2, cy]}
         clips={clips}
       />
 
-      {primitive.placeholder && (
+      <ClippedText
+        anchorX="left"
+        anchorY="middle"
+        position={[0.014, cy, Z_LAYER_BODY_TEXT]}
+        fontSize={0.016}
+        color={value ? theme.bodyCol : theme.mutedTextCol}
+        maxWidth={fieldW - 0.028}
+      >
+        {value || primitive.placeholder || ""}
+      </ClippedText>
+
+      {isSpin && (
+        <group>
+          <Surface
+            width={stepperW}
+            height={INPUT_H}
+            radius={0.008}
+            color={theme.listItemBg}
+            rimColor={theme.panelRim}
+            opacity={disabled ? 0.45 : 1}
+            origin={[w - stepperW / 2, cy]}
+            clips={clips}
+          />
+          <ClippedText
+            anchorX="center"
+            anchorY="middle"
+            position={[w - stepperW / 2, cy + INPUT_H * 0.22, Z_LAYER_OVERLAY_TEXT]}
+            fontSize={0.011}
+            color={theme.bodyCol}
+          >
+            ▲
+          </ClippedText>
+          <ClippedText
+            anchorX="center"
+            anchorY="middle"
+            position={[w - stepperW / 2, cy - INPUT_H * 0.22, Z_LAYER_OVERLAY_TEXT]}
+            fontSize={0.011}
+            color={theme.bodyCol}
+          >
+            ▼
+          </ClippedText>
+        </group>
+      )}
+    </group>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// 15b. Form controls — Meta XR UI-kit styled inputs
+//   XRToggle (checkbox / radio / switch), XRSlider, XRComboBox, XRSearchBox.
+//   Each renders as a single control row of height entry.size.height with a
+//   flat, rounded Horizon-OS chip and the Meta accent (#0082FB) for the
+//   active/checked state.
+// ─────────────────────────────────────────────────────────────
+
+export function XRToggleMesh({
+  primitive,
+  entry,
+}: {
+  primitive: import("../mapper/types").XRToggle;
+  entry: LayoutEntry;
+}) {
+  const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
+  const theme = useTheme();
+  const w = safeDim(entry.size.width);
+  const h = safeDim(entry.size.height);
+  const midY = -h / 2;
+  const on =
+    primitive.state?.checked === true || primitive.state?.selected === true;
+  const disabled = primitive.state?.disabled === true;
+  const kind = primitive.toggleType;
+  const accent = theme.accentCol;
+  const opacity = disabled ? 0.45 : 1;
+  const S = Math.min(h * 0.7, 0.026);
+  const labelText = primitive.label ?? "";
+
+  let control: React.ReactNode;
+  let labelX: number;
+
+  if (kind === "switch") {
+    const trackW = S * 1.85;
+    const trackH = S;
+    const thumbR = trackH * 0.4;
+    control = (
+      <group>
+        <Surface
+          width={trackW}
+          height={trackH}
+          radius={trackH / 2}
+          color={on ? accent : theme.inputBg}
+          rimColor={theme.panelRim}
+          flat
+          opacity={opacity}
+          origin={[trackW / 2, midY]}
+          clips={clips}
+        />
+        <Surface
+          width={thumbR * 2}
+          height={thumbR * 2}
+          radius={thumbR}
+          color="#FFFFFF"
+          flat
+          opacity={opacity}
+          z={Z_LAYER_ACCENT}
+          origin={[on ? trackW - thumbR - 0.003 : thumbR + 0.003, midY]}
+          clips={clips}
+        />
+      </group>
+    );
+    labelX = trackW + 0.016;
+  } else {
+    const r = kind === "radio" ? S / 2 : Math.max(0.004, S * 0.28);
+    control = (
+      <group>
+        <Surface
+          width={S}
+          height={S}
+          radius={r}
+          color={on ? accent : theme.inputBg}
+          rimColor={on ? accent : theme.panelRim}
+          flat
+          opacity={opacity}
+          origin={[S / 2, midY]}
+          clips={clips}
+        />
+        {on && kind === "checkbox" && (
+          <ClippedText
+            anchorX="center"
+            anchorY="middle"
+            position={[S / 2, midY, Z_LAYER_OVERLAY_TEXT]}
+            fontSize={S * 0.82}
+            color="#FFFFFF"
+            fontWeight="700"
+          >
+            ✓
+          </ClippedText>
+        )}
+        {on && kind === "radio" && (
+          <Surface
+            width={S * 0.44}
+            height={S * 0.44}
+            radius={S * 0.22}
+            color="#FFFFFF"
+            flat
+            opacity={opacity}
+            z={Z_LAYER_ACCENT}
+            origin={[S / 2, midY]}
+            clips={clips}
+          />
+        )}
+      </group>
+    );
+    labelX = S + 0.016;
+  }
+
+  return (
+    <group position={pos} rotation={rot}>
+      {control}
+      {labelText && (
         <ClippedText
           anchorX="left"
           anchorY="middle"
-          position={[0.01, -h + INPUT_H / 2, Z_LAYER_BODY_TEXT]}
+          position={[labelX, midY, Z_LAYER_BODY_TEXT]}
           fontSize={0.016}
-          color={theme.mutedTextCol}
-          maxWidth={w - 0.02}
+          color={disabled ? theme.mutedTextCol : theme.bodyCol}
+          maxWidth={Math.max(0.05, w - labelX)}
         >
-          {primitive.placeholder}
+          {labelText}
         </ClippedText>
       )}
+    </group>
+  );
+}
+
+export function XRSliderMesh({
+  primitive,
+  entry,
+}: {
+  primitive: import("../mapper/types").XRSlider;
+  entry: LayoutEntry;
+}) {
+  const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
+  const theme = useTheme();
+  const w = safeDim(entry.size.width);
+  const h = safeDim(entry.size.height);
+  const disabled = primitive.state?.disabled === true;
+  const frac = Math.max(
+    0,
+    Math.min(1, primitive.valueFraction ?? primitive.state?.valueFraction ?? 0),
+  );
+  const accent = theme.accentCol;
+  const label = primitive.label ?? "";
+  const trackH = 0.006;
+  const trackY = -h + 0.012;
+  const thumbR = 0.011;
+  const fillW = Math.max(0, w * frac);
+  const pct = Math.round(frac * 100);
+
+  return (
+    <group position={pos} rotation={rot}>
+      {label && (
+        <ClippedText
+          anchorX="left"
+          anchorY="top"
+          position={[0.004, -0.002, Z_LAYER_BODY_TEXT]}
+          fontSize={0.015}
+          color={theme.mutedTextCol}
+          maxWidth={w - 0.08}
+        >
+          {label}
+        </ClippedText>
+      )}
+      <ClippedText
+        anchorX="right"
+        anchorY="top"
+        position={[w, -0.002, Z_LAYER_BODY_TEXT]}
+        fontSize={0.015}
+        color={disabled ? theme.mutedTextCol : theme.bodyCol}
+      >
+        {`${pct}%`}
+      </ClippedText>
+
+      {/* Track */}
+      <Surface
+        width={w}
+        height={trackH}
+        radius={trackH / 2}
+        color={theme.inputBg}
+        flat
+        opacity={disabled ? 0.45 : 1}
+        origin={[w / 2, trackY]}
+        clips={clips}
+      />
+      {/* Filled portion */}
+      {fillW > 0.001 && (
+        <Surface
+          width={fillW}
+          height={trackH}
+          radius={trackH / 2}
+          color={accent}
+          flat
+          opacity={disabled ? 0.5 : 1}
+          z={Z_LAYER_ACCENT}
+          origin={[fillW / 2, trackY]}
+          clips={clips}
+        />
+      )}
+      {/* Thumb */}
+      <Surface
+        width={thumbR * 2}
+        height={thumbR * 2}
+        radius={thumbR}
+        color="#FFFFFF"
+        rimColor={accent}
+        flat
+        opacity={disabled ? 0.5 : 1}
+        z={Z_LAYER_OVERLAY_TEXT}
+        origin={[Math.max(thumbR, Math.min(w - thumbR, fillW)), trackY]}
+        clips={clips}
+      />
+    </group>
+  );
+}
+
+export function XRComboBoxMesh({
+  primitive,
+  entry,
+}: {
+  primitive: import("../mapper/types").XRComboBox;
+  entry: LayoutEntry;
+}) {
+  const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
+  const theme = useTheme();
+  const w = safeDim(entry.size.width);
+  const h = safeDim(entry.size.height);
+  const disabled = primitive.state?.disabled === true;
+  const INPUT_H = Math.min(0.04, h * 0.9);
+  const cy = -h / 2;
+  // Show the selected option's label (an <option selected> anywhere in the
+  // options subtree), falling back to the first option, then a neutral prompt.
+  const value = React.useMemo(() => {
+    let firstOption: string | null = null;
+    const walk = (node: import("../mapper/types").XRPrimitive): string | null => {
+      for (const child of node.children) {
+        if (child.type === "XRListItem" || child.type === "XRMenuItem") {
+          const lbl = (child.label ?? child.content ?? "").trim();
+          if (lbl && firstOption === null) firstOption = lbl;
+          const selected = (child as unknown as { state?: { selected?: boolean } })
+            .state?.selected;
+          if (selected === true && lbl) return lbl;
+        }
+        const nested = walk(child);
+        if (nested) return nested;
+      }
+      return null;
+    };
+    return walk(primitive) ?? firstOption ?? "Select…";
+  }, [primitive]);
+
+  return (
+    <group position={pos} rotation={rot}>
+      <Surface
+        width={w}
+        height={INPUT_H}
+        radius={0.008}
+        color={theme.inputBg}
+        rimColor={theme.panelRim}
+        opacity={disabled ? 0.45 : 1}
+        origin={[w / 2, cy]}
+        clips={clips}
+      />
+      <ClippedText
+        anchorX="left"
+        anchorY="middle"
+        position={[0.014, cy, Z_LAYER_BODY_TEXT]}
+        fontSize={0.016}
+        color={disabled ? theme.mutedTextCol : theme.bodyCol}
+        maxWidth={w - 0.05}
+      >
+        {value}
+      </ClippedText>
+      <ClippedText
+        anchorX="right"
+        anchorY="middle"
+        position={[w - 0.014, cy, Z_LAYER_OVERLAY_TEXT]}
+        fontSize={0.018}
+        color={theme.bodyCol}
+      >
+        ▾
+      </ClippedText>
+    </group>
+  );
+}
+
+export function XRSearchBoxMesh({
+  primitive,
+  entry,
+}: {
+  primitive: import("../mapper/types").XRSearchBox;
+  entry: LayoutEntry;
+}) {
+  const { pos, rot } = entryTransform(entry);
+  const clips = useClipPlanes();
+  const theme = useTheme();
+  const w = safeDim(entry.size.width);
+  const h = safeDim(entry.size.height);
+  const disabled = primitive.state?.disabled === true;
+  const INPUT_H = Math.min(0.04, h * 0.9);
+  const cy = -h / 2;
+  const value = (primitive.content ?? "").trim();
+  const placeholder = primitive.placeholder ?? primitive.label ?? "Search…";
+
+  return (
+    <group position={pos} rotation={rot}>
+      {/* Rounded pill search field */}
+      <Surface
+        width={w}
+        height={INPUT_H}
+        radius={INPUT_H / 2}
+        color={theme.inputBg}
+        rimColor={theme.panelRim}
+        opacity={disabled ? 0.45 : 1}
+        origin={[w / 2, cy]}
+        clips={clips}
+      />
+      {/* Magnifier glyph */}
+      <ClippedText
+        anchorX="left"
+        anchorY="middle"
+        position={[0.014, cy, Z_LAYER_OVERLAY_TEXT]}
+        fontSize={0.018}
+        color={theme.mutedTextCol}
+      >
+        ⌕
+      </ClippedText>
+      <ClippedText
+        anchorX="left"
+        anchorY="middle"
+        position={[0.04, cy, Z_LAYER_BODY_TEXT]}
+        fontSize={0.016}
+        color={value ? theme.bodyCol : theme.mutedTextCol}
+        maxWidth={w - 0.06}
+      >
+        {value || placeholder}
+      </ClippedText>
     </group>
   );
 }
@@ -2679,10 +3091,8 @@ export interface XRTextMeshProps {
  */
 export function XRTextMesh({ primitive, entry }: XRTextMeshProps) {
   const { pos, rot } = entryTransform(entry);
-  const clips = useClipPlanes();
   const theme = useTheme();
   const w = safeDim(entry.size.width);
-  const h = safeDim(entry.size.height);
   const metrics = useRenderMetrics();
   // An ancestor (e.g. XRHeadingMesh) may override the metric this text run
   // renders with — see TextStyleContext. Falls back to paragraph metrics,

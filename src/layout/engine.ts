@@ -126,9 +126,13 @@ function inlineOwnerFontMetrics(
   }
 }
 
-function isInlineOwningNode(node: { type: string; children: unknown[] }): boolean {
+function isInlineOwningNode(node: {
+  type: string;
+  children: unknown[];
+}): boolean {
   if (INLINE_OWNING_TYPES.has(node.type)) return true;
-  if (node.type !== "XRGenericPanel" || node.children.length === 0) return false;
+  if (node.type !== "XRGenericPanel" || node.children.length === 0)
+    return false;
   const flatEffective = flattenInlineWrappers(node.children as any[]);
   return (
     flatEffective.length > 0 &&
@@ -277,7 +281,8 @@ function stackChildrenSimple(
   // horizontal strip. Lay these out left-to-right at their own
   // intrinsic-aspect-ratio width instead.
   if (children.length > 1 && children.every(isIconSizedImage)) {
-    const lineH = metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
+    const lineH =
+      metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
     const childX = ownsXPadding ? config.panelPaddingX : 0;
     const startY = ownsTopPadding ? -topOffset : 0;
     let cursorX = childX;
@@ -470,6 +475,22 @@ function paginateContentPanel(
     for (const child of node.children) stampSubtree(child, page);
   }
 
+  // An XRComplementary flowed inside a content panel is re-homed at the
+  // complementary slot by computeLayoutPlan's extraction pass, so it must not
+  // occupy any space in the content flow. Give it (and its subtree) a pageIndex
+  // anchored to the current page — the extraction pass keys off that pageIndex
+  // and later overwrites the positions with slot-relative ones — but do NOT
+  // advance the cursor, page height, or item count. Without this, an aside that
+  // overflows onto a fresh page leaves that page blank once it is extracted.
+  // Only active when the template actually has a complementary slot to extract
+  // into (otherwise the aside stays in flow and must occupy real space).
+  const extractComplementary = config.complementaryExtractedToSlot === true;
+  function placeFloatingComplementary(node: XRPrimitive): void {
+    stampSubtree(node, pageIdx);
+    positionMap.set(node.id, { x: config.panelPaddingX, y: cursorY, z: 0 });
+    heightMap.set(node.id, 0);
+  }
+
   // Config-driven helpers replacing the old isSectionLike / isRecursiveContainer.
   function isSectionLike(p: XRPrimitive): boolean {
     if (PRIMITIVE_CONFIG[p.type]?.forceNewPage !== true) return false;
@@ -486,11 +507,39 @@ function paginateContentPanel(
     return true;
   }
 
+  // Text carried directly on a node (not in a child XRText). An unmapped
+  // <label>/<address> becomes a CHILDLESS XRGenericPanel whose only content is
+  // this string — it still renders and must be placed, not skipped as "empty".
+  // Check content AND label independently: a node can carry an empty-string
+  // content ("") while still having a real label (e.g. XRSearchBox), and
+  // `content ?? label` would wrongly return "" for it.
+  function nodeHasText(p: XRPrimitive): boolean {
+    return (p.content ?? "").trim() !== "" || (p.label ?? "").trim() !== "";
+  }
+
+  // A container-typed node (recursive/section) is one whose whole purpose is to
+  // group children — when childless AND textless it renders nothing and is
+  // skipped. Leaf VISUAL primitives (XRImage, XRMediaPlayer, XRSeparator,
+  // XRProgressBar, form controls, …) are paginate:"atomic" and draw themselves
+  // with no children or text, so they must NEVER be treated as empty.
+  function isEmptyContainerNode(p: XRPrimitive): boolean {
+    if (p.children.length > 0 || nodeHasText(p)) return false;
+    const cfg = PRIMITIVE_CONFIG[p.type];
+    return cfg?.paginate === "recursive" || cfg?.forceNewPage === true;
+  }
+
   // A recursive container is one whose config says paginate:'recursive' but
   // does NOT force a new page (those are handled by isSectionLike above).
   // Normalized XRParagraph/XRHeading/XRBlockQuote/XRLink/XRButton with a
   // single synthetic XRText child also recurse so the text node is split.
   function isRecursiveContainer(p: XRPrimitive): boolean {
+    // A childless node has nothing to recurse into. Treating it as a recursive
+    // container makes splitSection/the main loop skip it (empty container), yet
+    // layoutPrimitive still emits a fallback LayoutEntry pinned to the top of
+    // the page for it — a childless-but-text-bearing XRGenericPanel (unmapped
+    // <label>/<address>) then rendered over the section heading. Return false so
+    // it falls through to the atomic-leaf path and gets a real stacked position.
+    if (p.children.length === 0) return false;
     const cfg = PRIMITIVE_CONFIG[p.type];
     if (cfg?.paginate === "recursive" && !cfg.forceNewPage) return true;
     // A titleless XRSection is exempted from forcing a page break (see
@@ -1095,7 +1144,9 @@ function paginateContentPanel(
         );
         if (h > emptyPageBudget) break; // handled as its own full-width row next
         rowItems.push(candidate);
-        rowHeights.push(h > 0 && isFinite(h) ? h : metrics.fallbackElementHeight);
+        rowHeights.push(
+          h > 0 && isFinite(h) ? h : metrics.fallbackElementHeight,
+        );
         i += 1;
       }
       placeRow(
@@ -1150,6 +1201,18 @@ function paginateContentPanel(
   function splitSection(section: XRPrimitive): void {
     for (let j = 0; j < section.children.length; j++) {
       const sc = section.children[j];
+
+      // ── Floating complementary aside (extracted to slot) ──────────────────
+      if (extractComplementary && sc.type === "XRComplementary") {
+        placeFloatingComplementary(sc);
+        continue;
+      }
+
+      // Empty container nodes (recursive/section type, no children, no text)
+      // render nothing — skip. Childless text-bearing nodes AND leaf visual
+      // primitives (image/media/separator/…) are NOT empty; they fall through
+      // to the atomic-leaf path below.
+      if (isEmptyContainerNode(sc)) continue;
 
       // ── Section-like child (XRSection only) ───────────────────────────────
       if (isSectionLike(sc)) {
@@ -1277,6 +1340,17 @@ function paginateContentPanel(
   // ── Main pagination loop ───────────────────────────────────────────────────
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
+
+    // Floating complementary aside (extracted to slot): occupies no flow space.
+    if (extractComplementary && child.type === "XRComplementary") {
+      placeFloatingComplementary(child);
+      continue;
+    }
+
+    // Empty container nodes render nothing — skip. Childless text-bearing
+    // nodes and leaf visual primitives fall through to the atomic-leaf path.
+    if (isEmptyContainerNode(child)) continue;
+
     const h = estimateHeight(
       child,
       childWidth,
@@ -2004,6 +2078,12 @@ function layoutPrimitive(
       }
     } else {
       // ── Outside any XRContentPanel — stackChildrenSimple ─────────────────
+      // Children get PARENT-RELATIVE positions here. Flag the container so the
+      // renderer nests its child dispatch in a positioned group (see
+      // LayoutEntry.childrenParentRelative) — otherwise a nested container like
+      // an XRList inside a landmark slot loses its own offset and its items
+      // detach from it.
+      entry.childrenParentRelative = true;
       const resolvedListColumns =
         primitive.type === "XRList" ? (entry.listColumns ?? 1) : undefined;
 
@@ -2118,6 +2198,13 @@ export function computeLayoutPlan(
   const slots = arrangement
     ? resolveArrangementSlots(arrangement, resolvedTemplate, config, metrics)
     : selectSlots(resolvedTemplate, config, metrics);
+
+  // Tell the paginator whether flowed XRComplementary asides will be extracted
+  // to a real slot (see LayoutConfig.complementaryExtractedToSlot). When they
+  // will be, the paginator must not let them occupy flow space — otherwise the
+  // page an overflowing aside lands on is left blank after extraction.
+  config.complementaryExtractedToSlot = !!slots.complementary;
+
   const topLevelPrimitives = scene.root.children;
   const usedSlots = new Set<SlotName>();
 

@@ -119,6 +119,8 @@ export interface IRNodeAttributes {
   autoplay: string | null;
   content: string | null;
   styleTags: string[];
+  /** Original HTML `id` attribute — the target of same-page `#fragment` links. */
+  domId: string | null;
 }
 
 export interface IRNodeState {

@@ -927,7 +927,7 @@ function handleFigureSythenticCreation(
   ctx: BuildContext,
   readingDepth: number,
 ): string | undefined {
-  const promoted = promoteLinkedImageDeep(element, ctx);
+  const promoted = promoteLinkedImageDeep(element);
   const isFigurePromotionFailed = !promoted;
   if (isFigurePromotionFailed) return;
 
@@ -966,7 +966,6 @@ function handleFigureSythenticCreation(
 
 function promoteLinkedImageDeep(
   element: Element,
-  ctx: BuildContext,
 ): { element: Element; isFigure: boolean } | null {
   const tag = element.tagName.toLowerCase();
   const isAlreadyFigure = tag === "figure";
@@ -1533,61 +1532,61 @@ function findSkipToMainTarget(doc: Document): string | null {
   return null;
 }
 
-async function buildExternalLinksSection(
-  doc: Document,
-  mainChildIds: string[],
-  ctx: BuildContext,
-): Promise<void> {
-  const containers = Array.from(
-    doc.querySelectorAll(
-      'header, footer, [role="banner"], [role="contentinfo"]',
-    ),
-  );
-  if (containers.length === 0) return;
+// async function buildExternalLinksSection(
+//   doc: Document,
+//   mainChildIds: string[],
+//   ctx: BuildContext,
+// ): Promise<void> {
+//   const containers = Array.from(
+//     doc.querySelectorAll(
+//       'header, footer, [role="banner"], [role="contentinfo"]',
+//     ),
+//   );
+//   if (containers.length === 0) return;
 
-  const seen = new Set<string>();
-  const links: Element[] = [];
+//   const seen = new Set<string>();
+//   const links: Element[] = [];
 
-  for (const container of containers) {
-    for (const a of Array.from(container.querySelectorAll("a[href]"))) {
-      const text = a.textContent?.trim() ?? "";
-      const href = a.getAttribute("href") ?? "";
-      const key = `${href}|${text}`;
-      if (text && !seen.has(key)) {
-        seen.add(key);
-        links.push(a as Element);
-      }
-    }
-  }
+//   for (const container of containers) {
+//     for (const a of Array.from(container.querySelectorAll("a[href]"))) {
+//       const text = a.textContent?.trim() ?? "";
+//       const href = a.getAttribute("href") ?? "";
+//       const key = `${href}|${text}`;
+//       if (text && !seen.has(key)) {
+//         seen.add(key);
+//         links.push(a as Element);
+//       }
+//     }
+//   }
 
-  if (links.length === 0) return;
+//   if (links.length === 0) return;
 
-  const sectionId = `main-section-${ctx.counters.section++}`;
-  const listId = `${sectionId}-list-${ctx.counters.section++}`;
-  const listChildren = await Promise.all(
-    links.map((link) => createListItem(link, listId, "main", ctx, 2)),
-  );
-  ctx.nodes[listId] = createBaseNode(listId, "list", sectionId, ctx, {
-    children: listChildren,
-    attributes: { ...createEmptyAttributes(), listType: "unordered" },
-    readingDepth: 1,
-  });
-  const linkChildren = [listId];
+//   const sectionId = `main-section-${ctx.counters.section++}`;
+//   const listId = `${sectionId}-list-${ctx.counters.section++}`;
+//   const listChildren = await Promise.all(
+//     links.map((link) => createListItem(link, listId, "main", ctx, 2)),
+//   );
+//   ctx.nodes[listId] = createBaseNode(listId, "list", sectionId, ctx, {
+//     children: listChildren,
+//     attributes: { ...createEmptyAttributes(), listType: "unordered" },
+//     readingDepth: 1,
+//   });
+//   const linkChildren = [listId];
 
-  ctx.landmarkRecords.push({
-    id: sectionId,
-    label: "External Links",
-    parentId: "main",
-  });
-  ctx.nodes[sectionId] = createBaseNode(sectionId, "region", "main", ctx, {
-    label: "External Links",
-    unlabelledYet: false,
-    landmark: true,
-    children: linkChildren,
-  });
+//   ctx.landmarkRecords.push({
+//     id: sectionId,
+//     label: "External Links",
+//     parentId: "main",
+//   });
+//   ctx.nodes[sectionId] = createBaseNode(sectionId, "region", "main", ctx, {
+//     label: "External Links",
+//     unlabelledYet: false,
+//     landmark: true,
+//     children: linkChildren,
+//   });
 
-  mainChildIds.push(sectionId);
-}
+//   mainChildIds.push(sectionId);
+// }
 
 export const parsePageToIR = async (
   htmlString: string,
@@ -1643,7 +1642,7 @@ export const parsePageToIR = async (
   const fallbackLog: IRFallbackEntry[] = [];
   const landmarkRecords: LandmarkRecord[] = [];
 
-  const READING_BODY = 0;
+  // const READING_BODY = 0;¯
   const READING_TOC = 1;
   const READING_MAIN = 2;
 

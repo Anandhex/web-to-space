@@ -136,6 +136,8 @@ export interface XRPrimitiveBase {
   confidence: number;
   /** Semantic containment depth (from IRNode.readingDepth). */
   depth: number;
+  /** Original HTML `id`, when present — target for same-page `#fragment` links. */
+  domId?: string | null;
   // to be set via the layout engine, not the mapper directly, since it may be overridden by runtime constraints
   //   placement: SpatialPlacement;
   /** Child primitives in the spatial scene graph. */

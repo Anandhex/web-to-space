@@ -72,6 +72,7 @@ export function baseFrom(node: IRNode, type: XRPrimitiveType): XRPrimitiveBase {
     sourceIds: [node.id],
     confidence: node.confidence,
     depth: node.readingDepth,
+    domId: node.attributes?.domId ?? null,
     // placement: absent — Layout's responsibility
     children: [],
     relations: {
@@ -340,7 +341,6 @@ export function mapIRToScene(
   };
 
   ctx.primitives["scene"] = rootScene;
-  console.log(rootScene, ctx.primitives);
   return {
     root: rootScene,
     primitives: ctx.primitives,

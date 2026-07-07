@@ -1,5 +1,5 @@
 import React, { useState, useRef, Suspense, useEffect } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas } from "@react-three/fiber";
 import { Stars, OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { Surface } from "../renderer/primitives";
@@ -120,13 +120,6 @@ const PRESET_SITES = [
     initial: "W",
   },
   {
-    id: "hn",
-    title: "Hacker News",
-    subtitle: "Tech news & discussion",
-    url: "https://news.ycombinator.com/",
-    initial: "H",
-  },
-  {
     id: "mdn",
     title: "MDN Web Docs",
     subtitle: "Web developer reference",
@@ -186,7 +179,6 @@ function SiteCard({
   initial,
   position,
   onSelect,
-  phase,
   disabled,
   theme,
 }: SiteCardProps) {

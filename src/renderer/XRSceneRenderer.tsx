@@ -89,9 +89,14 @@ import {
   XRAlertMesh,
   XRTableMesh,
   XRFormFieldMesh,
+  XRToggleMesh,
+  XRSliderMesh,
+  XRComboBoxMesh,
+  XRSearchBoxMesh,
   XRTabGroupMesh,
   ClipPlanesContext,
   PanelOriginYContext,
+  CardSelfClipContext,
   ClippedText,
   RenderMetricsContext,
   NavigateContext,
@@ -309,7 +314,8 @@ function AtPos({
     const dpx = tp.x - p.x;
     const dpy = tp.y - p.y;
     const dpz = tp.z - p.z;
-    const posSettled = Math.abs(dpx) + Math.abs(dpy) + Math.abs(dpz) < MORPH_EPS;
+    const posSettled =
+      Math.abs(dpx) + Math.abs(dpy) + Math.abs(dpz) < MORPH_EPS;
     if (posSettled) p.copy(tp);
     else {
       p.x += dpx * a;
@@ -322,7 +328,8 @@ function AtPos({
     const drx = tr.x - r.x;
     const dry = tr.y - r.y;
     const drz = tr.z - r.z;
-    const rotSettled = Math.abs(drx) + Math.abs(dry) + Math.abs(drz) < MORPH_EPS;
+    const rotSettled =
+      Math.abs(drx) + Math.abs(dry) + Math.abs(drz) < MORPH_EPS;
     if (rotSettled) r.set(tr.x, tr.y, tr.z);
     else {
       r.x += drx * a;
@@ -1550,13 +1557,26 @@ function PrimitiveDispatcher({
       return (
         <AtPos entry={entry}>
           <PanelBacking entry={zeroedEntry(entry)} />
-          <DispatchChildren
-            primitives={primitive.children}
-            plan={plan}
-            pageState={pageState}
-            setPage={setPage}
-            primitiveMap={primitiveMap}
-          />
+          {/* Clip child content to the aside's own bounds, and expose the
+              slot's world-Y origin — a landmark panel is not paginated, so
+              nothing upstream provides these. Card self-clip is disabled
+              because items here carry parent-relative (not panel-absolute) Y
+              (see CardSelfClipContext). */}
+          <ClipPlanesContext.Provider
+            value={buildPanelClipPlanes(entry.position.y, entry.size.height)}
+          >
+            <PanelOriginYContext.Provider value={entry.position.y}>
+              <CardSelfClipContext.Provider value={false}>
+                <DispatchChildren
+                  primitives={primitive.children}
+                  plan={plan}
+                  pageState={pageState}
+                  setPage={setPage}
+                  primitiveMap={primitiveMap}
+                />
+              </CardSelfClipContext.Provider>
+            </PanelOriginYContext.Provider>
+          </ClipPlanesContext.Provider>
         </AtPos>
       );
     }
@@ -1662,9 +1682,7 @@ function PrimitiveDispatcher({
     }
 
     case "XRList": {
-      // Children have panel-absolute positions — dispatch as siblings only,
-      // no shared backing shell behind the item tiles.
-      return (
+      const listChildDispatch = (
         <DispatchChildren
           primitives={primitive.children}
           plan={plan}
@@ -1672,6 +1690,17 @@ function PrimitiveDispatcher({
           setPage={setPage}
           primitiveMap={primitiveMap}
         />
+      );
+      // Inside a landmark slot (e.g. XRComplementary) the list's items carry
+      // positions relative to THIS list, not to the slot, so they must be
+      // nested in a group at the list's own offset. Inside a paginated content
+      // panel the items already carry panel-absolute positions and are
+      // dispatched as flat siblings (no wrapping) so they compose with the
+      // panel's single group.
+      return entry.childrenParentRelative ? (
+        <AtPos entry={entry}>{listChildDispatch}</AtPos>
+      ) : (
+        listChildDispatch
       );
     }
 
@@ -1727,27 +1756,42 @@ function PrimitiveDispatcher({
     case "XRTreeItem":
     case "XRDialog":
     case "XRTooltip":
-    case "XRSearchBox":
-    case "XRSlider":
     case "XRToggle":
-    case "XRComboBox": {
-      const w = Math.max(entry.size.width, 0.025);
       return (
         <AtPos entry={entry}>
-          <ClippedText
-            font={fontType}
-            anchorX="left"
-            anchorY="top"
-            position={[0.008, -0.008, 0.004]}
-            fontSize={0.018}
-            color={theme.bodyCol}
-            maxWidth={w - 0.016}
-          >
-            {primitive.label ?? primitive.type}
-          </ClippedText>
+          <XRToggleMesh
+            primitive={primitive as import("../mapper/types").XRToggle}
+            entry={zeroedEntry(entry)}
+          />
         </AtPos>
       );
-    }
+    case "XRSlider":
+      return (
+        <AtPos entry={entry}>
+          <XRSliderMesh
+            primitive={primitive as import("../mapper/types").XRSlider}
+            entry={zeroedEntry(entry)}
+          />
+        </AtPos>
+      );
+    case "XRComboBox":
+      return (
+        <AtPos entry={entry}>
+          <XRComboBoxMesh
+            primitive={primitive as import("../mapper/types").XRComboBox}
+            entry={zeroedEntry(entry)}
+          />
+        </AtPos>
+      );
+    case "XRSearchBox":
+      return (
+        <AtPos entry={entry}>
+          <XRSearchBoxMesh
+            primitive={primitive as import("../mapper/types").XRSearchBox}
+            entry={zeroedEntry(entry)}
+          />
+        </AtPos>
+      );
 
     default: {
       // XRGenericPanel is a transparent wrapper — no visual of its own.
@@ -2229,23 +2273,6 @@ function XRSceneGraph({
   }, [scene.root, scene.primitives]);
 
   React.useEffect(() => {
-    const withPage = Object.values(plan.entries).filter(
-      (e) => e.pageIndex !== undefined,
-    );
-    const withoutPage = Object.values(plan.entries).filter(
-      (e) => e.pageIndex === undefined,
-    );
-
-    // console.log(`[SCENE] Total entries: ${Object.keys(plan.entries).length}`);
-    // console.log(
-    //   `[SCENE] With page index: ${withPage.length}`,
-    //   withPage.map((e) => `${e.id} (page ${e.pageIndex})`),
-    // );
-    // console.log(
-    //   `[SCENE] Without page index: ${withoutPage.length}`,
-    //   withoutPage.map((e) => e.id),
-    // );
-
     // Inline children of inline-owning types (XRParagraph, XRHeading,
     // XRListItem, XRBlockQuote) are rendered as text runs by the mesh
     // component and intentionally have no plan entry. Exclude them from
@@ -2345,17 +2372,31 @@ function XRSceneGraph({
   const navigate = useCallback(
     (href: string) => {
       if (href.startsWith("#")) {
-        const sectionId = href.slice(1);
-        const sectionEntry = plan.entries[sectionId];
-        if (sectionEntry?.pageIndex !== undefined) {
+        const fragment = decodeURIComponent(href.slice(1));
+        // The fragment is an HTML `id` (e.g. "headings-title"), not a primitive
+        // id. Resolve it to the primitive that carried that id (threaded through
+        // as `domId`), then page the containing content panel to its page. Fall
+        // back to a direct primitive-id match for anchors that already use one.
+        let targetId: string | null = plan.entries[fragment] ? fragment : null;
+        if (!targetId) {
           for (const [, p] of primitiveMap) {
-            if (p.type === "XRContentPanel" && hasDescendant(p, sectionId)) {
-              setPage(p.id, sectionEntry.pageIndex);
+            if (p.domId === fragment) {
+              targetId = p.id;
+              break;
+            }
+          }
+        }
+        const targetEntry = targetId ? plan.entries[targetId] : undefined;
+        if (targetId && targetEntry?.pageIndex !== undefined) {
+          for (const [, p] of primitiveMap) {
+            if (p.type === "XRContentPanel" && hasDescendant(p, targetId)) {
+              setPage(p.id, targetEntry.pageIndex);
               return;
             }
           }
         }
-        // anchor not found in plan — fall through to external handler
+        // anchor not found in plan — nothing to navigate to; do not open a URL.
+        return;
       }
 
       // Resolve relative URLs against the source page URL
@@ -2606,10 +2647,7 @@ export function XRSceneRenderer({
   // Two-axis arrangement views (focus/stack/orbital/palm/gallery) route through
   // the arrangement path: the spatial distribution composes over whatever
   // content template the scene auto-selects. Legacy views → undefined.
-  const arrangement = useMemo(
-    () => getArrangement(viewMode),
-    [viewMode],
-  );
+  const arrangement = useMemo(() => getArrangement(viewMode), [viewMode]);
 
   // Camera look target for the flat (non-immersive) preview. Panels are
   // top-left anchored, so a panel whose top sits at eyeY hangs *below* the eye

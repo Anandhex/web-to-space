@@ -102,6 +102,19 @@ export interface LayoutEntry {
    * or as world-space siblings.
    */
   paginatedByEngine?: boolean;
+
+  /**
+   * Set to true when this primitive's children were positioned by
+   * stackChildrenSimple (parent-relative coordinates), as opposed to the
+   * panel-absolute coordinates paginateContentPanel produces. This happens for
+   * containers laid out inside a non-paginating landmark slot (e.g. an XRList
+   * inside an XRComplementary). The renderer must wrap such a container's child
+   * dispatch in its own <AtPos> group so the container's own offset composes —
+   * otherwise the children render relative to the grandparent slot, dropping
+   * the container's position (a list's items detach from the list, leaving a
+   * gap where the list should be).
+   */
+  childrenParentRelative?: boolean;
 }
 
 /**
@@ -368,6 +381,17 @@ export interface LayoutConfig {
    * for their children, but no forced page break is injected before them.
    */
   sectionStartsOnNewPage?: boolean; // default: true
+  /**
+   * Set by computeLayoutPlan (not a device profile knob): true when the active
+   * template exposes a complementary slot, so every XRComplementary flowed
+   * inside a content panel will be extracted to that slot at layout time. When
+   * true, paginateContentPanel treats those asides as zero-space floats — they
+   * still receive a pageIndex (so the extraction pass can find them) but never
+   * consume vertical space or force a page break, otherwise a section-nested
+   * aside that overflows onto a fresh page leaves that page blank once its
+   * content is re-homed in the slot.
+   */
+  complementaryExtractedToSlot?: boolean;
 }
 
 export interface LandmarkSlot {

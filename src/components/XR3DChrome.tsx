@@ -124,8 +124,8 @@ function TabTile({
 }) {
   const [hovered, setHovered] = useState(false);
   const hot = hovered || active;
-  const initial =
-    tab.label === "New Tab" ? "+" : (tab.label[0]?.toUpperCase() ?? "•");
+  // const initial =
+  //   tab.label === "New Tab" ? "+" : (tab.label[0]?.toUpperCase() ?? "•");
 
   return (
     <group>
@@ -298,10 +298,26 @@ const VIEW_MODES: {
   label: string;
   fit: ViewDeviceType[];
 }[] = [
-  { id: "standard", label: "Standard", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "carousel", label: "Carousel", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "theatre", label: "Theatre", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "focus", label: "Focus", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  {
+    id: "standard",
+    label: "Standard",
+    fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
+  },
+  {
+    id: "carousel",
+    label: "Carousel",
+    fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
+  },
+  {
+    id: "theatre",
+    label: "Theatre",
+    fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
+  },
+  {
+    id: "focus",
+    label: "Focus",
+    fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
+  },
   { id: "stack", label: "Stack", fit: ["QUEST_3", "QUEST_PRO"] },
   { id: "orbital", label: "Orbital", fit: ["QUEST_3", "QUEST_PRO"] },
   { id: "palm", label: "Palm", fit: ["QUEST_3", "QUEST_PRO"] },

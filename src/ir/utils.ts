@@ -70,10 +70,27 @@ export function collectSiblingRun(
 }
 
 export function readNodeState(element: Element): IRNodeState {
+  // Native form controls express their state through DOM attributes/properties
+  // (`checked`, `value`, `readonly`, …), not ARIA — mirror those into the same
+  // state fields so a plain `<input type="checkbox" checked>` or
+  // `<input type="range" value="70">` reflects its real state, not a blank one.
+  const tag = element.tagName.toLowerCase();
+  const type = (element.getAttribute("type") ?? "").toLowerCase();
+  const isCheckable =
+    tag === "input" && (type === "checkbox" || type === "radio");
+  const isRangey =
+    (tag === "input" && (type === "range" || type === "number")) ||
+    tag === "progress" ||
+    tag === "meter";
+
   return {
     expanded: element.getAttribute("aria-expanded") ?? null,
-    checked: element.getAttribute("aria-checked") ?? null,
-    selected: element.getAttribute("aria-selected") ?? null,
+    checked:
+      element.getAttribute("aria-checked") ??
+      (isCheckable ? (element.hasAttribute("checked") ? "true" : "false") : null),
+    selected:
+      element.getAttribute("aria-selected") ??
+      (tag === "option" && element.hasAttribute("selected") ? "true" : null),
     disabled:
       element.getAttribute("aria-disabled") ??
       (element.hasAttribute("disabled") ? "true" : null),
@@ -83,16 +100,26 @@ export function readNodeState(element: Element): IRNodeState {
       element.getAttribute("aria-hidden") ??
       (element.hasAttribute("hidden") ? "true" : null),
     busy: element.getAttribute("aria-busy") ?? null,
-    required: element.getAttribute("aria-required") ?? null,
+    required:
+      element.getAttribute("aria-required") ??
+      (element.hasAttribute("required") ? "true" : null),
     live: element.getAttribute("aria-live") ?? null,
     invalid: element.getAttribute("aria-invalid") ?? null,
-    readonly: element.getAttribute("aria-readonly") ?? null,
+    readonly:
+      element.getAttribute("aria-readonly") ??
+      (element.hasAttribute("readonly") ? "true" : null),
     modal: element.getAttribute("aria-modal") ?? null,
     multiselectable: element.getAttribute("aria-multiselectable") ?? null,
     orientation: element.getAttribute("aria-orientation") ?? null,
-    valueNow: element.getAttribute("aria-valuenow") ?? null,
-    valueMin: element.getAttribute("aria-valuemin") ?? null,
-    valueMax: element.getAttribute("aria-valuemax") ?? null,
+    valueNow:
+      element.getAttribute("aria-valuenow") ??
+      (isRangey ? element.getAttribute("value") : null),
+    valueMin:
+      element.getAttribute("aria-valuemin") ??
+      (isRangey ? element.getAttribute("min") : null),
+    valueMax:
+      element.getAttribute("aria-valuemax") ??
+      (isRangey ? element.getAttribute("max") : null),
   };
 }
 
@@ -106,8 +133,12 @@ export function readNodeAttributes(
     return new URL(url, context.sourceUrl).href;
   };
 
-  const readIntrinsicDim = (attrName: string, dataAttrName: string): number | null => {
-    const raw = element.getAttribute(attrName) ?? element.getAttribute(dataAttrName);
+  const readIntrinsicDim = (
+    attrName: string,
+    dataAttrName: string,
+  ): number | null => {
+    const raw =
+      element.getAttribute(attrName) ?? element.getAttribute(dataAttrName);
     if (!raw) return null;
     const n = parseInt(raw, 10);
     return Number.isFinite(n) && n > 0 ? n : null;
@@ -170,6 +201,7 @@ export function readNodeAttributes(
     autoplay: element.getAttribute("autoplay") ?? null,
     content: element.textContent?.trim() ?? null,
     styleTags: [],
+    domId: element.getAttribute("id") ?? null,
   };
 }
 
@@ -282,6 +314,7 @@ export function createEmptyAttributes(): IRNodeAttributes {
     autoplay: null,
     content: null,
     styleTags: [],
+    domId: null,
   };
 }
 
@@ -470,7 +503,7 @@ export function resolveRoleFromElement(
 ): {
   role: IRRole;
   level: number | null;
-  source: Extract<IRSource, "explicit" | "structural">;
+  source: Extract<IRSource, "explicit" | "structural" | "ai" | "ai-timeout">;
 } {
   if (config.useExplicitSemantics) {
     const ariaRole = element.getAttribute("role")?.trim().toLowerCase();

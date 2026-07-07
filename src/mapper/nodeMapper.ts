@@ -403,23 +403,126 @@ function mapText(node: IRNode, ctx: MappingContext): XRText {
 }
 
 function mapCodeBlock(node: IRNode, ctx: MappingContext): XRCodeBlock {
+  const base = baseFrom(node, "XRCodeBlock");
+  const resolved = resolveChildren(node, ctx);
+
+  // `<pre><code>…</code></pre>` double-wraps: both <pre> and <code> resolve to
+  // role "code", so the inner <code> maps to a second XRCodeBlock nested inside
+  // the outer one — two stacked surfaces rendering the same text. Detect any
+  // XRLink/XRButton in the subtree (syntax highlighting can embed real links);
+  // only that structure is worth preserving as flowed inline children.
+  const hasInteractive = resolved.some((c) => subtreeHasInteractive(c));
+  const contentText = (base.content ?? base.label ?? "").trim();
+
+  let children = resolved;
+  // Plain code (no embedded links/buttons) with a populated `content` string:
+  // render as a leaf. XRCodeBlockMesh's no-children branch draws `content` via
+  // ClippedText — which preserves newlines and indentation — and the height
+  // estimator's no-children branch counts actual lines instead of word-wrapping
+  // the whole block onto one row (which collapsed 6 lines of code to ~1 line
+  // tall, overlapping the following paragraph).
+  if (!hasInteractive && contentText !== "") {
+    for (const c of resolved) deleteSubtree(ctx, c);
+    children = [];
+  }
+
   const primitive: XRCodeBlock = {
-    ...baseFrom(node, "XRCodeBlock"),
+    ...base,
     type: "XRCodeBlock",
-    children: resolveChildren(node, ctx),
+    children,
   };
   registerPrimitive(ctx, primitive, "code→XRCodeBlock");
   return primitive;
 }
 
+function subtreeHasInteractive(p: XRPrimitive): boolean {
+  if (p.type === "XRLink" || p.type === "XRButton") return true;
+  return p.children.some((c) => subtreeHasInteractive(c));
+}
+
+function deleteSubtree(ctx: MappingContext, p: XRPrimitive): void {
+  delete ctx.primitives[p.id];
+  for (const c of p.children) deleteSubtree(ctx, c);
+}
+
 function mapBlockQuote(node: IRNode, ctx: MappingContext): XRBlockQuote {
+  const base = baseFrom(node, "XRBlockQuote");
+  const resolved = resolveChildren(node, ctx);
+
+  // XRBlockQuoteMesh flows a quote's inline children as a single prose run, but
+  // dispatches any block child (e.g. the wrapping <p>) as a separately
+  // positioned sibling. A simple `<blockquote><p>…</p><footer>…</footer>`
+  // therefore rendered the footer prose and the paragraph block at the SAME
+  // origin — overlapping — and under-measured its height (the footer line
+  // wasn't reserved). When the quote is only paragraphs plus already-inline
+  // attribution (no lists/tables/figures), lift each paragraph's inline runs so
+  // the whole quote becomes one inline prose flow that measures and renders
+  // consistently. Quotes containing genuine block content keep their children.
+  const isSimpleQuote =
+    resolved.length > 0 &&
+    resolved.some((c) => c.type === "XRParagraph") &&
+    resolved.every((c) => c.type === "XRParagraph" || subtreeIsAllInline(c));
+
+  let children = resolved;
+  if (isSimpleQuote) {
+    const flat: XRPrimitive[] = [];
+    for (const c of resolved) {
+      if (c.type === "XRParagraph" && c.children.length > 0) {
+        // Lift the paragraph's inline runs up; orphan the now-empty <p> shell.
+        delete ctx.primitives[c.id];
+        flat.push(...c.children);
+      } else {
+        // A footer/cite attribution arrives as a childless XRGenericPanel whose
+        // text lives in its label — flattenInlineWrappers can't turn that into a
+        // prose run, so the renderer would drop the text and the engine would
+        // still position it as a block. Re-cast it as an XRText so it flows with
+        // the quote instead. Genuine inline nodes (XRText/XRLink) pass through.
+        flat.push(asInlineTextRun(c, ctx));
+      }
+    }
+    children = flat;
+  }
+
   const primitive: XRBlockQuote = {
-    ...baseFrom(node, "XRBlockQuote"),
+    ...base,
     type: "XRBlockQuote",
-    children: resolveChildren(node, ctx),
+    children,
   };
   registerPrimitive(ctx, primitive, "blockquote→XRBlockQuote");
   return primitive;
+}
+
+// Re-cast a childless text-bearing XRGenericPanel (e.g. a <footer> attribution)
+// into an XRText prose run so it flows as inline content. Nodes that are already
+// inline runs, or wrappers with real inline children, pass through untouched.
+function asInlineTextRun(p: XRPrimitive, ctx: MappingContext): XRPrimitive {
+  if (p.type !== "XRGenericPanel" || p.children.length > 0) return p;
+  const text = p.content ?? p.label ?? "";
+  const textRun = {
+    ...(p as object),
+    type: "XRText",
+    text,
+    isProseRun: true,
+    componentType: (p as unknown as { componentType?: string | null })
+      .componentType ?? null,
+    styleTags: (p as unknown as { styleTags?: string[] }).styleTags ?? [],
+    children: [],
+  } as unknown as XRPrimitive;
+  ctx.primitives[p.id] = textRun;
+  return textRun;
+}
+
+// A primitive that renders purely as inline prose: the inline leaves
+// themselves, or a role-less wrapper (XRGenericPanel) that either is a bare
+// text leaf or contains only such inline content.
+function subtreeIsAllInline(p: XRPrimitive): boolean {
+  if (p.type === "XRText" || p.type === "XRLink" || p.type === "XRButton")
+    return true;
+  if (p.type === "XRGenericPanel") {
+    if (p.children.length === 0) return true;
+    return p.children.every(subtreeIsAllInline);
+  }
+  return false;
 }
 
 function mapSeparator(node: IRNode, ctx: MappingContext): XRSeparator {
@@ -986,12 +1089,52 @@ function mapTreeItem(node: IRNode, ctx: MappingContext): XRTreeItem {
 // Fallback
 // ─────────────────────────────────────────────────────────────
 
+const CONTROL_TYPES = new Set([
+  "XRToggle",
+  "XRSlider",
+  "XRComboBox",
+  "XRSearchBox",
+  "XRFormField",
+]);
+
+// A wrapping `<label>` around a form control (e.g. `<label><input type="radio">
+// Radio A</label>`) resolves its text onto the control's own label AND keeps
+// that text as a sibling node — so the control mesh (which draws its label) and
+// the leftover text both render "Radio A". Drop the redundant text sibling when
+// a control in the same wrapper already carries that exact label.
+function dedupControlLabel(
+  children: XRPrimitive[],
+  ctx: MappingContext,
+): XRPrimitive[] {
+  const norm = (s: string | null | undefined) =>
+    (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  const control = children.find(
+    (c) => CONTROL_TYPES.has(c.type) && norm(c.label) !== "",
+  );
+  if (!control) return children;
+  const target = norm(control.label);
+  return children.filter((c) => {
+    if (c === control) return true;
+    const isTextLike =
+      c.type === "XRText" ||
+      (c.type === "XRGenericPanel" && c.children.length === 0);
+    const text = norm(
+      (c as unknown as { text?: string }).text ?? c.content ?? c.label,
+    );
+    if (isTextLike && text === target) {
+      deleteSubtree(ctx, c);
+      return false;
+    }
+    return true;
+  });
+}
+
 function mapGeneric(node: IRNode, ctx: MappingContext): XRGenericPanel {
   const primitive: XRGenericPanel = {
     ...baseFrom(node, "XRGenericPanel"),
     type: "XRGenericPanel",
     irRole: node.role,
-    children: resolveChildren(node, ctx),
+    children: dedupControlLabel(resolveChildren(node, ctx), ctx),
   };
   if (!ctx.diagnostics.unmappedRoles.includes(node.role)) {
     ctx.diagnostics.unmappedRoles.push(node.role);
