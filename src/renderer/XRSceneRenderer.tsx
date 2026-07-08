@@ -251,6 +251,43 @@ function zeroedEntry(entry: LayoutEntry): LayoutEntry {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Nesting-depth Z stagger
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * How deeply nested (in spatial containers) the current primitive is. The root
+ * scene and every top-level landmark render at depth 0; each container bumps
+ * this by one for the children it dispatches.
+ *
+ * Why this exists: the layout engine flattens every panel-absolute primitive
+ * onto the SAME Z plane (position.z = 0 — see the coordinate contract in
+ * CLAUDE.md). Each primitive then draws its own backing on the shared depth
+ * ladder at a small negative z (Surface fill at Z_SURFACE = −0.0006). So a
+ * section fill and the tiles inside it — or a form panel, its fieldset, and an
+ * input — all land at exactly the same world z and z-fight (the moiré/hatching
+ * seen across the buttons, inputs, table cells and alerts). Simply pushing one
+ * container backing back only trades occlusion for that fighting.
+ *
+ * The fix: stagger each nesting level forward along Z by a fixed step so a
+ * child's whole primitive (backing + its own text ladder) sits cleanly in
+ * front of its container's backing, never coplanar with it. Clipping is
+ * Y-based (see buildPanelClipPlanes) so the Z shift does not affect it, and
+ * the step is millimetre-scale so it is visually flat but comfortably beyond
+ * depth-buffer precision at reading distance.
+ */
+const StackDepthContext = React.createContext<number>(0);
+
+/** Per-nesting-level forward Z step (metres). */
+const Z_STACK_STEP = 0.003;
+/** Cap so pathologically deep DOM can't push content metres toward the viewer. */
+const MAX_STACK_DEPTH = 8;
+
+/** Forward Z offset for a given nesting depth. */
+function stackZ(depth: number): number {
+  return Math.min(depth, MAX_STACK_DEPTH) * Z_STACK_STEP;
+}
+
+// ─────────────────────────────────────────────────────────────
 // Renderer helpers
 // ─────────────────────────────────────────────────────────────
 
@@ -287,10 +324,17 @@ function AtPos({
   const targetRot = useRef(new THREE.Euler());
   const inited = useRef(false);
   const settled = useRef(false);
+  const depth = React.useContext(StackDepthContext);
 
   // Derive the current target from props every render; a changed target
-  // re-arms the easing loop.
-  targetPos.current.set(entry.position.x, entry.position.y, entry.position.z);
+  // re-arms the easing loop. position.z carries the nesting-depth Z stagger so
+  // a primitive sits in front of its container's backing instead of coplanar
+  // with it (see StackDepthContext).
+  targetPos.current.set(
+    entry.position.x,
+    entry.position.y,
+    entry.position.z + stackZ(depth),
+  );
   targetRot.current.set(entry.rotation.x, entry.rotation.y, entry.rotation.z);
   settled.current = false;
 
@@ -403,8 +447,11 @@ function DispatchChildren({
   setPage: (id: string, page: number) => void;
   primitiveMap: Map<string, XRPrimitive>;
 }) {
+  // These children live one nesting level deeper than the container that
+  // dispatched them — bump the stagger so their backings clear the container's.
+  const depth = React.useContext(StackDepthContext);
   return (
-    <>
+    <StackDepthContext.Provider value={depth + 1}>
       {primitives
         .filter((child) => !isExtractedComplementary(child, plan))
         .map((child) => (
@@ -417,7 +464,7 @@ function DispatchChildren({
             primitiveMap={primitiveMap}
           />
         ))}
-    </>
+    </StackDepthContext.Provider>
   );
 }
 
@@ -626,10 +673,11 @@ function PaginatingPanelRenderer({
 }: DispatcherProps & { entry: LayoutEntry }) {
   const currentPage = pageState[primitive.id] ?? 0;
   const pagination = entry.pagination;
+  const depth = React.useContext(StackDepthContext);
 
   const ex = entry.position.x;
   const ey = entry.position.y;
-  const ez = entry.position.z;
+  const ez = entry.position.z + stackZ(depth);
   const rot: [number, number, number] = [
     entry.rotation.x,
     entry.rotation.y,
@@ -674,18 +722,20 @@ function PaginatingPanelRenderer({
         <PanelBacking entry={zeroedEntry(entry)} />
         <ClipPlanesContext.Provider value={panelClipPlanes}>
           <PanelOriginYContext.Provider value={ey}>
-            {primitive.children
-              .filter((child) => !isExtractedComplementary(child, plan))
-              .map((child) => (
-                <PrimitiveDispatcher
-                  key={child.id}
-                  primitive={child}
-                  plan={plan}
-                  pageState={pageState}
-                  setPage={setPage}
-                  primitiveMap={primitiveMap}
-                />
-              ))}
+            <StackDepthContext.Provider value={depth + 1}>
+              {primitive.children
+                .filter((child) => !isExtractedComplementary(child, plan))
+                .map((child) => (
+                  <PrimitiveDispatcher
+                    key={child.id}
+                    primitive={child}
+                    plan={plan}
+                    pageState={pageState}
+                    setPage={setPage}
+                    primitiveMap={primitiveMap}
+                  />
+                ))}
+            </StackDepthContext.Provider>
           </PanelOriginYContext.Provider>
         </ClipPlanesContext.Provider>
         {pagination && pagination.pageCount > 1 && (
@@ -727,9 +777,10 @@ function CarouselGhostPanel({
   primitiveMap: Map<string, XRPrimitive>;
   opacity: number;
 }) {
+  const depth = React.useContext(StackDepthContext);
   const ex = entry.position.x;
   const ey = entry.position.y;
-  const ez = entry.position.z;
+  const ez = entry.position.z + stackZ(depth);
   const rot: [number, number, number] = [
     entry.rotation.x,
     entry.rotation.y,
@@ -778,18 +829,20 @@ function CarouselGhostPanel({
         <PanelBacking entry={zeroedEntry(entry)} ghostOpacity={opacity} />
         <ClipPlanesContext.Provider value={panelClipPlanes}>
           <PanelOriginYContext.Provider value={ey}>
-            {primitive.children
-              .filter((child) => !isExtractedComplementary(child, plan))
-              .map((child) => (
-                <PrimitiveDispatcher
-                  key={child.id}
-                  primitive={child}
-                  plan={plan}
-                  pageState={ghostPageState}
-                  setPage={_noop}
-                  primitiveMap={primitiveMap}
-                />
-              ))}
+            <StackDepthContext.Provider value={depth + 1}>
+              {primitive.children
+                .filter((child) => !isExtractedComplementary(child, plan))
+                .map((child) => (
+                  <PrimitiveDispatcher
+                    key={child.id}
+                    primitive={child}
+                    plan={plan}
+                    pageState={ghostPageState}
+                    setPage={_noop}
+                    primitiveMap={primitiveMap}
+                  />
+                ))}
+            </StackDepthContext.Provider>
           </PanelOriginYContext.Provider>
         </ClipPlanesContext.Provider>
       </group>
@@ -1920,10 +1973,9 @@ function PanelBacking({
   // containers no longer stacks a border-rim box + highlight strip per
   // container at nearly the same Z depth (that compounding read as a thick
   // "brick" of panels when viewed edge-on — see the matching simplification
-  // in XRSectionMesh, primitives.tsx). The box is positioned so its front
-  // face sits exactly at local z=0 — the panel-absolute origin every child
-  // primitive's position is measured from (see the coordinate contract in
-  // CLAUDE.md) — rather than being pushed back by an ad hoc epsilon.
+  // in XRSectionMesh, primitives.tsx). The box front face sits at local z = 0;
+  // child primitives don't collide with it because each nesting level is
+  // staggered forward on the Z axis by StackDepthContext (see AtPos).
   return (
     <>
       <RoundedBox
