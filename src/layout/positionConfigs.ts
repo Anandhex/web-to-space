@@ -19,20 +19,17 @@ import type {
 } from "./types";
 import {
   computeWordsPerLine,
+  containerInsetX,
   countWords,
   estimateInlineFlowHeight,
   estimateTextBearingHeight,
   FIXED_HEIGHT_LOOKUP,
   flattenInlineWrappers,
   isInlinePrimitive,
-  LIST_ITEM_LABEL_TOP_INSET,
-  LIST_ITEM_PROSE_INSET,
   listItemLabelBlockHeight,
   mergeAdjacentTextRuns,
   resolveListColumns,
 } from "./utils";
-
-export { LIST_ITEM_PROSE_INSET };
 
 // ── Custom height handlers (extracted from estimateHeight branches) ────────────
 
@@ -160,24 +157,61 @@ function _estimateListItemHeight(
   ancestors: Set<string>,
   scene?: SemanticScene,
 ): number {
-  const lineH2 = metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
+  const m = metrics.paragraph;
+  const lineH2 = m.fontSize * m.lineHeightRatio;
   if (primitive.children.length > 0) {
+    // The renderer flows item prose at (cardWidth − 2×inset): XRListItemMesh
+    // passes panelWidth=(w − inset) into InlineProseRows, which then subtracts
+    // xInset=inset again. The estimate must wrap at the same width or it
+    // under-counts lines and the card renders taller than reserved.
+    const flat = flattenAndMerge(primitive.children);
+    const inlineOnly =
+      flat.length > 0 && flat.every((c) => isInlinePrimitive(c.type));
     const contentHeight = estimateMixedContentHeight(
-      flattenAndMerge(primitive.children),
-      panelUsableWidth - LIST_ITEM_PROSE_INSET,
+      flat,
+      panelUsableWidth - metrics.listItemProseInset * 2,
       panelUsableWidth,
       metrics,
       config,
       ancestors,
       scene,
     );
-    // Reserve LIST_ITEM_LABEL_TOP_INSET at the top for the accent band + gap,
-    // so the engine-computed card height matches what the renderer actually draws.
-    return Math.max(lineH2 + 0.02, LIST_ITEM_LABEL_TOP_INSET + contentHeight);
+
+    // The card supplies its own vertical padding via metrics.listItemContentPad
+    // (top) plus a bottom pad below. estimateMixedContentHeight also folds in the
+    // standalone-paragraph m.verticalPadding — appropriate for a bare paragraph,
+    // but stacked on top of the card's own padding it DOUBLE-pads, inflating every
+    // single-line value chip (e.g. an infobox "Directed by" name) into a tall card
+    // and leaving big vertical gaps. For inline prose, strip that paragraph
+    // padding and size from the real text height instead.
+    if (inlineOnly) {
+      const textH = Math.max(lineH2, contentHeight - m.verticalPadding);
+      const lines = Math.max(1, Math.round(textH / lineH2));
+      // A single-line value can't wrap-mispredict, so it needs no clip cushion —
+      // just a tight bottom pad. This keeps infobox value chips compact instead
+      // of each single name reserving a tall, mostly-empty card. Multi-line prose
+      // falls through to the cushioned path so a wrap under-estimate can't clip.
+      if (lines <= 1) {
+        return Math.max(
+          lineH2 + metrics.listItemMinPad,
+          metrics.listItemContentPad + textH + metrics.listItemContentPad,
+        );
+      }
+    }
+
+    // Multi-line prose / mixed / block content: keep the measured height plus a
+    // cushion (m.verticalPadding is already inside contentHeight) that covers a
+    // one-line wrap under-estimate so the last line isn't clipped.
+    const cushionShortfall =
+      Math.max(0, lineH2 - m.verticalPadding) + metrics.listItemWrapCushion;
+    return Math.max(
+      lineH2 + metrics.listItemMinPad,
+      metrics.listItemContentPad + contentHeight + cushionShortfall,
+    );
   }
   const labelBlockHeight = listItemLabelBlockHeight(primitive.label, metrics);
   return Math.max(
-    lineH2 + 0.02,
+    lineH2 + metrics.listItemMinPad,
     labelBlockHeight ||
       estimateTextBearingHeight(
         primitive.content ?? primitive.label ?? "",
@@ -288,19 +322,78 @@ export function isIconSizedImage(primitive: XRPrimitive): boolean {
   return iw !== null && ih !== null && Math.max(iw, ih) <= ICON_MAX_PX;
 }
 
+// Intrinsic pixel width that maps to a profile's default image height. A source
+// image published at this width renders at metrics.image.height; smaller images
+// render proportionally smaller (so a ~40 px decorative star no longer inflates
+// to a full-height, blurry photo), larger ones clamp to the max. Tied to
+// metrics.image.height so it scales across device profiles automatically.
+const IMAGE_REFERENCE_PX = 300;
+
+/**
+ * Resolve the physical display size (metres) of an image from its intrinsic
+ * pixel dimensions, preserving aspect ratio and clamping so it never exceeds
+ * the available width or the profile's max image height, and never shrinks
+ * below one text line.
+ *
+ * Shared by the height estimate (_estimateImageHeight) and the placement
+ * (attachResolvedStrategies in engine.ts) so the space reserved matches the
+ * plane the renderer draws — the renderer reads entry.size directly, so an
+ * aspect-correct entry.size is drawn aspect-correct with no stretching.
+ *
+ * When intrinsic dimensions are unknown, falls back to the legacy full-width ×
+ * fixed-height box (we can't do better without knowing the source aspect).
+ */
+export function resolveImageDisplaySize(
+  intrinsicWidth: number | null,
+  intrinsicHeight: number | null,
+  availableWidth: number,
+  metrics: RenderMetrics,
+): { width: number; height: number } {
+  const maxH = metrics.image.height;
+  if (
+    intrinsicWidth === null ||
+    intrinsicHeight === null ||
+    intrinsicWidth <= 0 ||
+    intrinsicHeight <= 0
+  ) {
+    return { width: availableWidth, height: maxH };
+  }
+  const aspect = intrinsicWidth / intrinsicHeight;
+  const pxToM = maxH / IMAGE_REFERENCE_PX;
+  let w = intrinsicWidth * pxToM;
+  let h = intrinsicHeight * pxToM;
+  // Clamp height to the profile max, then width to what's available, preserving
+  // aspect at each step.
+  if (h > maxH) {
+    h = maxH;
+    w = h * aspect;
+  }
+  if (w > availableWidth) {
+    w = availableWidth;
+    h = w / aspect;
+  }
+  // Floor at one text line so a tiny thumbnail stays legible rather than
+  // collapsing to a sliver.
+  const lineH = metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
+  if (h < lineH) {
+    h = lineH;
+    w = Math.min(availableWidth, h * aspect);
+  }
+  return { width: w, height: h };
+}
+
 function _estimateImageHeight(
   primitive: XRPrimitive,
-  _panelUsableWidth: number,
+  panelUsableWidth: number,
   metrics: RenderMetrics,
 ): number {
   const img = primitive as XRImage;
-  const iw = img.intrinsicWidth;
-  const ih = img.intrinsicHeight;
-  if (iw !== null && ih !== null && Math.max(iw, ih) <= ICON_MAX_PX) {
-    const lineH = metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
-    return Math.min(lineH, lineH * (ih / iw));
-  }
-  return metrics.image.height;
+  return resolveImageDisplaySize(
+    img.intrinsicWidth,
+    img.intrinsicHeight,
+    panelUsableWidth,
+    metrics,
+  ).height;
 }
 
 function _estimateFigureHeight(
@@ -355,6 +448,11 @@ function estimateMixedContentHeight(
   const hasAnyBlock = merged.some((c) => !isInlinePrimitive(c.type));
   const m = fontMetrics ?? metrics.paragraph;
   const wordsPerLine = computeWordsPerLine(flowWidth, m);
+  // Real columns per line — drives greedy token wrapping (long ISBNs/URLs).
+  const charsPerLine = Math.max(
+    1,
+    Math.floor(flowWidth / (m.fontSize * m.charWidthRatio)),
+  );
   const lineH = m.fontSize * m.lineHeightRatio;
 
   if (hasAnyInline) {
@@ -362,6 +460,7 @@ function estimateMixedContentHeight(
     return estimateInlineFlowHeight(
       merged as Parameters<typeof estimateInlineFlowHeight>[0],
       wordsPerLine,
+      charsPerLine,
       lineH,
       m.verticalPadding,
       hasAnyBlock
@@ -484,7 +583,11 @@ export function estimateHeight(
 
       case "children": {
         const childEstimateWidth = cfg.ownsXPadding
-          ? Math.max(0.025, panelUsableWidth - config.panelPaddingX * 2)
+          ? Math.max(
+              0.025,
+              panelUsableWidth -
+                containerInsetX(panelUsableWidth, config.panelPaddingX) * 2,
+            )
           : panelUsableWidth;
         const paddingContrib = cfg.ownsTopPadding
           ? config.panelPaddingTop * 2
@@ -538,7 +641,8 @@ export function estimateHeight(
   if (primitive.children.length > 0) {
     const childEstimateWidth = Math.max(
       0.025,
-      panelUsableWidth - config.panelPaddingX * 2,
+      panelUsableWidth -
+        containerInsetX(panelUsableWidth, config.panelPaddingX) * 2,
     );
     const fromChildren =
       config.panelPaddingTop * 2 +
@@ -651,7 +755,8 @@ function _estimateListHeight(
 
   const childEstimateWidth = Math.max(
     0.025,
-    panelUsableWidth - config.panelPaddingX * 2,
+    panelUsableWidth -
+      containerInsetX(panelUsableWidth, config.panelPaddingX) * 2,
   );
   const columns = resolveListColumns(childEstimateWidth, metrics);
   const cardWidth = Math.max(

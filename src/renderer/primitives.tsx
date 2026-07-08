@@ -99,8 +99,6 @@ import type {
 import type { LayoutEntry } from "../layout/types";
 import type { RenderMetrics } from "../layout/types";
 import {
-  LIST_ITEM_LABEL_TOP_INSET,
-  LIST_ITEM_PROSE_INSET,
   mergeAdjacentTextRuns,
   isInlinePrimitive,
   flattenInlineWrappers,
@@ -859,21 +857,10 @@ export function InlineProseRows({
   renderChild,
   forceColor,
 }: InlineProseRowsProps) {
-  const navigate = useContext(NavigateContext);
-  const theme = useTheme();
   const lineH = fontSize * lineHeightRatio;
   const usableWidth = panelWidth - xInset;
   // cursorY is mutated during render — intentional, single render pass.
   let cursorY = startY;
-  // Approx average char width for Roboto as a fraction of fontSize.
-  const CHAR_W = 0.52;
-  // How many characters fit on one visual line before troika wraps.
-  // Used to map charOffset → (visualLine, xInLine) so overlay blocks land
-  // on the right wrapped line rather than always at the row's first line.
-  const charsPerLine = Math.max(
-    1,
-    Math.floor(usableWidth / (fontSize * CHAR_W)),
-  );
 
   return (
     <>
@@ -882,77 +869,196 @@ export function InlineProseRows({
           return <group key={`b-${i}`}>{renderChild(row.childId)}</group>;
         }
 
-        const { text, colorRanges } = buildRowMeta(
-          row.segments,
-          theme,
-          forceColor,
-        );
         const rowY = cursorY;
         cursorY -= lineH;
 
-        // Transparent overlay blocks for each link segment.
-        // charOffset tracks how many characters precede the current segment;
-        // dividing by charsPerLine gives the approximate visual line so the
-        // overlay Y is correct even when the merged text has wrapped.
-        const linkHits: React.ReactNode[] = [];
-        if (navigate) {
-          let charOffset = 0;
-          for (let si = 0; si < row.segments.length; si++) {
-            const seg = row.segments[si];
-            if (seg.kind === "link" && seg.href) {
-              const visualLine = Math.floor(charOffset / charsPerLine);
-              const xInLine = charOffset % charsPerLine;
-              const hitX = xInset + xInLine * fontSize * CHAR_W;
-              const hitY = rowY - visualLine * lineH;
-              const hitW = Math.min(
-                Math.max(seg.text.length * fontSize * CHAR_W, 0.02),
-                usableWidth - xInLine * fontSize * CHAR_W,
-              );
-              const href = seg.href;
-              linkHits.push(
-                <mesh
-                  key={`lh-${si}`}
-                  position={[hitX + hitW / 2, hitY - lineH / 2, 0.004]}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigate(href);
-                  }}
-                >
-                  <planeGeometry args={[hitW, lineH]} />
-                  <meshBasicMaterial
-                    transparent
-                    opacity={0}
-                    depthWrite={false}
-                  />
-                </mesh>,
-              );
-            }
-            charOffset += seg.text.length;
-          }
-        }
-
         return (
-          <group key={`il-${i}`}>
-            <ClippedText
-              anchorX="left"
-              {...(colorRanges ? ({ colorRanges } as any) : {})}
-              anchorY="top"
-              position={[xInset, rowY, Z_LAYER_INLINE_TEXT]}
-              renderOrder={RENDER_ORDER_TEXT}
-              fontSize={fontSize}
-              color={theme.bodyCol}
-              maxWidth={usableWidth}
-              lineHeight={lineHeightRatio}
-              letterSpacing={0.005}
-              overflowWrap="break-word"
-            >
-              {text}
-            </ClippedText>
-            {linkHits}
-          </group>
+          <ProseRow
+            key={`il-${i}`}
+            segments={row.segments}
+            rowY={rowY}
+            xInset={xInset}
+            usableWidth={usableWidth}
+            fontSize={fontSize}
+            lineHeightRatio={lineHeightRatio}
+            forceColor={forceColor}
+          />
         );
       })}
     </>
+  );
+}
+
+// Transparent click target for one contiguous run of a link's glyphs on a
+// single visual line, in the ProseRow group's local coordinate space.
+interface LinkHitRect {
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
+  href: string;
+}
+
+function rectsEqual(a: LinkHitRect[], b: LinkHitRect[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (
+      a[i].cx !== b[i].cx ||
+      a[i].cy !== b[i].cy ||
+      a[i].w !== b[i].w ||
+      a[i].h !== b[i].h ||
+      a[i].href !== b[i].href
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+interface ProseRowProps {
+  segments: InlineSeg[];
+  rowY: number;
+  xInset: number;
+  usableWidth: number;
+  fontSize: number;
+  lineHeightRatio: number;
+  forceColor?: number;
+}
+
+/**
+ * One inline prose row: a single troika <Text> mesh plus transparent click
+ * targets for any link segments.
+ *
+ * The click targets are derived from troika's actual per-character
+ * `caretPositions` (read after layout via onSync) rather than a fixed
+ * average-glyph-width estimate. troika wraps on word boundaries with
+ * proportional glyph widths, so a guessed (charOffset × avgWidth) box drifts
+ * off the visible link — especially once the merged row text wraps. Reading
+ * the real caret bounds keeps the hit area locked to the glyphs the user
+ * sees, and a link that wraps across lines produces one rect per line.
+ */
+function ProseRow({
+  segments,
+  rowY,
+  xInset,
+  usableWidth,
+  fontSize,
+  lineHeightRatio,
+  forceColor,
+}: ProseRowProps) {
+  const navigate = useContext(NavigateContext);
+  const theme = useTheme();
+  const { text, colorRanges } = buildRowMeta(segments, theme, forceColor);
+  const [hitRects, setHitRects] = React.useState<LinkHitRect[]>([]);
+
+  // Char ranges (start inclusive, end exclusive) of each link segment within
+  // the merged row string. Offsets match the string handed to troika, so they
+  // index directly into caretPositions.
+  const linkRanges = React.useMemo(() => {
+    const ranges: { start: number; end: number; href: string }[] = [];
+    let offset = 0;
+    for (const seg of segments) {
+      if (seg.kind === "link" && seg.href) {
+        ranges.push({
+          start: offset,
+          end: offset + seg.text.length,
+          href: seg.href,
+        });
+      }
+      offset += seg.text.length;
+    }
+    return ranges;
+  }, [segments]);
+
+  const handleSync = React.useCallback(
+    (mesh: THREE.Mesh) => {
+      const caret = (
+        mesh as unknown as { textRenderInfo?: { caretPositions?: Float32Array } }
+      )?.textRenderInfo?.caretPositions;
+      if (!caret || linkRanges.length === 0) {
+        setHitRects((prev) => (prev.length === 0 ? prev : []));
+        return;
+      }
+      // caretPositions packs 4 floats per char: [startX, endX, bottomY, topY]
+      // in the text mesh's local space (anchorX="left", anchorY="top" → x ≥ 0,
+      // y ≤ 0). The text mesh sits at [xInset, rowY] within this group, so a
+      // rect centre in group space is [xInset + midX, rowY + midY].
+      const EPS = 1e-4;
+      const rects: LinkHitRect[] = [];
+      for (const { start, end, href } of linkRanges) {
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let bottom = 0;
+        let top = 0;
+        let lineY: number | null = null;
+        const flush = () => {
+          if (lineY === null) return;
+          rects.push({
+            cx: xInset + (minX + maxX) / 2,
+            cy: rowY + (bottom + top) / 2,
+            w: Math.max(maxX - minX, 0.01),
+            h: Math.max(top - bottom, 0.01),
+            href,
+          });
+          minX = Infinity;
+          maxX = -Infinity;
+          lineY = null;
+        };
+        for (let ci = start; ci < end; ci++) {
+          const base = ci * 4;
+          if (base + 3 >= caret.length) break;
+          const loX = Math.min(caret[base], caret[base + 1]);
+          const hiX = Math.max(caret[base], caret[base + 1]);
+          const by = caret[base + 2];
+          const ty = caret[base + 3];
+          // A change in the shared bottom-Y means troika wrapped to a new line.
+          if (lineY !== null && Math.abs(by - lineY) > EPS) flush();
+          lineY = by;
+          bottom = by;
+          top = ty;
+          if (loX < minX) minX = loX;
+          if (hiX > maxX) maxX = hiX;
+        }
+        flush();
+      }
+      setHitRects((prev) => (rectsEqual(prev, rects) ? prev : rects));
+    },
+    [linkRanges, xInset, rowY],
+  );
+
+  return (
+    <group>
+      <ClippedText
+        anchorX="left"
+        {...(colorRanges ? ({ colorRanges } as any) : {})}
+        anchorY="top"
+        position={[xInset, rowY, Z_LAYER_INLINE_TEXT]}
+        renderOrder={RENDER_ORDER_TEXT}
+        fontSize={fontSize}
+        color={theme.bodyCol}
+        maxWidth={usableWidth}
+        lineHeight={lineHeightRatio}
+        letterSpacing={0.005}
+        overflowWrap="break-word"
+        onSync={navigate ? handleSync : undefined}
+      >
+        {text}
+      </ClippedText>
+      {navigate &&
+        hitRects.map((r, hi) => (
+          <mesh
+            key={`lh-${hi}`}
+            position={[r.cx, r.cy, 0.004]}
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(r.href);
+            }}
+          >
+            <planeGeometry args={[r.w, r.h]} />
+            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+          </mesh>
+        ))}
+    </group>
   );
 }
 
@@ -2246,11 +2352,11 @@ export function XRListItemMesh({
     () => (cardSelfClip ? [...pageClips, ...cardClips] : pageClips),
     [pageClips, cardClips, cardSelfClip],
   );
-  // Where content starts relative to the card top edge.
-  // = LIST_ITEM_ACCENT_INSET + LIST_ITEM_ACCENT_H + LIST_ITEM_CONTENT_PAD.
-  // Shared with the engine via layout/utils — any drift causes visual overlap
-  // or dead gaps.
-  const CONTENT_Y = -LIST_ITEM_LABEL_TOP_INSET;
+  // Where content starts relative to the card top edge — a plain top padding
+  // (no accent band is drawn anymore). Shared with the engine via the profile's
+  // metrics.listItemContentPad — any drift causes visual overlap or dead gaps.
+  const CONTENT_Y = -metrics.listItemContentPad;
+  const proseInset = metrics.listItemProseInset;
 
   // primitive.label on XRListItem is the accessible-name / TOC string. When
   // the item has inline children (XRText/XRLink runs — see parser.ts
@@ -2294,17 +2400,17 @@ export function XRListItemMesh({
       <ClipPlanesContext.Provider value={clips}>
         <Surface width={w} height={h} color={theme.listItemBg} clips={clips} />
 
-        {/* Plain-text list items (no child elements): label rendered below accent band. */}
+        {/* Plain-text list items (no child elements): label rendered below the top padding. */}
         {displayText && (
           <ClippedText
             anchorX="left"
             anchorY="top"
-            position={[LIST_ITEM_PROSE_INSET, CONTENT_Y, PANEL_DEPTH]}
+            position={[proseInset, CONTENT_Y, PANEL_DEPTH]}
             fontSize={labelFont.fontSize}
             color={theme.headingCol}
             fontWeight="600"
             lineHeight={labelFont.lineHeightRatio}
-            maxWidth={w - LIST_ITEM_PROSE_INSET * 2}
+            maxWidth={w - proseInset * 2}
             overflowWrap="break-word"
           >
             {displayText}
@@ -2312,24 +2418,24 @@ export function XRListItemMesh({
         )}
 
         {/* Inline children: flowed as prose starting at CONTENT_Y so the first
-          line always clears the accent band + gap.
+          line always clears the top padding.
           panelWidth is pre-reduced by the right inset so usableWidth = w - 2*xInset,
           giving symmetric left and right margins (same pattern as XRBlockQuoteMesh). */}
         {inlineRows && (
           <InlineProseRows
             rows={inlineRows}
             startY={CONTENT_Y}
-            panelWidth={w - LIST_ITEM_PROSE_INSET}
+            panelWidth={w - proseInset}
             fontSize={m.fontSize}
             lineHeightRatio={m.lineHeightRatio}
-            xInset={LIST_ITEM_PROSE_INSET}
+            xInset={proseInset}
             renderChild={renderChild}
           />
         )}
 
         {/* Block children from mixed inline+block items (e.g. sub-lists after
           a prose run). Engine places these at y=0 relative to the card origin;
-          we shift by CONTENT_Y so they start below the accent band. */}
+          we shift by CONTENT_Y so they start below the top padding. */}
         {blockChildren.length > 0 && (
           <group position={[0, CONTENT_Y, 0]}>
             {blockChildren.map((child: any) => renderChild(child.id))}
@@ -2337,7 +2443,7 @@ export function XRListItemMesh({
         )}
 
         {/* Pure-block items (no inline children at all). Engine also places these
-          at y=0; same CONTENT_Y shift keeps them below the accent band. */}
+          at y=0; same CONTENT_Y shift keeps them below the top padding. */}
         {!hasAnyInlineChild && primitive.children.length > 0 && (
           <group position={[0, CONTENT_Y, 0]}>
             {primitive.children.map((child) => renderChild(child.id))}

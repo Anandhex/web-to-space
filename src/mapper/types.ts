@@ -766,6 +766,7 @@ export type MappingRule =
   | "none→(elided)"
   | "text→XRText"
   | "leaf-text-fallback→XRText"
+  | "inline-run→XRParagraph"
   | "presentation→(elided)";
 
 // ============================================================

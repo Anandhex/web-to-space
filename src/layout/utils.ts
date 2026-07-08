@@ -42,6 +42,34 @@ export function angularRotation(angleDeg: number): Rotation3 {
   return { x: 0, y: -deg2rad(angleDeg), z: 0 };
 }
 
+/**
+ * Horizontal inset a container applies to each side of its children.
+ *
+ * The base `panelPaddingX` (~52 mm) is tuned for the full-width content panel
+ * (~1.3 m), where it is a modest ~8 % margin. But the same absolute value is
+ * disproportionate inside a narrow nested container — e.g. an infobox value
+ * cell (~0.31 m), where 2×52 mm eats a third of the width and forces short
+ * text (a cast name like "Danya Jimenez") to wrap to two lines, which in turn
+ * inflates the whole infobox row until it no longer fits on a page.
+ *
+ * Cap the inset at a fraction of the container width so wide panels keep the
+ * full padding (min wins → panelPaddingX) while narrow nested containers keep
+ * a proportional, non-wrapping margin. Both the placement pass
+ * (stackChildrenSimple) and the height estimates (positionConfigs) must call
+ * this so the space reserved matches the space rendered.
+ */
+export function containerInsetX(
+  containerWidth: number,
+  panelPaddingX: number,
+): number {
+  // 0.05 keeps the full panelPaddingX for any container ≥ ~1.04 m (the content
+  // panel, references, articles) while shrinking the inset proportionally for
+  // narrow nested containers — e.g. a 0.31 m infobox value cell gets ~15 mm
+  // per side instead of 52 mm, enough for a 15-character cast name to stay on
+  // one line instead of wrapping to two.
+  return Math.min(panelPaddingX, containerWidth * 0.05);
+}
+
 /** Compute words-per-line for a given panel width and font metrics. */
 export function computeWordsPerLine(
   panelUsableWidth: number,
@@ -197,32 +225,16 @@ export function paragraphWordsThatFit(
  * child either overlap (renderer inset smaller than what layout reserved)
  * or leave a dead gap (renderer inset larger than what layout reserved).
  */
-/** Height of the accent band drawn at the top of every list-item card. */
-export const LIST_ITEM_ACCENT_H = 0.008;
-/**
- * Space between the card's glass top edge and the top of the accent band.
- * Must be large enough to absorb perspective parallax: the accent bar sits at
- * z=0 while the glass top edge is at z≈−0.009, giving a ~10 mm upward shift
- * at eye level (1.4 m Y, 1.2 m viewing distance). 12 mm keeps the bar
- * visually inside the card at all row positions within the panel.
- */
-export const LIST_ITEM_ACCENT_INSET = 0.012;
-/** Vertical gap between the bottom of the accent band and the first line of content. */
-export const LIST_ITEM_CONTENT_PAD = 0.018;
-/**
- * Total distance from the card's top edge to where content starts.
- * = LIST_ITEM_ACCENT_INSET + LIST_ITEM_ACCENT_H + LIST_ITEM_CONTENT_PAD.
- * Both the engine (height estimates) and the renderer (mesh positions) must
- * read this same value — any drift causes visual overlap or dead gaps.
- */
-export const LIST_ITEM_LABEL_TOP_INSET =
-  LIST_ITEM_ACCENT_INSET + LIST_ITEM_ACCENT_H + LIST_ITEM_CONTENT_PAD;
-/** Horizontal inset for content inside a list-item card (left and right). */
-export const LIST_ITEM_PROSE_INSET = 0.016;
+// List-item card spacing (top/bottom pad and left/right inset) now lives on the
+// device profile as metrics.listItemContentPad / metrics.listItemProseInset so
+// it is tunable per profile alongside childGapY. Both the engine (height
+// estimates) and the renderer (mesh positions) read the SAME metric values — any
+// drift causes visual overlap or dead gaps. The top inset equals the content pad
+// (there is no longer an accent band above the content to reserve space for).
 
 /**
  * Height occupied by an XRListItem's own label line, including its top
- * inset (LIST_ITEM_LABEL_TOP_INSET).
+ * inset (metrics.listItemContentPad).
  *
  * Unlike estimateTextBearingHeight, this does NOT model word-wrapping —
  * XRListItemMesh renders the label as a single fixed-size top line (it does
@@ -246,7 +258,7 @@ export function listItemLabelBlockHeight(
 ): number {
   if (!label) return 0;
   const font = metrics.listItem.font;
-  return LIST_ITEM_LABEL_TOP_INSET + font.fontSize * font.lineHeightRatio;
+  return metrics.listItemContentPad + font.fontSize * font.lineHeightRatio;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -475,6 +487,45 @@ export function mergeAdjacentTextRuns<
  * @param blockHeightFn  Returns the height for a non-inline child.
  * @param gapY           Gap between a flushed inline block and the next block.
  */
+/**
+ * Greedy word-wrap line count for a run of text at `charsPerLine` columns.
+ *
+ * The old model — `ceil(totalWords / wordsPerLine)` — assumes every word is
+ * `avgCharsPerWord` long. That badly under-counts lines for content full of
+ * long unbreakable tokens (citation ISBNs/URLs, "Constitutional", code), so an
+ * atomic list-item card estimated from it renders far taller than reserved,
+ * gets clipped, and strands a blank continuation page. This wraps using each
+ * token's real length instead, matching troika's word-boundary wrapping
+ * (`overflowWrap="break-word"` splits any single token wider than a line).
+ */
+export function countWrappedLines(text: string, charsPerLine: number): number {
+  const cpl = Math.max(1, Math.floor(charsPerLine));
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return 0;
+  let lines = 1;
+  let col = 0; // chars already occupied on the current line
+  for (const w of words) {
+    const len = w.length;
+    if (len > cpl) {
+      // Token wider than a line: it moves to a fresh line (if the current one
+      // has content) then break-word splits it across ceil(len/cpl) lines.
+      if (col > 0) lines += 1;
+      const span = Math.ceil(len / cpl);
+      lines += span - 1;
+      col = len - (span - 1) * cpl;
+      continue;
+    }
+    const needed = col === 0 ? len : col + 1 + len; // +1 for the joining space
+    if (needed <= cpl) {
+      col = needed;
+    } else {
+      lines += 1;
+      col = len;
+    }
+  }
+  return lines;
+}
+
 export function estimateInlineFlowHeight(
   children: ReadonlyArray<{
     type: string;
@@ -483,6 +534,7 @@ export function estimateInlineFlowHeight(
     wordCount?: number;
   }>,
   wordsPerLine: number,
+  charsPerLine: number,
   lineH: number,
   vertPad: number,
   blockHeightFn: (child: {
@@ -496,33 +548,36 @@ export function estimateInlineFlowHeight(
   if (children.length === 0) return 0;
 
   let totalHeight = 0;
-  let inlineWords = 0;
+  // Accumulate the run's actual text so wrapping is driven by real token
+  // lengths (see countWrappedLines). fallbackWords covers inline children that
+  // carry only a wordCount (e.g. split continuation fragments) with no text.
+  let runText = "";
+  let fallbackWords = 0;
   let firstBlock = true;
 
   const flushInline = (): void => {
-    if (inlineWords === 0) return;
-    const lineCount = Math.max(
-      1,
-      Math.ceil(inlineWords / Math.max(1, wordsPerLine)),
-    );
+    if (runText === "" && fallbackWords === 0) return;
+    let lineCount = runText !== "" ? countWrappedLines(runText, charsPerLine) : 0;
+    if (fallbackWords > 0) {
+      lineCount += Math.ceil(fallbackWords / Math.max(1, wordsPerLine));
+    }
+    lineCount = Math.max(1, lineCount);
     if (!firstBlock) totalHeight += gapY;
     totalHeight += lineCount * lineH;
     firstBlock = false;
-    inlineWords = 0;
+    runText = "";
+    fallbackWords = 0;
   };
 
   for (const child of children) {
     if (isInlinePrimitive(child.type)) {
-      // Word count from the primitive's own field, or counted from text/label
-      const wc =
-        child.wordCount != null && child.wordCount > 0
-          ? child.wordCount
-          : countWords(
-              (child as { text?: string; label?: string }).text ??
-                (child as { label?: string }).label ??
-                "",
-            );
-      inlineWords += wc;
+      const t =
+        (child as { text?: string }).text ??
+        (child as { label?: string }).label ??
+        "";
+      if (t) runText += t;
+      else if (child.wordCount != null && child.wordCount > 0)
+        fallbackWords += child.wordCount;
     } else {
       // Block element — flush inline first, then account for the block
       flushInline();

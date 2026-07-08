@@ -270,6 +270,31 @@ export interface RenderMetrics {
   listItem: TextBearingMetrics;
 
   /**
+   * Vertical padding (m) inside a list-item card: the distance from the card's
+   * top edge to its first line of content, and a matching pad below. Both the
+   * height estimate (layout) and the card mesh (renderer) read this so the
+   * space reserved matches what is drawn.
+   */
+  listItemContentPad: number;
+  /**
+   * Horizontal inset (m) applied to each side of a list-item card's content.
+   */
+  listItemProseInset: number;
+  /**
+   * Extra height (m) added to a list-item card's one-line minimum floor, so a
+   * card is never shorter than `oneLine + listItemMinPad`.
+   */
+  listItemMinPad: number;
+  /**
+   * Anti-clip cushion (m) added to a multi-line list-item card's height. The
+   * height estimate predicts wrapping from average character width; the renderer
+   * wraps from real glyph widths. This buffer covers the case where the actual
+   * wrap comes out slightly taller so the last line is never clipped by the
+   * card's bottom edge. Larger = safer against clipping, looser cards.
+   */
+  listItemWrapCushion: number;
+
+  /**
    * Font metrics for figure captions (the text line beneath an XRFigure).
    * Used to grow XRFigure height when a caption wraps to multiple lines.
    */

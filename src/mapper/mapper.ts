@@ -30,7 +30,7 @@
  */
 
 import type { IRNode, PageIR } from "../ir/types";
-import { mapNode } from "./nodeMapper";
+import { mapNode, coalesceInlineRuns } from "./nodeMapper";
 import type {
   MapperConfig,
   MappingContext,
@@ -341,6 +341,12 @@ export function mapIRToScene(
   };
 
   ctx.primitives["scene"] = rootScene;
+
+  // Wrap stray inline runs inside block prose containers into synthetic
+  // XRParagraphs (anonymous block boxes) so the engine and renderer flow them
+  // as one prose line instead of stranding each XRText/XRLink on its own row.
+  coalesceInlineRuns(rootScene, ctx);
+
   return {
     root: rootScene,
     primitives: ctx.primitives,

@@ -939,6 +939,13 @@ function handleFigureSythenticCreation(
   const src = rawSrc ? new URL(rawSrc, ctx.pageUrl).href : rawSrc;
   const href = figElement.getAttribute("data-ir-figure-href") || null;
   const alt = figElement.getAttribute("alt") || null;
+  const parseDim = (raw: string | null): number | null => {
+    if (!raw) return null;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const intrinsicWidth = parseDim(figElement.getAttribute("data-ir-width"));
+  const intrinsicHeight = parseDim(figElement.getAttribute("data-ir-height"));
   const captionEl = figElement.querySelector(
     ".devsite-landing-row-item-description-content, figcaption, .caption",
   );
@@ -949,7 +956,14 @@ function handleFigureSythenticCreation(
 
   ctx.nodes[imgId] = createBaseNode(imgId, "img", id, ctx, {
     label: alt,
-    attributes: { ...createEmptyAttributes(), src, href, alt },
+    attributes: {
+      ...createEmptyAttributes(),
+      src,
+      href,
+      alt,
+      intrinsicWidth,
+      intrinsicHeight,
+    },
     readingDepth: readingDepth + 1,
   });
 
@@ -962,6 +976,20 @@ function handleFigureSythenticCreation(
 
   ctx.elementToNodeId.set(element, id);
   return id;
+}
+
+// Copy the source <img>'s rendered dimensions onto the synthetic <figure> so
+// they survive into the IR. promoteLinkedImage rebuilds a bare figure carrying
+// only src/href/alt; without this the layout engine has no intrinsic size and
+// blows every linked/figure image up to a fixed full-height box (a 20 px
+// featured-article star rendered as a metre-tall blur). Prefer the display
+// width/height (the rendered thumbnail size) and fall back to the original
+// file dimensions.
+function copyImgDims(img: Element, fig: Element): void {
+  const w = img.getAttribute("width") ?? img.getAttribute("data-file-width");
+  const h = img.getAttribute("height") ?? img.getAttribute("data-file-height");
+  if (w) fig.setAttribute("data-ir-width", w);
+  if (h) fig.setAttribute("data-ir-height", h);
 }
 
 function promoteLinkedImageDeep(
@@ -981,6 +1009,7 @@ function promoteLinkedImageDeep(
     fig.setAttribute("data-ir-src", img.getAttribute("src") || "");
     if (img.getAttribute("alt"))
       fig.setAttribute("alt", img.getAttribute("alt")!);
+    copyImgDims(img, fig);
     const caption = element.querySelector(
       "figcaption, .caption, .devsite-landing-row-item-description-content",
     );
@@ -1008,6 +1037,7 @@ function promoteLinkedImageDeep(
   fig.setAttribute("data-ir-src", imgEl.getAttribute("src") || "");
   if (imgEl.getAttribute("alt"))
     fig.setAttribute("alt", imgEl.getAttribute("alt")!);
+  copyImgDims(imgEl, fig);
 
   const desc = element.querySelector(
     ".devsite-landing-row-item-description-content, figcaption, .caption",

@@ -59,6 +59,152 @@ import {
   warnPanelOverflow,
   registerPrimitive,
 } from "./utils";
+import {
+  flattenInlineWrappers,
+  isInlinePrimitive,
+  countWords,
+} from "../layout/utils";
+
+// ─────────────────────────────────────────────────────────────
+// Inline-run coalescing (anonymous block boxes)
+// ─────────────────────────────────────────────────────────────
+//
+// A block container whose children mix inline runs (XRText/XRLink) with block
+// children (XRImage, sub-paragraphs) — or a table cell that isn't treated as
+// inline-owning by the engine — has its inline children placed by the engine
+// as separate, vertically-stacked full-width blocks (one per XRText/XRLink),
+// instead of flowing on a shared line. The result is fragmented prose: each
+// word-run and link stranded on its own row.
+//
+// Browsers solve this with anonymous block boxes: a block container with mixed
+// inline/block content wraps each maximal run of inline content in an anonymous
+// block. We do the same here — wrap consecutive inline siblings in a synthetic
+// XRParagraph so BOTH the engine (which flows an XRParagraph as one prose run)
+// and the renderer (XRParagraphMesh → InlineProseRows) see a single flow.
+//
+// This runs only inside genuine block PROSE containers, and only when the
+// container isn't already going to flow its inline children itself (mirroring
+// the engine's isInlineOwningNode). That leaves transparent inline wrappers
+// (all-inline XRGenericPanel spans) and real inline-owning types (XRParagraph,
+// XRListItem, …) untouched, so span transparency and existing prose flow are
+// preserved.
+
+// Containers whose stray inline children represent flowing prose (as opposed to
+// semantic item lists like XRNavigationBar's links or XRList's items).
+const INLINE_COALESCE_CONTAINERS = new Set<string>([
+  "XRGenericPanel",
+  "XRSection",
+  "XRArticle",
+  "XRTableCell",
+]);
+
+// Mirrors engine.ts INLINE_OWNING_TYPES — types that flow their own inline
+// children as a merged prose run. XRTableCell is deliberately absent (the engine
+// keeps it out for perf reasons), which is exactly why its cells need wrapping.
+const INLINE_OWNING_TYPES = new Set<string>([
+  "XRParagraph",
+  "XRHeading",
+  "XRListItem",
+  "XRBlockQuote",
+  "XRLink",
+  "XRButton",
+]);
+
+/** A child that flows on a shared prose line: an inline leaf, or an all-inline
+ *  XRGenericPanel wrapper (a transparent span) the renderer flattens. */
+function isEffectivelyInline(p: XRPrimitive): boolean {
+  if (isInlinePrimitive(p.type)) return true;
+  if (p.type === "XRGenericPanel") {
+    const flat = flattenInlineWrappers((p.children ?? []) as XRPrimitive[]);
+    return flat.length > 0 && flat.every((c) => isInlinePrimitive(c.type));
+  }
+  return false;
+}
+
+/** Whether the engine will already flow this container's inline children itself
+ *  (so wrapping them would be redundant / break span transparency). Mirrors
+ *  engine.ts isInlineOwningNode. */
+function containerFlowsProse(p: XRPrimitive): boolean {
+  if (INLINE_OWNING_TYPES.has(p.type)) return true;
+  if (p.type === "XRGenericPanel") {
+    const flat = flattenInlineWrappers((p.children ?? []) as XRPrimitive[]);
+    return flat.length > 0 && flat.every((c) => isInlinePrimitive(c.type));
+  }
+  return false;
+}
+
+function wordCountOf(p: XRPrimitive): number {
+  const wc = (p as unknown as { wordCount?: number }).wordCount;
+  if (wc != null && wc > 0) return wc;
+  const txt =
+    (p as unknown as { text?: string }).text ?? p.content ?? p.label ?? "";
+  return countWords(txt);
+}
+
+function makeInlineRunParagraph(
+  run: XRPrimitive[],
+  ctx: MappingContext,
+): XRParagraph {
+  const words = run.reduce((s, c) => s + wordCountOf(c), 0);
+  const para: XRParagraph = {
+    id: `${run[0].id}__inlinerun`,
+    type: "XRParagraph",
+    label: null,
+    content: null,
+    sourceIds: run.flatMap((c) => c.sourceIds ?? []),
+    confidence: Math.min(...run.map((c) => c.confidence ?? 1)),
+    depth: run[0].depth,
+    domId: null,
+    children: run,
+    relations: {
+      controls: [],
+      labelledBy: [],
+      describedBy: [],
+      details: [],
+      errorMessage: [],
+    },
+    wordCount: words,
+    estimatedReadingTimeSec: Math.round((words / 200) * 60),
+    densityScore: Math.min(1, Math.max(0, (words - 10) / (200 - 10))),
+  };
+  registerPrimitive(ctx, para, "inline-run→XRParagraph");
+  return para;
+}
+
+/**
+ * Post-order pass: wrap runs of ≥2 consecutive inline siblings inside block
+ * prose containers into synthetic XRParagraphs. Mutates children arrays in
+ * place and registers each synthetic paragraph in ctx.primitives.
+ */
+export function coalesceInlineRuns(p: XRPrimitive, ctx: MappingContext): void {
+  const kids = p.children;
+  if (!kids || kids.length === 0) return;
+
+  // Descendants first, so a wrapped run is never re-processed.
+  for (const c of kids) coalesceInlineRuns(c, ctx);
+
+  if (!INLINE_COALESCE_CONTAINERS.has(p.type)) return;
+  if (containerFlowsProse(p)) return;
+
+  const out: XRPrimitive[] = [];
+  let run: XRPrimitive[] = [];
+  const flush = (): void => {
+    // A lone inline child renders fine on its own line; only multi-child runs
+    // fragment, so only those need an anonymous block wrapper.
+    if (run.length >= 2) out.push(makeInlineRunParagraph(run, ctx));
+    else out.push(...run);
+    run = [];
+  };
+  for (const c of kids) {
+    if (isEffectivelyInline(c)) run.push(c);
+    else {
+      flush();
+      out.push(c);
+    }
+  }
+  flush();
+  p.children = out;
+}
 
 function mapMain(node: IRNode, ctx: MappingContext): XRContentPanel {
   const children = resolveChildren(node, ctx);
@@ -346,13 +492,47 @@ function mapListItem(node: IRNode, ctx: MappingContext): XRListItem {
 // Mapping rules — typography
 // ─────────────────────────────────────────────────────────────
 
+// A heading such as `<h1><span class="mw-page-title-main">Title</span></h1>`
+// resolves its text onto the node's own `content` AND keeps the span as a
+// childless XRGenericPanel/XRText child. XRHeadingMesh then draws its `content`
+// (large) AND dispatches that child, which renders the same text again
+// (smaller) — the title appears twice. Drop a childless text-like child whose
+// text the node's own content/label already carries. Mirrors dedupControlLabel.
+function dedupOwnText(
+  ownText: string | null | undefined,
+  children: XRPrimitive[],
+  ctx: MappingContext,
+): XRPrimitive[] {
+  const norm = (s: string | null | undefined) =>
+    (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  const target = norm(ownText);
+  if (target === "") return children;
+  return children.filter((c) => {
+    const isTextLike =
+      c.type === "XRText" ||
+      (c.type === "XRGenericPanel" && c.children.length === 0);
+    const text = norm(
+      (c as unknown as { text?: string }).text ?? c.content ?? c.label,
+    );
+    if (isTextLike && text === target) {
+      deleteSubtree(ctx, c);
+      return false;
+    }
+    return true;
+  });
+}
+
 function mapHeading(node: IRNode, ctx: MappingContext): XRHeading {
-  const resolvedChildren = resolveChildren(node, ctx);
+  const base = baseFrom(node, "XRHeading");
   const primitive: XRHeading = {
-    ...baseFrom(node, "XRHeading"),
+    ...base,
     type: "XRHeading",
     level: node.level ?? 2,
-    children: resolvedChildren,
+    children: dedupOwnText(
+      base.content ?? base.label,
+      resolveChildren(node, ctx),
+      ctx,
+    ),
   };
   registerPrimitive(ctx, primitive, "heading→XRHeading");
   return primitive;

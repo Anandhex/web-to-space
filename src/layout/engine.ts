@@ -15,8 +15,8 @@ import {
   estimateHeight,
   flattenAndMerge,
   isIconSizedImage,
-  LIST_ITEM_PROSE_INSET,
   PRIMITIVE_CONFIG,
+  resolveImageDisplaySize,
 } from "./positionConfigs";
 import { selectSlots } from "./slots";
 import { resolveArrangementSlots } from "./arrangements";
@@ -37,6 +37,7 @@ import type {
 } from "./types";
 import {
   computeWordsPerLine,
+  containerInsetX,
   countWords,
   flattenInlineWrappers,
   isInlinePrimitive,
@@ -189,8 +190,9 @@ function stackChildrenSimple(
   const ownsXPadding = !parentType || parentCfg?.ownsXPadding === true;
   const ownsTopPadding = !parentType || parentCfg?.ownsTopPadding === true;
   const topOffset = config.panelPaddingTop;
+  const insetX = containerInsetX(panelWidth, config.panelPaddingX);
   const childWidth = ownsXPadding
-    ? Math.max(0.025, panelWidth - config.panelPaddingX * 2)
+    ? Math.max(0.025, panelWidth - insetX * 2)
     : Math.max(0.025, panelWidth);
   const panelUsableWidth = childWidth;
 
@@ -244,7 +246,7 @@ function stackChildrenSimple(
         const entry: LayoutEntry = {
           id: card.id,
           position: {
-            x: config.panelPaddingX + colIdx * (cardWidth + config.childGapY),
+            x: insetX + colIdx * (cardWidth + config.childGapY),
             y: rowY,
             z: 0,
           },
@@ -283,7 +285,7 @@ function stackChildrenSimple(
   if (children.length > 1 && children.every(isIconSizedImage)) {
     const lineH =
       metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio;
-    const childX = ownsXPadding ? config.panelPaddingX : 0;
+    const childX = ownsXPadding ? insetX : 0;
     const startY = ownsTopPadding ? -topOffset : 0;
     let cursorX = childX;
     let rowH = 0;
@@ -321,7 +323,7 @@ function stackChildrenSimple(
   // has children — see topOffset above), so it behaves like the latter group
   // despite being in OWNS_TOP_PADDING.
   const startY = ownsTopPadding ? -topOffset : 0;
-  const childX = ownsXPadding ? config.panelPaddingX : 0;
+  const childX = ownsXPadding ? insetX : 0;
   let cursorY = startY;
   const childEntries: LayoutEntry[] = [];
 
@@ -1003,9 +1005,23 @@ function paginateContentPanel(
       const rowH = Math.max(...rowHeights);
       const g = rowsOnPage > 0 ? config.childGapY : 0;
 
-      // Overflow: advance page only when at least one row of THIS list is
-      // already on the current page (first row always stays with heading).
-      if (pageHeight + g + rowH > VIEWPORT && rowsOnPage > 0) {
+      // Overflow: advance to a fresh page when this row won't fit.
+      //
+      // The first row of a list normally stays put so it isn't split from its
+      // section heading. But when the page ALREADY holds other content (e.g. the
+      // tail of the previous section's list plus this section's heading), keeping
+      // an oversized first row here just straddles the viewport and clips its
+      // lower half — with the next page starting at the FOLLOWING row, so the
+      // clipped remainder is lost entirely. Break in that case too; only hold the
+      // row back when doing so would strand a lone heading on an otherwise empty
+      // page (itemsOnPage === 1), where an empty heading-only page is worse.
+      const wouldStrandLoneHeading =
+        lastPlacedType === "XRHeading" && itemsOnPage === 1;
+      const doesNotFit = pageHeight + g + rowH > VIEWPORT;
+      if (
+        doesNotFit &&
+        (rowsOnPage > 0 || (itemsOnPage > 0 && !wouldStrandLoneHeading))
+      ) {
         const absOffsetBase = pageYOffsets[pageIdx] ?? 0;
         pageYOffsets.push(absOffsetBase + VIEWPORT);
         pageIdx += 1;
@@ -1060,21 +1076,28 @@ function paginateContentPanel(
 
       // A single row — most commonly one promoted to a full-width,
       // single-item row above — can still be taller than an entire empty
-      // page (e.g. a text-heavy card). Without this correction, pageHeight
-      // is left far past VIEWPORT and the next row's "doesn't fit" check
-      // only ever advances by one page, undercounting however many pages
-      // this row's own overflow actually spans — leaving a stray blank
-      // page, or landing the next row a page later than it should.
+      // page (e.g. a text-heavy card, or a citation carrying a nested
+      // sub-list). Grid cards carry NO pageEndIndex: each is stamped to one
+      // page and clipped to the viewport there — an over-tall card's lower
+      // half is never rendered on any following page. So an oversized row
+      // occupies exactly ONE page; the next row must start at the TOP of the
+      // immediately following page.
+      //
+      // The previous code advanced by `ceil(pageHeight/VIEWPORT)-1` pages and
+      // set `cursorY = -(pageHeight % VIEWPORT)`. That was wrong for a clipped
+      // grid: it (a) reserved blank "overflow" pages for content that is
+      // clipped away, never shown, and (b) carried the overflow remainder
+      // forward as a top offset, so every subsequent row started that far down
+      // its page — and because each citation row is itself 0.5–0.7 m, the
+      // offset kept re-overflowing and cascaded down page after page, leaving
+      // a large empty band at the top of each and pushing content to the
+      // bottom. Advance exactly one page and reset to the panel-top padding.
       if (pageHeight > VIEWPORT) {
-        const { bleed, newPageIdx } = advanceOverflowPages(
-          pageHeight,
-          VIEWPORT,
-          pageYOffsets,
-          pageIdx,
-        );
-        pageIdx = newPageIdx;
-        pageHeight = bleed;
-        cursorY = -bleed;
+        const absOffsetBase = pageYOffsets[pageIdx] ?? 0;
+        pageYOffsets.push(absOffsetBase + VIEWPORT);
+        pageIdx += 1;
+        pageHeight = config.panelPaddingTop;
+        cursorY = -config.panelPaddingTop;
         itemsOnPage = 0;
         rowsOnPage = 0;
       }
@@ -1548,7 +1571,7 @@ function paginateContentPanel(
       const m = inlineOwnerFontMetrics(node, metrics);
       const itemWidth =
         node.type === "XRListItem"
-          ? Math.max(0.025, availableWidth - LIST_ITEM_PROSE_INSET)
+          ? Math.max(0.025, availableWidth - metrics.listItemProseInset)
           : availableWidth;
       const wordsPerLine = computeWordsPerLine(itemWidth, m);
       const lineH = m.fontSize * m.lineHeightRatio;
@@ -1791,6 +1814,21 @@ function attachResolvedStrategies(
   }
   if (primitive.type === "XRList") {
     entry.listColumns = resolveListColumns(panelUsableWidth, metrics);
+  }
+  if (primitive.type === "XRImage") {
+    // Size the image from its intrinsic dimensions (aspect-preserving), instead
+    // of stretching the full slot width to a fixed photo height. The renderer
+    // draws entry.size directly, so this is what fixes both the blown-up
+    // decorative icons and the aspect distortion. availableWidth is the slot the
+    // image was given (entry.size.width from the stack/grid placement).
+    const img = primitive as XRImage;
+    const { width, height } = resolveImageDisplaySize(
+      img.intrinsicWidth,
+      img.intrinsicHeight,
+      entry.size.width,
+      metrics,
+    );
+    entry.size = { width, height };
   }
 }
 
