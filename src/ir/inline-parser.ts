@@ -669,9 +669,9 @@ export function createInlineNodes(
  * Determines if an inline element should have a label
  */
 function shouldHaveLabelForElement(
-  element: Element,
+  _element: Element,
   role: IRRole,
-  config: ParserConfig,
+  _config: ParserConfig,
 ): boolean {
   const INTERACTIVE_ROLES = new Set([
     "link",

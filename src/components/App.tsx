@@ -12,6 +12,7 @@ import {
   makeTabId,
   labelFromUrl,
 } from "./viewTypes";
+import { proxyUrl } from "../proxy";
 
 function makeHomeTab(): Tab {
   return {
@@ -48,7 +49,7 @@ export default function App() {
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
     try {
-      const res = await fetch(`/api/proxy?url=${encodeURIComponent(url)}`);
+      const res = await fetch(proxyUrl(url));
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const html = await res.text();
       setTabs((prev) =>
@@ -89,11 +90,7 @@ export default function App() {
       // Same-origin URLs (e.g. the built-in /test-elements.html) are fetched
       // directly — no CORS proxy needed, and the proxy is dev-only anyway.
       const isSameOrigin = targetUrl.startsWith(window.location.origin);
-      const res = await fetch(
-        isSameOrigin
-          ? targetUrl
-          : `/api/proxy?url=${encodeURIComponent(targetUrl)}`,
-      );
+      const res = await fetch(isSameOrigin ? targetUrl : proxyUrl(targetUrl));
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const html = await res.text();
       patchActiveTab({

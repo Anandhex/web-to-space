@@ -41,8 +41,13 @@ function corsProxyPlugin(): Plugin {
   };
 }
 
+// WebXR needs a secure context (HTTPS), so basic-ssl is on by default. Set
+// NO_SSL=1 to serve plain HTTP — useful for local previews/tools that can't
+// follow a self-signed cert (WebXR won't work in that mode, but the 2D view does).
+const useSsl = process.env.NO_SSL !== "1";
+
 export default defineConfig({
-  plugins: [corsProxyPlugin(), react(), basicSsl()],
+  plugins: [corsProxyPlugin(), react(), ...(useSsl ? [basicSsl()] : [])],
   server: {
     // 0.0.0.0 so a headset on the same LAN can reach this machine's HTTPS
     // dev server directly (e.g. https://<your-ip>:5173) — WebXR requires a

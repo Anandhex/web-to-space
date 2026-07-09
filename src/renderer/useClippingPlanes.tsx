@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Plane, Vector3 } from "three";
-import type { LayoutEntry } from "../layout/engine";
+import type { LayoutEntry } from "../layout/types";
 
 /**
  * Returns four clipping planes that form a rectangular viewport

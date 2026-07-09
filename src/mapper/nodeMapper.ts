@@ -98,17 +98,10 @@ const INLINE_COALESCE_CONTAINERS = new Set<string>([
   "XRTableCell",
 ]);
 
-// Mirrors engine.ts INLINE_OWNING_TYPES — types that flow their own inline
-// children as a merged prose run. XRTableCell is deliberately absent (the engine
-// keeps it out for perf reasons), which is exactly why its cells need wrapping.
-const INLINE_OWNING_TYPES = new Set<string>([
-  "XRParagraph",
-  "XRHeading",
-  "XRListItem",
-  "XRBlockQuote",
-  "XRLink",
-  "XRButton",
-]);
+// Shared with the layout engine so the two can't drift — see the source module
+// for the XRTableCell perf caveat (deliberately absent, which is exactly why its
+// cells need wrapping here).
+import { INLINE_OWNING_TYPES } from "../layout/inline-constants";
 
 /** A child that flows on a shared prose line: an inline leaf, or an all-inline
  *  XRGenericPanel wrapper (a transparent span) the renderer flattens. */
@@ -431,7 +424,7 @@ function mapGroup(node: IRNode, ctx: MappingContext): XRFormField | XRSection {
 function mapList(
   node: IRNode,
   ctx: MappingContext,
-  rule: MappingRule = "list:generic→XRList",
+  _rule: MappingRule = "list:generic→XRList",
 ): XRList | XRSection {
   const childNodes = node.children
     .map((id) => ctx.ir.nodes[id])

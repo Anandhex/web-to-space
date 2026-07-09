@@ -430,7 +430,6 @@ export function mergeAdjacentTextRuns<
 
     if (isPlainText(child)) {
       // Collect consecutive plain-text siblings
-      const runStart = i;
       const parts: string[] = [child.text ?? ""];
       i++;
       while (i < children.length && isPlainText(children[i])) {
