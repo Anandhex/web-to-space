@@ -50,6 +50,8 @@ export interface XRTheme {
   panelGradientTop: string;
   /** Bottom stop of the subtle vertical gradient applied to main panel backings. */
   panelGradientBottom: string;
+  /** Text on the fixed pastel "polite" alert/status surface — that surface stays a fixed light tint in both themes, so this must too (not bodyCol, which is meant to sit on the theme's panelBg). */
+  infoTextCol: string;
 }
 
 export const LIGHT_THEME: XRTheme = {
@@ -69,6 +71,7 @@ export const LIGHT_THEME: XRTheme = {
   mutedTextCol: "#79747E",
   panelGradientTop: "#E2E2E2",
   panelGradientBottom: "#DADADA",
+  infoTextCol: "#1B4C8C",
 };
 
 // Sampled directly from an in-headset Quest Design System screenshot and
@@ -94,6 +97,7 @@ export const DARK_THEME: XRTheme = {
   mutedTextCol: "#AFAFAF",
   panelGradientTop: "#373737",
   panelGradientBottom: "#323232",
+  infoTextCol: "#1B4C8C",
 };
 
 export const THEME_FIELD_LABELS: Record<keyof XRTheme, string> = {
@@ -113,6 +117,7 @@ export const THEME_FIELD_LABELS: Record<keyof XRTheme, string> = {
   mutedTextCol: "Muted / placeholder text",
   panelGradientTop: "Panel gradient (top)",
   panelGradientBottom: "Panel gradient (bottom)",
+  infoTextCol: "Info alert text (on fixed pastel surface)",
 };
 
 export const ThemeContext = createContext<XRTheme>(LIGHT_THEME);

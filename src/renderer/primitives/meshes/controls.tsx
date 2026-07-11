@@ -179,7 +179,7 @@ export function XRAlertMesh({
           position={[X_INSET, -0.014, Z_LAYER_BODY_TEXT]}
           renderOrder={RENDER_ORDER_TEXT}
           fontSize={0.022}
-          color={isAssertive ? "#B3261E" : theme.bodyCol}
+          color={isAssertive ? "#B3261E" : theme.infoTextCol}
           maxWidth={w - 0.032}
           lineHeight={1.4}
         >
