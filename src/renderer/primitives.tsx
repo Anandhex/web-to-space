@@ -19,6 +19,7 @@
 
 export * from "./primitives/constants";
 export * from "./primitives/contexts";
+export * from "./primitives/curve";
 export * from "./primitives/surface";
 export * from "./primitives/inline";
 

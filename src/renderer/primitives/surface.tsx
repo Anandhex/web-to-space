@@ -21,6 +21,7 @@ import {
   Z_SURFACE_RIM,
   RENDER_ORDER_SURFACE,
 } from "./constants";
+import { usePanelCurve, makeBentPlane, type PanelCurve } from "./curve";
 
 /** Clamp a layout dimension to a safe minimum. */
 export function safeDim(v: number): number {
@@ -153,6 +154,14 @@ export interface SurfaceProps {
    */
   origin?: [number, number];
   clips?: THREE.Plane[];
+  /**
+   * Explicit cylinder curve for a panel's OWN full-width backing, which is not
+   * wrapped in an <AtPos> (so it can't inherit the tangent transform the way a
+   * nested fill does). When set, the fill is bent around the panel centre. When
+   * omitted, the surface still bends if it sits inside a PanelCurveContext — but
+   * around its group origin (an outer <AtPos> already tangent-yawed it there).
+   */
+  curve?: PanelCurve | null;
 }
 
 /**
@@ -177,6 +186,7 @@ export function Surface({
   z = Z_SURFACE,
   origin,
   clips,
+  curve,
 }: SurfaceProps) {
   const w = safeDim(width);
   const h = safeDim(height);
@@ -184,8 +194,33 @@ export function Surface({
   const ox = origin ? origin[0] : w / 2;
   const oy = origin ? origin[1] : -h / 2;
   const resolvedTop = topColor ?? (gradient ? liftColor(color) : undefined);
-  const fillGeo = useSurfaceGeometry(w, h, r, resolvedTop, color);
-  const rimGeo = useSurfaceGeometry(w, h, r);
+
+  // Curve resolution: an explicit `curve` prop (a panel's own centred backing)
+  // bends around the panel centre — the geometry point currently at panel-x
+  // centerX must stay, and it sits at geometry-local x = centerX − ox. Otherwise
+  // fall back to the ambient PanelCurveContext, where an outer <AtPos> already
+  // tangent-yawed this group at its origin, so bend around geometry-local −ox.
+  const ctxCurve = usePanelCurve();
+  const activeCurve = curve ?? ctxCurve;
+  const pivotX = curve ? curve.centerX - ox : -ox;
+  const flatFillGeo = useSurfaceGeometry(w, h, r, resolvedTop, color);
+  const flatRimGeo = useSurfaceGeometry(w, h, r);
+  const bentFillGeo = React.useMemo(
+    () =>
+      activeCurve
+        ? makeBentPlane(w, h, activeCurve.radius, pivotX, resolvedTop, color)
+        : null,
+    [activeCurve, w, h, pivotX, resolvedTop, color],
+  );
+  const bentRimGeo = React.useMemo(
+    () =>
+      activeCurve
+        ? makeBentPlane(w + 0.0025, h + 0.0025, activeCurve.radius, pivotX)
+        : null,
+    [activeCurve, w, h, pivotX],
+  );
+  const fillGeo = bentFillGeo ?? flatFillGeo;
+  const rimGeo = bentRimGeo ?? flatRimGeo;
 
   return (
     <group position={[ox, oy, 0]}>
@@ -193,7 +228,9 @@ export function Surface({
         <mesh
           geometry={rimGeo}
           position={[0, 0, z + Z_SURFACE_RIM - Z_SURFACE]}
-          scale={[(w + 0.0025) / w, (h + 0.0025) / h, 1]}
+          scale={
+            bentRimGeo ? [1, 1, 1] : [(w + 0.0025) / w, (h + 0.0025) / h, 1]
+          }
           renderOrder={RENDER_ORDER_SURFACE}
         >
           <meshBasicMaterial
@@ -230,6 +267,46 @@ export function Surface({
         )}
       </mesh>
     </group>
+  );
+}
+
+/**
+ * A textured quad (image/video poster) that bends onto the panel cylinder when
+ * inside a PanelCurveContext, so it hugs the curved backing instead of poking
+ * through as a flat tangent slab. Pass the material as children; it's applied
+ * to whichever geometry (bent segmented plane, or a flat planeGeometry) is used.
+ *
+ * The mesh is placed at `position` inside an already tangent-yawed group, so the
+ * bend pivots around the group origin — geometry-local x = −position[0].
+ */
+export function CurvedTexturePlane({
+  width,
+  height,
+  position,
+  renderOrder,
+  children,
+}: {
+  width: number;
+  height: number;
+  position: [number, number, number];
+  renderOrder?: number;
+  children: React.ReactNode;
+}) {
+  const curve = usePanelCurve();
+  const bent = React.useMemo(
+    () =>
+      curve ? makeBentPlane(width, height, curve.radius, -position[0]) : null,
+    [curve, width, height, position[0]],
+  );
+  return (
+    <mesh
+      geometry={bent ?? undefined}
+      position={position}
+      renderOrder={renderOrder}
+    >
+      {!bent && <planeGeometry args={[width, height]} />}
+      {children}
+    </mesh>
   );
 }
 

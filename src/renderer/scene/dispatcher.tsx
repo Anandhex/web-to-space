@@ -59,6 +59,9 @@ import {
   ClipPlanesContext,
   PanelOriginYContext,
   CardSelfClipContext,
+  PanelCurveContext,
+  resolveCurveRadius,
+  type PanelCurve,
   ClippedText,
   buildInlineRows,
   InlineProseRows,
@@ -476,29 +479,41 @@ export function PrimitiveDispatcher({
       // slot's world position. Children carry LOCAL positions from stackChildrenSimple
       // relative to the complementary slot's top-left, so they must render INSIDE
       // this group — not as world-space siblings — for the slot offset to compose.
+      //
+      // The aside curves onto its own cylinder: its backing bends explicitly
+      // around its centre, and PanelCurveContext bends every child (their <AtPos>
+      // wrappers tangent-place them). The outer <AtPos> here only places the aside
+      // at its world slot — it reads no ambient curve, so the aside itself stays
+      // put while its contents wrap.
+      const compRadius = resolveCurveRadius(entry.curveRadius);
+      const compCurve: PanelCurve | null = compRadius
+        ? { radius: compRadius, centerX: entry.size.width / 2 }
+        : null;
       return (
         <AtPos entry={entry}>
-          <PanelBacking entry={zeroedEntry(entry)} />
-          {/* Clip child content to the aside's own bounds, and expose the
-              slot's world-Y origin — a landmark panel is not paginated, so
-              nothing upstream provides these. Card self-clip is disabled
-              because items here carry parent-relative (not panel-absolute) Y
-              (see CardSelfClipContext). */}
-          <ClipPlanesContext.Provider
-            value={buildPanelClipPlanes(entry.position.y, entry.size.height)}
-          >
-            <PanelOriginYContext.Provider value={entry.position.y}>
-              <CardSelfClipContext.Provider value={false}>
-                <DispatchChildren
-                  primitives={primitive.children}
-                  plan={plan}
-                  pageState={pageState}
-                  setPage={setPage}
-                  primitiveMap={primitiveMap}
-                />
-              </CardSelfClipContext.Provider>
-            </PanelOriginYContext.Provider>
-          </ClipPlanesContext.Provider>
+          <PanelCurveContext.Provider value={compCurve}>
+            <PanelBacking entry={zeroedEntry(entry)} curve={compCurve} />
+            {/* Clip child content to the aside's own bounds, and expose the
+                slot's world-Y origin — a landmark panel is not paginated, so
+                nothing upstream provides these. Card self-clip is disabled
+                because items here carry parent-relative (not panel-absolute) Y
+                (see CardSelfClipContext). */}
+            <ClipPlanesContext.Provider
+              value={buildPanelClipPlanes(entry.position.y, entry.size.height)}
+            >
+              <PanelOriginYContext.Provider value={entry.position.y}>
+                <CardSelfClipContext.Provider value={false}>
+                  <DispatchChildren
+                    primitives={primitive.children}
+                    plan={plan}
+                    pageState={pageState}
+                    setPage={setPage}
+                    primitiveMap={primitiveMap}
+                  />
+                </CardSelfClipContext.Provider>
+              </PanelOriginYContext.Provider>
+            </ClipPlanesContext.Provider>
+          </PanelCurveContext.Provider>
         </AtPos>
       );
     }

@@ -22,6 +22,12 @@ import {
 } from "../constants";
 import { Surface, safeDim, cornerRadius, entryTransform } from "../surface";
 import { ClipPlanesContext, useClipPlanes } from "../contexts";
+import {
+  PanelCurveContext,
+  resolveCurveRadius,
+  curvePoint,
+  type PanelCurve,
+} from "../curve";
 import { ClippedText } from "../inline";
 
 export interface XRNavigationMeshProps {
@@ -38,6 +44,7 @@ interface TOCPanelProps {
   rot: THREE.Euler;
   label: string;
   clips: THREE.Plane[];
+  curveRadius: number;
   onNavigate?: (href: string) => void;
 }
 
@@ -64,9 +71,30 @@ function TOCPanel({
   rot,
   label,
   clips,
+  curveRadius,
   onNavigate,
 }: TOCPanelProps) {
   const theme = useTheme();
+
+  // Bend the panel onto the shared cylinder (centred on its own width). The
+  // scroll clip planes are horizontal (normal along Y) and the bend is around
+  // the vertical axis, so Y — and thus the scroll culling — is unaffected.
+  const navRadius = resolveCurveRadius(curveRadius);
+  const navCurve: PanelCurve | null = navRadius
+    ? { radius: navRadius, centerX: w / 2 }
+    : null;
+  // Tangent-place a panel-local point on the cylinder (identity when flat).
+  const place = (
+    x: number,
+    y: number,
+    z: number,
+  ): { position: [number, number, number]; rotation: [number, number, number] } =>
+    navCurve
+      ? (() => {
+          const p = curvePoint(x, y, z, navCurve.radius, navCurve.centerX);
+          return { position: p.position, rotation: [0, p.yaw, 0] };
+        })()
+      : { position: [x, y, z], rotation: [0, 0, 0] };
 
   const ITEM_H = 0.052;
   const ITEM_GAP = 0.006;
@@ -191,25 +219,38 @@ function TOCPanel({
   const thumbTop =
     contentTop - (maxScroll > 0 ? (scroll / maxScroll) * thumbTravel : 0);
 
+  const headerPlace = place(PADDING, -PADDING, Z_LAYER_BODY_TEXT);
+
   return (
     <group ref={groupRef} position={pos} rotation={rot}>
+      <PanelCurveContext.Provider value={navCurve}>
       {/* Panel backing — uses panelBg (identical to the XRContentPanel) so the
           TOC/nav reads as the same panel material as the main content, not a
-          distinct surface. navBg is reserved for the small item chips. */}
-      <Surface width={w} height={h} color={theme.panelBg} clips={clips} />
+          distinct surface. navBg is reserved for the small item chips. Bends
+          with the item rows when curved (explicit curve — the backing isn't
+          tangent-placed by an outer group). */}
+      <Surface
+        width={w}
+        height={h}
+        color={theme.panelBg}
+        clips={clips}
+        curve={navCurve}
+      />
 
       {/* Panel label (fixed header, not scrolled) */}
-      <ClippedText
-        anchorX="left"
-        anchorY="top"
-        position={[PADDING, -PADDING, Z_LAYER_BODY_TEXT]}
-        fontSize={0.014}
-        color={theme.bodyCol}
-        fontWeight="700"
-        letterSpacing={0.08}
-      >
-        {label.toUpperCase()}
-      </ClippedText>
+      <group position={headerPlace.position} rotation={headerPlace.rotation}>
+        <ClippedText
+          anchorX="left"
+          anchorY="top"
+          position={[0, 0, 0]}
+          fontSize={0.014}
+          color={theme.bodyCol}
+          fontWeight="700"
+          letterSpacing={0.08}
+        >
+          {label.toUpperCase()}
+        </ClippedText>
+      </group>
 
       {/* Transparent scroll-capture surface over the viewport. Sits in front
           of the backing but behind the item rows, so item clicks still win for
@@ -235,11 +276,13 @@ function TOCPanel({
             const indent = PADDING + (item.depth ?? 0) * INDENT_STEP;
             const isCurrent = item.isCurrent;
             const itemW = w - indent - PADDING;
+            const itemPlace = place(indent, itemY, Z_LAYER_INLINE_TEXT);
 
             return (
               <group
                 key={item.id}
-                position={[indent, itemY, Z_LAYER_INLINE_TEXT]}
+                position={itemPlace.position}
+                rotation={itemPlace.rotation}
                 onClick={() => {
                   // Suppress navigation if this "click" was the end of a drag.
                   if (didDrag.current) {
@@ -322,6 +365,7 @@ function TOCPanel({
           </mesh>
         </group>
       )}
+      </PanelCurveContext.Provider>
     </group>
   );
 }
@@ -361,6 +405,7 @@ export function XRNavigationMesh({
         rot={rot}
         label={primitive.label ?? "Contents"}
         clips={clips}
+        curveRadius={entry.curveRadius}
         onNavigate={onNavigate}
       />
     );
@@ -376,33 +421,48 @@ export function XRNavigationMesh({
       : 0.24,
   );
 
-  const arcTotal =
-    entry.curveRadius > 0
-      ? 2 * Math.asin(Math.min(1, w / (2 * entry.curveRadius)))
-      : 0;
+  // Bend the whole strip onto one cylinder centred on the panel (centerX = w/2)
+  // so the backing, chip pills, and labels all share it. The effective radius
+  // folds in the global curve knob; a null result (knob off / no radius) keeps
+  // the classic flat left-to-right strip untouched.
+  const navRadius = resolveCurveRadius(entry.curveRadius);
+  const centerX = w / 2;
+  const navCurve: PanelCurve | null = navRadius
+    ? { radius: navRadius, centerX }
+    : null;
+
+  const arcTotal = navRadius
+    ? 2 * Math.asin(Math.min(1, w / (2 * navRadius)))
+    : 0;
   const arcStep = items.length > 1 ? arcTotal / (items.length - 1) : 0;
   const arcStart = -arcTotal / 2;
 
   return (
-    <group position={pos} rotation={rot}>
-      {/* Nav panel backing — uses panelBg so it matches the XRContentPanel
-          material (navBg stays for the item chips). */}
-      <Surface width={w} height={h} color={theme.panelBg} clips={clips} />
+    <PanelCurveContext.Provider value={navCurve}>
+      <group position={pos} rotation={rot}>
+        {/* Nav panel backing — uses panelBg so it matches the XRContentPanel
+            material (navBg stays for the item chips). Bends with the chips when
+            curved (explicit curve since the backing isn't wrapped in <AtPos>). */}
+        <Surface
+          width={w}
+          height={h}
+          color={theme.panelBg}
+          clips={clips}
+          curve={navCurve}
+        />
 
-      {/* Nav chips */}
-      {items.map((item, i) => {
-        const chipAngle = arcStart + i * arcStep;
-        const chipX =
-          entry.curveRadius > 0
-            ? entry.curveRadius * Math.sin(chipAngle)
+        {/* Nav chips */}
+        {items.map((item, i) => {
+          const chipAngle = arcStart + i * arcStep;
+          // Curved: place the chip on the cylinder centred at w/2 (matches the
+          // backing). Flat: the classic left-to-right strip.
+          const chipX = navRadius
+            ? centerX + navRadius * Math.sin(chipAngle)
             : CHIP_GAP + i * (chipW + CHIP_GAP);
-        const chipZ =
-          entry.curveRadius > 0
-            ? entry.curveRadius * (1 - Math.cos(chipAngle))
-            : 0;
-        const isCurrent = item.isCurrent;
+          const chipZ = navRadius ? navRadius * (1 - Math.cos(chipAngle)) : 0;
+          const isCurrent = item.isCurrent;
 
-        return (
+          return (
           <group
             key={item.id}
             position={[chipX, -h / 2, chipZ + PANEL_DEPTH * 0.5]}
@@ -441,7 +501,8 @@ export function XRNavigationMesh({
           </group>
         );
       })}
-    </group>
+      </group>
+    </PanelCurveContext.Provider>
   );
 }
 

@@ -17,6 +17,13 @@ import {
   Surface,
   ClipPlanesContext,
   PanelOriginYContext,
+  PanelCurveContext,
+  usePanelCurve,
+  resolveCurveRadius,
+  curvePoint,
+  makeBentPlane,
+  CAROUSEL_GHOST_CURVE_SCALE,
+  type PanelCurve,
 } from "../primitives";
 import {
   CurrentPageContext,
@@ -47,14 +54,37 @@ export function PaginatingPanelRenderer({
   const pagination = entry.pagination;
   const depth = React.useContext(StackDepthContext);
 
-  const ex = entry.position.x;
-  const ey = entry.position.y;
-  const ez = entry.position.z + stackZ(depth);
-  const rot: [number, number, number] = [
-    entry.rotation.x,
-    entry.rotation.y,
-    entry.rotation.z,
-  ];
+  // Curve resolution. A top content panel carries its own authored curveRadius
+  // and becomes the cylinder origin (its group stays at the flat slot position).
+  // A NESTED paginating container (curveRadius 0) inherits the parent cylinder:
+  // its group is tangent-placed on that cylinder, and it re-centres a fresh
+  // curve on its own width so its panel-relative children bend correctly.
+  const inheritedCurve = usePanelCurve();
+  const ownRadius = resolveCurveRadius(entry.curveRadius);
+  const subtreeRadius = ownRadius ?? inheritedCurve?.radius ?? null;
+  const panelCurve: PanelCurve | null = subtreeRadius
+    ? { radius: subtreeRadius, centerX: entry.size.width / 2 }
+    : null;
+
+  const ex0 = entry.position.x;
+  const ey0 = entry.position.y;
+  const ez0 = entry.position.z + stackZ(depth);
+  let ex = ex0;
+  let ey = ey0;
+  let ez = ez0;
+  let yaw = entry.rotation.y;
+  if (inheritedCurve && !ownRadius) {
+    const placed = curvePoint(
+      ex0,
+      ey0,
+      ez0,
+      inheritedCurve.radius,
+      inheritedCurve.centerX,
+    );
+    [ex, ey, ez] = placed.position;
+    yaw = entry.rotation.y + placed.yaw;
+  }
+  const rot: [number, number, number] = [entry.rotation.x, yaw, entry.rotation.z];
 
   const panelClipPlanes = useMemo(
     () => buildPanelClipPlanes(ey, entry.size.height),
@@ -91,35 +121,37 @@ export function PaginatingPanelRenderer({
         />
       ))}
       <group key={primitive.id} position={[ex, ey, ez]} rotation={rot}>
-        <PanelBacking entry={zeroedEntry(entry)} />
-        <ClipPlanesContext.Provider value={panelClipPlanes}>
-          <PanelOriginYContext.Provider value={ey}>
-            <StackDepthContext.Provider value={depth + 1}>
-              {primitive.children
-                .filter((child) => !isExtractedComplementary(child, plan))
-                .map((child) => (
-                  <PrimitiveDispatcher
-                    key={child.id}
-                    primitive={child}
-                    plan={plan}
-                    pageState={pageState}
-                    setPage={setPage}
-                    primitiveMap={primitiveMap}
-                  />
-                ))}
-            </StackDepthContext.Provider>
-          </PanelOriginYContext.Provider>
-        </ClipPlanesContext.Provider>
-        {pagination && pagination.pageCount > 1 && (
-          <PaginationControls
-            primitiveId={primitive.id}
-            pagination={pagination}
-            currentPage={currentPage}
-            entry={zeroedEntry(entry)}
-            onPageChange={(p) => setPage(primitive.id, p)}
-            pageRange={effectiveRange}
-          />
-        )}
+        <PanelCurveContext.Provider value={panelCurve}>
+          <PanelBacking entry={zeroedEntry(entry)} curve={panelCurve} />
+          <ClipPlanesContext.Provider value={panelClipPlanes}>
+            <PanelOriginYContext.Provider value={ey}>
+              <StackDepthContext.Provider value={depth + 1}>
+                {primitive.children
+                  .filter((child) => !isExtractedComplementary(child, plan))
+                  .map((child) => (
+                    <PrimitiveDispatcher
+                      key={child.id}
+                      primitive={child}
+                      plan={plan}
+                      pageState={pageState}
+                      setPage={setPage}
+                      primitiveMap={primitiveMap}
+                    />
+                  ))}
+              </StackDepthContext.Provider>
+            </PanelOriginYContext.Provider>
+          </ClipPlanesContext.Provider>
+          {pagination && pagination.pageCount > 1 && (
+            <PaginationControls
+              primitiveId={primitive.id}
+              pagination={pagination}
+              currentPage={currentPage}
+              entry={zeroedEntry(entry)}
+              onPageChange={(p) => setPage(primitive.id, p)}
+              pageRange={effectiveRange}
+            />
+          )}
+        </PanelCurveContext.Provider>
       </group>
     </CurrentPageContext.Provider>
   );
@@ -158,6 +190,16 @@ export function CarouselGhostPanel({
     entry.rotation.y,
     entry.rotation.z,
   ];
+
+  // Ghost previews curve on their own, flatter cylinder so the off-axis side
+  // panels don't read as oddly over-curved next to the head-on main panel.
+  const ghostRadius = resolveCurveRadius(entry.curveRadius);
+  const panelCurve: PanelCurve | null = ghostRadius
+    ? {
+        radius: ghostRadius * CAROUSEL_GHOST_CURVE_SCALE,
+        centerX: entry.size.width / 2,
+      }
+    : null;
 
   const panelClipPlanes = React.useMemo(
     () => buildPanelClipPlanes(ey, entry.size.height),
@@ -198,25 +240,31 @@ export function CarouselGhostPanel({
         );
       })}
       <group position={[ex, ey, ez]} rotation={rot} raycast={() => null}>
-        <PanelBacking entry={zeroedEntry(entry)} ghostOpacity={opacity} />
-        <ClipPlanesContext.Provider value={panelClipPlanes}>
-          <PanelOriginYContext.Provider value={ey}>
-            <StackDepthContext.Provider value={depth + 1}>
-              {primitive.children
-                .filter((child) => !isExtractedComplementary(child, plan))
-                .map((child) => (
-                  <PrimitiveDispatcher
-                    key={child.id}
-                    primitive={child}
-                    plan={plan}
-                    pageState={ghostPageState}
-                    setPage={_noop}
-                    primitiveMap={primitiveMap}
-                  />
-                ))}
-            </StackDepthContext.Provider>
-          </PanelOriginYContext.Provider>
-        </ClipPlanesContext.Provider>
+        <PanelCurveContext.Provider value={panelCurve}>
+          <PanelBacking
+            entry={zeroedEntry(entry)}
+            ghostOpacity={opacity}
+            curve={panelCurve}
+          />
+          <ClipPlanesContext.Provider value={panelClipPlanes}>
+            <PanelOriginYContext.Provider value={ey}>
+              <StackDepthContext.Provider value={depth + 1}>
+                {primitive.children
+                  .filter((child) => !isExtractedComplementary(child, plan))
+                  .map((child) => (
+                    <PrimitiveDispatcher
+                      key={child.id}
+                      primitive={child}
+                      plan={plan}
+                      pageState={ghostPageState}
+                      setPage={_noop}
+                      primitiveMap={primitiveMap}
+                    />
+                  ))}
+              </StackDepthContext.Provider>
+            </PanelOriginYContext.Provider>
+          </ClipPlanesContext.Provider>
+        </PanelCurveContext.Provider>
       </group>
     </CurrentPageContext.Provider>
   );
@@ -226,6 +274,7 @@ export function CarouselGhostPanel({
 export function PanelBacking({
   entry,
   ghostOpacity,
+  curve,
 }: {
   entry: LayoutEntry;
   /**
@@ -233,6 +282,14 @@ export function PanelBacking({
    * panel (an adjacent page) instead of the normal opaque matte card.
    */
   ghostOpacity?: number;
+  /**
+   * Explicit cylinder curve for a panel's OWN centred backing (top content
+   * panel / complementary), which is not wrapped in an <AtPos>. When omitted,
+   * the backing still bends if it sits in an ambient PanelCurveContext — that's
+   * the nested container case (XRArticle/XRFormPanel/XRFigure), where an outer
+   * <AtPos> already tangent-yawed this group at its top-left.
+   */
+  curve?: PanelCurve | null;
 }) {
   const theme = useTheme();
   const w = Math.max(entry.size.width, 0.025);
@@ -240,6 +297,59 @@ export function PanelBacking({
   const DEPTH = 0.01;
   const RADIUS = Math.min(0.004, Math.min(w, h, DEPTH) / 2 - 0.001);
   const isGhost = ghostOpacity !== undefined;
+
+  const ctxCurve = usePanelCurve();
+  const activeCurve = curve ?? ctxCurve;
+  // Explicit centred backing bends around the panel centre (geometry sits at
+  // [w/2,-h/2], so pivot = centerX − w/2 = 0). A context-driven nested backing
+  // bends around the group origin the outer <AtPos> yawed tangent (pivot = −w/2).
+  const bentPivotX = curve ? curve.centerX - w / 2 : -w / 2;
+  const bentFill = React.useMemo(
+    () =>
+      activeCurve ? makeBentPlane(w, h, activeCurve.radius, bentPivotX) : null,
+    [activeCurve, w, h, bentPivotX],
+  );
+  const bentGradient = React.useMemo(
+    () =>
+      activeCurve
+        ? makeBentPlane(
+            w,
+            h,
+            activeCurve.radius,
+            bentPivotX,
+            theme.panelGradientTop,
+            theme.panelGradientBottom,
+          )
+        : null,
+    [activeCurve, w, h, bentPivotX, theme.panelGradientTop, theme.panelGradientBottom],
+  );
+
+  // Curved variant: a segmented bent plane fill + a bent gradient wash (the
+  // flat RoundedBox can't wrap onto the cylinder). Rounded corners are traded
+  // for the arc — see makeBentPlane / the curved-panels design notes.
+  if (activeCurve) {
+    return (
+      <>
+        <mesh geometry={bentFill!} position={[w / 2, -h / 2, -0.0006]}>
+          <meshStandardMaterial
+            color={theme.panelBg}
+            transparent={isGhost}
+            opacity={isGhost ? ghostOpacity : 1}
+            roughness={0.85}
+            metalness={0}
+          />
+        </mesh>
+        <mesh geometry={bentGradient!} position={[w / 2, -h / 2, 0.0005]}>
+          <meshBasicMaterial
+            vertexColors
+            transparent
+            opacity={isGhost ? ghostOpacity! : 1}
+            depthWrite={false}
+          />
+        </mesh>
+      </>
+    );
+  }
 
   // Two layers only — opaque matte fill + gradient wash. This backing is
   // reused for the top-level content panel AND every nested XRArticle/

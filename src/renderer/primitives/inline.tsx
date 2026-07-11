@@ -16,6 +16,7 @@ import { isInlinePrimitive } from "../../layout/utils";
 import { useTheme, type XRTheme } from "../theme";
 import { FontContext } from "../XRSceneRenderer";
 import { useClipPlanes, NavigateContext } from "./contexts";
+import { usePanelCurve } from "./curve";
 import { Z_LAYER_INLINE_TEXT, RENDER_ORDER_TEXT } from "./constants";
 
 // ─────────────────────────────────────────────────────────────
@@ -37,8 +38,17 @@ type TextProps = React.ComponentPropsWithoutRef<typeof Text>;
 
 export function ClippedText(props: TextProps) {
   const clips = useClipPlanes();
+  const curve = usePanelCurve();
 
   const fontType = useContext(FontContext);
+
+  // Inside a curved panel, bend the glyphs along the same cylinder so text hugs
+  // the surface rather than sitting on a flat chord that recedes behind it. The
+  // sign MUST be POSITIVE — a negative radius curves the glyphs INTO the concave
+  // backing and troika truncates the run to its first few characters. An
+  // explicit curveRadius passed by the caller always wins.
+  const curveRadius =
+    (props as { curveRadius?: number }).curveRadius ?? (curve ? curve.radius : undefined);
 
   const handleSync = React.useCallback(
     (mesh: THREE.Mesh) => {
@@ -60,7 +70,15 @@ export function ClippedText(props: TextProps) {
     [clips, props.onSync],
   );
 
-  return <Text {...props} font={fontType} onSync={handleSync} />;
+  // `curveRadius` is a valid troika-three-text prop forwarded at runtime, but
+  // drei's <Text> type doesn't declare it — pass it through an untyped spread.
+  const curveProp = (
+    curveRadius !== undefined ? { curveRadius } : {}
+  ) as Record<string, unknown>;
+
+  return (
+    <Text {...props} {...curveProp} font={fontType} onSync={handleSync} />
+  );
 }
 
 // ─────────────────────────────────────────────────────────────

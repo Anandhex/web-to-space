@@ -16,7 +16,7 @@ import {
   RENDER_ORDER_IMAGE,
   RENDER_ORDER_TEXT,
 } from "../constants";
-import { Surface, safeDim, entryTransform } from "../surface";
+import { Surface, safeDim, entryTransform, CurvedTexturePlane } from "../surface";
 import { useClipPlanes } from "../contexts";
 import { ClippedText } from "../inline";
 import { proxyImageSrc } from "../../../proxy";
@@ -89,17 +89,18 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
       {/* Poster thumbnail — sits between the backing panel and the icon
           overlay so the play/audio icon still reads on top of it. */}
       {posterTexture && (
-        <mesh
+        <CurvedTexturePlane
+          width={w}
+          height={h}
           position={[w / 2, -h / 2, Z_LAYER_IMAGE]}
           renderOrder={RENDER_ORDER_IMAGE}
         >
-          <planeGeometry args={[w, h]} />
           <meshBasicMaterial
             map={posterTexture}
             transparent
             clippingPlanes={clips}
           />
-        </mesh>
+        </CurvedTexturePlane>
       )}
 
       {/* Play / audio icon */}
@@ -267,13 +268,14 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
           does not retroactively enable texture sampling — the plane just
           renders as meshBasicMaterial's plain white default forever. */}
       {texture && (
-        <mesh
+        <CurvedTexturePlane
+          width={w}
+          height={h}
           position={[w / 2, -h / 2, Z_LAYER_IMAGE]}
           renderOrder={RENDER_ORDER_IMAGE}
         >
-          <planeGeometry args={[w, h]} />
           <meshBasicMaterial map={texture} transparent clippingPlanes={clips} />
-        </mesh>
+        </CurvedTexturePlane>
       )}
       <mesh position={[w / 2, -h / 2, 0.002]} rotation={[0, 0, Math.PI / 2]}>
         <planeGeometry args={[h * 0.4, 0.002]} />
