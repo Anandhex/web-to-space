@@ -137,8 +137,11 @@ export function PanelTuner({
       // Ghosts are computed in scene-graph.tsx from the main entry + constants.
       // Emit the offset from main plus the facing angle so the values are
       // pasteable into the ghost entry there.
+      // NB: angularRotation() negates its argument (returns y = -deg2rad(deg)),
+      // while live tuning applies value.rotY straight as the Euler y. So negate
+      // here — angularRotation(-rotY°) reproduces the exact pose that was tuned.
       const anchor = anchorFor(active) ?? { x: 0, y: 0, z: 0 };
-      const angleDeg = value.rotY * RAD2DEG;
+      const angleDeg = -value.rotY * RAD2DEG;
       // Signed offset: "+ 0.3" / "- 1.6" so the expression reads cleanly.
       const off = (a: number, b: number) => {
         const d = a - b;

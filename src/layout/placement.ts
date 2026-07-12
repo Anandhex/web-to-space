@@ -101,10 +101,10 @@ function documentSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       worldLocked: true,
     },
     toc: {
-      position: angularPosition(d * 0.95, -ha, eyeY - 0.05),
-      rotation: angularRotation(-ha),
-      size: { width: 0.36, height: metrics.navigationBar.height },
-      curveRadius: d,
+      position: { x: -0.81, y: 1.41, z: -0.49 },
+      rotation: { x: 0, y: 1.248, z: 0 },
+      size: { width: 0.36, height: 0.9 },
+      curveRadius: 0.62,
       worldLocked: true,
     },
     navigation: {
@@ -122,13 +122,10 @@ function documentSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       worldLocked: true,
     },
     complementary: {
-      position: angularPosition(d, ha + 5, eyeY),
-      rotation: angularRotation(ha - 8),
-      // Sidebar width — kept slim (~a third of the 1.4 m main panel) so the
-      // aside reads as secondary. Was full main-width, which looked oversized
-      // once table/list pages fell through from the (removed) dashboard template.
-      size: { width: 0.5, height: cfg.maxPanelViewportHeight },
-      curveRadius: d,
+      position: { x: 0.7, y: 1.4, z: -0.9 },
+      rotation: { x: 0, y: -1.122, z: 0 },
+      size: { width: 0.5, height: 0.9 },
+      curveRadius: 1.2,
       worldLocked: true,
     },
     footer: {
@@ -327,27 +324,30 @@ export const CAROUSEL_Z_STEP = 0.2;
  */
 export function carouselGhostPlacement(
   pos: { x: number; y: number; z: number },
-  size: { width: number; height: number },
+  _size: { width: number; height: number },
 ): {
   prev: { position: { x: number; y: number; z: number }; rotation: Rotation3 };
   next: { position: { x: number; y: number; z: number }; rotation: Rotation3 };
 } {
   return {
     prev: {
+      // QUEST_3 · carousel ghost · prev — offsets from main in scene-graph.tsx
       position: {
-        x: pos.x - size.width + CAROUSEL_GHOST_GAP * 2.5,
-        y: pos.y,
-        z: pos.z + CAROUSEL_Z_STEP * 3.5,
+        x: pos.x - 1.02,
+        y: pos.y - 0.01,
+        z: pos.z + 1.17,
       },
-      rotation: angularRotation(CAROUSEL_GHOST_PREV_ANGLE_DEG),
+      rotation: angularRotation(-46.868),
     },
+
     next: {
+      // QUEST_3 · carousel ghost · next — offsets from main in scene-graph.tsx
       position: {
-        x: pos.x + size.width + CAROUSEL_GHOST_GAP,
-        y: pos.y,
-        z: pos.z,
+        x: pos.x + 1.45,
+        y: pos.y - 0.01,
+        z: pos.z + 0.14,
       },
-      rotation: angularRotation(CAROUSEL_GHOST_NEXT_ANGLE_DEG),
+      rotation: angularRotation(52.803),
     },
   };
 }
@@ -356,26 +356,16 @@ function carouselSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
   const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
   const d = cfg.viewingDistance;
   const MAIN_W = 1.4;
-  const GAP = CAROUSEL_GHOST_GAP;
-  const TOC_W = 0.36;
-  const ASIDE_W = 0.5;
-
-  // Flat row x positions (left edges, constant gap, no overlap).
+  // Main sits centred; toc / complementary / ghosts are hand-placed below
+  // (ghosts via carouselGhostPlacement in the renderer).
   const mainX = -(MAIN_W / 2);
-  const prevGhostX = mainX - GAP - MAIN_W;
-  const nextGhostX = mainX + MAIN_W + GAP;
-  const tocX = prevGhostX - TOC_W + GAP * 7;
-  const asideX = nextGhostX + MAIN_W + GAP;
-
-  // Facing angles for toc and aside (ghosts handled by the renderer).
-  const TOC_DEG = -60;
-  const ASIDE_DEG = 60;
 
   return {
     toc: {
-      position: { x: tocX, y: eyeY, z: -d + 5.5 * CAROUSEL_Z_STEP },
-      rotation: angularRotation(TOC_DEG),
-      size: { width: TOC_W, height: metrics.navigationBar.height },
+      position: { x: -1.81, y: 1.37, z: 0.41 },
+      rotation: { x: 0, y: 1.047, z: 0 },
+      // Same height as the content panel (main); width kept slim.
+      size: { width: 0.36, height: cfg.maxPanelViewportHeight },
       curveRadius: 0,
       worldLocked: true,
     },
@@ -387,9 +377,9 @@ function carouselSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       worldLocked: true,
     },
     complementary: {
-      position: { x: asideX, y: eyeY, z: -d + 2 * CAROUSEL_Z_STEP },
-      rotation: angularRotation(ASIDE_DEG),
-      size: { width: ASIDE_W, height: cfg.maxPanelViewportHeight },
+      position: { x: 1.45, y: 1.4, z: 0.18 },
+      rotation: { x: 0, y: -1.437, z: 0 },
+      size: { width: 0.5, height: 0.9 },
       curveRadius: 0,
       worldLocked: true,
     },
@@ -438,13 +428,11 @@ function theatreSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
   const mhw = mw / 2;
   const tocW = 0.36;
   const navW = 0.32;
-  const compW = 0.42;
   // IMAX wrap: the wide panel curves around the viewer on the shared cylinder,
-  // and TOC/nav/aside sit tangent just beyond its (wide) angular edges so they
-  // continue the wrap instead of floating flat in front of it.
-  const tocDeg = outsideMainDeg(-1, mw, tocW, d);
+  // and nav sits tangent just beyond its (wide) angular edge so it continues
+  // the wrap instead of floating flat in front of it. (toc / complementary are
+  // hand-placed below, so their facing angles are no longer computed here.)
   const navDeg = outsideMainDeg(-1, mw, navW, d, [tocW]);
-  const compDeg = outsideMainDeg(1, mw, compW, d);
   return {
     main: {
       position: { x: -mhw, y: eyeY, z: -d },
@@ -454,10 +442,11 @@ function theatreSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       worldLocked: true,
     },
     toc: {
-      position: angularPosition(d, tocDeg, eyeY),
-      rotation: angularRotation(tocDeg),
-      size: { width: tocW, height: metrics.navigationBar.height },
-      curveRadius: d,
+      position: { x: -1.159, y: 1.4, z: -0.312 },
+      rotation: { x: 0, y: 1.202, z: 0 },
+      // Same height as the content panel (main); width kept slim.
+      size: { width: 0.36, height: cfg.maxPanelViewportHeight },
+      curveRadius: 1.2,
       worldLocked: true,
     },
     navigation: {
@@ -468,10 +457,10 @@ function theatreSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
       worldLocked: true,
     },
     complementary: {
-      position: angularPosition(d, compDeg, eyeY),
-      rotation: angularRotation(compDeg),
-      size: { width: compW, height: cfg.maxPanelViewportHeight * 0.7 },
-      curveRadius: d,
+      position: { x: 1.06, y: 1.4, z: -0.6 },
+      rotation: { x: 0, y: -1.227, z: 0 },
+      size: { width: 0.42, height: 0.9 },
+      curveRadius: 1.2,
       worldLocked: true,
     },
     alert: {
@@ -519,21 +508,9 @@ function centreStackedPanels(map: SlotMap): SlotMap {
     const slot = map[key];
     if (slot) slot.position.x = -slot.size.width / 2;
   }
-  // Keep the left-hand TOC sidebar clear of the now-centred main panel. Panels
-  // use a TOP-LEFT x origin, so a panel at position.x spans [x, x + width]:
-  // the main's left edge is main.position.x and the TOC's right edge is
-  // toc.position.x + toc.size.width. If the TOC would intrude past the main's
-  // left edge, shift it left so its right edge clears with a small gap.
-  const main = map.main;
-  const toc = map.toc;
-  if (main && toc) {
-    const gap = 0.08;
-    const mainLeft = main.position.x;
-    const tocRight = toc.position.x + toc.size.width;
-    if (tocRight > mainLeft - gap) {
-      toc.position.x = mainLeft - gap - toc.size.width;
-    }
-  }
+  // The peripheral slots (toc / nav / complementary) are hand-authored per
+  // template and left exactly as placed — no auto-shift — so their tuned poses
+  // survive centring of the stacked column above.
   return map;
 }
 
