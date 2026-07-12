@@ -14,8 +14,7 @@ import {
   PRIMITIVE_CONFIG,
   resolveImageDisplaySize,
 } from "./positionConfigs";
-import { selectSlots } from "./slots";
-import { resolveArrangementSlots } from "./arrangements";
+import { selectSlots, resolveArrangementSlots } from "./placement";
 import { selectLayoutTemplate } from "./templates";
 import type {
   Arrangement,
@@ -686,6 +685,23 @@ export function computeLayoutPlan(
     ? resolveArrangementSlots(arrangement, resolvedTemplate, config, metrics)
     : selectSlots(resolvedTemplate, config, metrics);
 
+  // Live tuning override: stamp the HUD's values onto each targeted slot.
+  // Slots are freshly built each call, so mutating here is safe. Only fields the
+  // HUD actually set are applied; the rest keep the template's computed value.
+  if (config.slotOverrides) {
+    for (const [name, ov] of Object.entries(config.slotOverrides)) {
+      const s = slots[name as SlotName];
+      if (!s || !ov) continue;
+      if (ov.x !== undefined) s.position.x = ov.x;
+      if (ov.y !== undefined) s.position.y = ov.y;
+      if (ov.z !== undefined) s.position.z = ov.z;
+      if (ov.rotX !== undefined) s.rotation.x = ov.rotX;
+      if (ov.rotY !== undefined) s.rotation.y = ov.rotY;
+      if (ov.rotZ !== undefined) s.rotation.z = ov.rotZ;
+      if (ov.curveRadius !== undefined) s.curveRadius = ov.curveRadius;
+    }
+  }
+
   // Tell the paginator whether flowed XRComplementary asides will be extracted
   // to a real slot (see LayoutConfig.complementaryExtractedToSlot). When they
   // will be, the paginator must not let them occupy flow space — otherwise the
@@ -983,6 +999,7 @@ export function computeLayoutPlan(
     entries,
     template: resolvedTemplate,
     config,
+    slots,
     diagnostics: diag,
     referenceFrame: arrangement?.frame ?? "world",
   };

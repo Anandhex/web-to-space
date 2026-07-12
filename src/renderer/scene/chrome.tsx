@@ -1,15 +1,10 @@
 /**
  * scene/chrome.tsx
  *
- * Non-3D chrome around the canvas: the Enter-VR button, the door-style TOC nav
- * overlay, and the shared inline style table.
+ * Non-3D chrome around the canvas: the Enter-VR button and the shared inline
+ * style table.
  */
 import React from "react";
-
-import type {
-  SemanticScene,
-} from "../../mapper/types";
-import type { LayoutPlan } from "../../layout/types";
 
 export function VRButton({
   supported,
@@ -49,143 +44,6 @@ export function VRButton({
   );
 }
 
-// ─────────────────────────────────────────────────────────────
-// Main component
-// ─────────────────────────────────────────────────────────────
-
-
-export function DoorTOCNav({
-  scene,
-  plan,
-  expandedSectionId,
-  setExpandedSectionId,
-  setPage,
-}: {
-  scene: SemanticScene;
-  plan: LayoutPlan;
-  expandedSectionId: string | null;
-  setExpandedSectionId: (id: string | null) => void;
-  setPage: (id: string, page: number) => void;
-}) {
-  const mainPanelId = React.useMemo(
-    () => scene.root.children.find((p) => p.type === "XRContentPanel")?.id,
-    [scene.root.children],
-  );
-
-  // Build the same TOC-item list as CardsOverlay.
-  const items = React.useMemo(() => {
-    const result: { id: string; label: string; pageIndex: number }[] = [];
-
-    const mainPanel = scene.root.children.find(
-      (p) => p.type === "XRContentPanel",
-    );
-    const sectionPageByLabel = new Map<string, number>();
-    if (mainPanel) {
-      for (const child of mainPanel.children) {
-        const heading = child.children.find((c) => c.type === "XRHeading");
-        const label = (heading?.label ?? child.label ?? "")
-          .toLowerCase()
-          .trim();
-        const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
-        if (label) sectionPageByLabel.set(label, pageIndex);
-      }
-    }
-
-    const tocNav = scene.root.children.find(
-      (p) => p.type === "XRNavigationBar",
-    );
-    if (!tocNav) {
-      if (mainPanel) {
-        for (const child of mainPanel.children) {
-          if (child.type !== "XRSection" && child.type !== "XRArticle")
-            continue;
-          const heading = child.children.find((c) => c.type === "XRHeading");
-          const label = heading?.label ?? child.label ?? child.id;
-          const pageIndex = plan.entries[child.id]?.pageIndex ?? 0;
-          result.push({ id: child.id, label, pageIndex });
-        }
-      }
-      return result;
-    }
-
-    for (const link of tocNav.children) {
-      const label = link.label ?? link.content ?? "";
-      if (!label) continue;
-      const pageIndex = sectionPageByLabel.get(label.toLowerCase().trim()) ?? 0;
-      result.push({ id: link.id, label, pageIndex });
-    }
-    return result;
-  }, [scene.root.children, plan.entries]);
-
-  if (items.length === 0) return null;
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        top: 50,
-        left: 14,
-        bottom: 60,
-        width: 200,
-        display: "flex",
-        flexDirection: "column",
-        gap: 3,
-        padding: "10px 8px",
-        background: "rgba(6, 10, 20, 0.92)",
-        border: "1px solid rgba(88, 166, 255, 0.18)",
-        borderRadius: 12,
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-        zIndex: 200,
-        fontFamily: "system-ui, -apple-system, sans-serif",
-        overflowY: "auto",
-      }}
-    >
-      <div
-        style={{
-          fontSize: 10,
-          color: "#3a5870",
-          marginBottom: 4,
-          paddingLeft: 4,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-        }}
-      >
-        Sections
-      </div>
-      {items.map(({ id, label, pageIndex }) => {
-        const isActive = expandedSectionId === id;
-        return (
-          <button
-            key={id}
-            onClick={() => {
-              setExpandedSectionId(id);
-              if (mainPanelId) setPage(mainPanelId, pageIndex);
-            }}
-            style={{
-              padding: "5px 8px",
-              textAlign: "left",
-              background: isActive ? "rgba(88, 166, 255, 0.15)" : "transparent",
-              border: `1px solid ${isActive ? "rgba(88, 166, 255, 0.4)" : "transparent"}`,
-              borderRadius: 6,
-              color: isActive ? "#58a6ff" : "#7a9abf",
-              fontSize: 11,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              transition: "all 0.12s",
-            }}
-            title={label}
-          >
-            {isActive ? "▶ " : "  "}
-            {label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────
 // Styles
@@ -244,42 +102,6 @@ export const styles: Record<string, React.CSSProperties> = {
     color: "#4a5568",
     fontFamily: "inherit",
     letterSpacing: "0.02em",
-  },
-  cardsBreadcrumb: {
-    position: "absolute",
-    top: 50,
-    left: "50%",
-    transform: "translateX(-50%)",
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    padding: "6px 14px",
-    background: "rgba(6, 10, 20, 0.88)",
-    border: "1px solid rgba(88, 166, 255, 0.18)",
-    borderRadius: 24,
-    backdropFilter: "blur(16px)",
-    WebkitBackdropFilter: "blur(16px)",
-    zIndex: 200,
-    fontFamily: "system-ui, -apple-system, sans-serif",
-    pointerEvents: "auto" as const,
-  },
-  cardsBreadcrumbBack: {
-    padding: "4px 12px",
-    background: "rgba(88, 166, 255, 0.1)",
-    border: "1px solid rgba(88, 166, 255, 0.3)",
-    borderRadius: 16,
-    color: "#58a6ff",
-    fontSize: 11,
-    cursor: "pointer",
-    fontFamily: "inherit",
-  },
-  cardsBreadcrumbLabel: {
-    fontSize: 11,
-    color: "#7a9abf",
-    maxWidth: 260,
-    overflow: "hidden" as const,
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap" as const,
   },
   flatOverlay: {
     position: "absolute" as const,

@@ -55,7 +55,7 @@ import {
   OrbitControls,
 } from "@react-three/drei";
 
-import { getArrangement } from "../layout/arrangements";
+import { getArrangement, carouselGhostPlacement } from "../layout/placement";
 import {
   QUEST_PRO_PROFILE,
   RAY_BAN_META_PROFILE,
@@ -64,7 +64,13 @@ import {
 import type {
   SemanticScene,
 } from "../mapper/types";
-import type { LayoutPlan, LayoutConfig } from "../layout/types";
+import type {
+  LayoutPlan,
+  LayoutConfig,
+  SlotName,
+  SlotMap,
+  LandmarkSlot,
+} from "../layout/types";
 import type { ParserConfig, ParserBackend } from "../ir/types";
 import type { ViewMode, Tab } from "../components/viewTypes";
 import { XR3DTabBar, XR3DViewToggle } from "../components/XR3DChrome";
@@ -76,19 +82,17 @@ import { Web2VRScene } from "./Web2VRScene";
 // Scene package — the renderer was split out of this (formerly ~3400-line)
 // file into ./scene/* for readability. This file is now just the top-level
 // <XRSceneRenderer> component wiring those pieces together.
-import {
-  EMPTY_CONFIG,
-  CARDS_LOOK_TARGET,
-  CARDS_READ_POS,
-  CARDS_READ_LOOK,
-} from "./scene/config";
-import { FontContext, PageRangeContext, type PageState } from "./scene/contexts";
+import { EMPTY_CONFIG } from "./scene/config";
+import { FontContext, type PageState } from "./scene/contexts";
 import { usePipeline } from "./scene/use-pipeline";
-import { getSectionCards, CardsGridMesh } from "./scene/cards";
-import type { CardsZoomLevel } from "./scene/cards";
-import { CameraRig, CameraSnapTo, XRSessionBinder } from "./scene/camera";
+import { XRSessionBinder } from "./scene/camera";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
-import { VRButton, DoorTOCNav, styles } from "./scene/chrome";
+import { VRButton, styles } from "./scene/chrome";
+import {
+  PanelTuner,
+  type TuneState,
+  type TunerTarget,
+} from "./scene/PanelTuner";
 
 // Re-export the renderer contexts so existing consumers
 // (`import { FontContext } from "./XRSceneRenderer"`, HomeScreen's XRDeviceType)
@@ -100,6 +104,49 @@ export {
 } from "./scene/contexts";
 
 export type XRDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
+
+// Reading-priority order for the panel-tuner target picker.
+const TUNER_SLOT_ORDER: SlotName[] = [
+  "main",
+  "complementary",
+  "toc",
+  "navigation",
+  "banner",
+  "footer",
+];
+
+/** Flatten a landmark slot into the tuner's editable value shape. */
+function slotToTune(s: LandmarkSlot): TuneState {
+  return {
+    x: s.position.x,
+    y: s.position.y,
+    z: s.position.z,
+    rotX: s.rotation.x,
+    rotY: s.rotation.y,
+    rotZ: s.rotation.z,
+    curveRadius: s.curveRadius,
+  };
+}
+
+/** Ghost prev/next seed values (position + facing) from the resolved main slot. */
+function ghostSeeds(slots: SlotMap): Record<string, TuneState> {
+  const main = slots.main;
+  if (!main) return {};
+  const { prev, next } = carouselGhostPlacement(main.position, main.size);
+  const toState = (p: {
+    position: { x: number; y: number; z: number };
+    rotation: { x: number; y: number; z: number };
+  }): TuneState => ({
+    x: p.position.x,
+    y: p.position.y,
+    z: p.position.z,
+    rotX: p.rotation.x,
+    rotY: p.rotation.y,
+    rotZ: p.rotation.z,
+    curveRadius: main.curveRadius,
+  });
+  return { "ghost-prev": toState(prev), "ghost-next": toState(next) };
+}
 
 export interface XRSceneRendererProps {
   html?: string;
@@ -172,22 +219,14 @@ export function XRSceneRenderer({
   // Map view mode → explicit layout template override
   const templateOverride = useMemo(():
     | "document"
-    | "dashboard"
-    | "form"
     | "landing"
     | "generic"
     | "carousel"
-    | "cards"
-    | "door"
     | "theatre"
     | undefined => {
     switch (viewMode) {
       case "carousel":
         return "carousel";
-      case "cards":
-        return "cards";
-      case "door":
-        return "door";
       case "theatre":
         return "theatre";
       default:
@@ -212,6 +251,14 @@ export function XRSceneRenderer({
     return [0, centerY, -cfg.viewingDistance];
   }, [deviceProfile]);
 
+  // Live panel tuning (DOM HUD). Per-slot overrides feed the layout engine and
+  // re-run the pipeline on change; ghost overrides feed the carousel renderer
+  // directly (ghosts aren't slots). Empty = nothing overridden.
+  const [slotTune, setSlotTune] = useState<Partial<Record<SlotName, TuneState>>>(
+    {},
+  );
+  const [ghostTune, setGhostTune] = useState<Record<string, TuneState>>({});
+
   const {
     scene,
     plan,
@@ -224,6 +271,7 @@ export function XRSceneRenderer({
     deviceProfile,
     {
       ...layoutConfig,
+      slotOverrides: slotTune,
       // sectionStartsOnNewPage: false,
     },
     parserConfig,
@@ -247,26 +295,86 @@ export function XRSceneRenderer({
     setPageStateMap((prev) => ({ ...prev, [id]: page }));
   }, []);
 
-  // ── View-mode interaction state ─────────────────────────────
-  const [expandedSectionId, setExpandedSectionId] = useState<string | null>(
-    null,
-  );
-  const [cardsZoom, setCardsZoom] = useState<CardsZoomLevel>(0);
-  const [cardsFocusedId, setCardsFocusedId] = useState<string | null>(null);
-
-  // Reset interaction state when viewMode or content changes
+  // Reset paging state when viewMode or content changes
   useEffect(() => {
-    setExpandedSectionId(null);
     setPageStateMap({});
-    setCardsZoom(0);
-    setCardsFocusedId(null);
   }, [viewMode, html, scene]);
 
-  // ── Cards zoom derived state ─────────────────────────────────
   const mainPanelId = useMemo(
     () =>
       scene?.root.children.find((p) => p.type === "XRContentPanel")?.id ?? null,
     [scene],
+  );
+
+  // ── Panel tuner data ────────────────────────────────────────
+  // Targets = landmark slots present in the plan, plus the two carousel ghosts.
+  const tunerTargets = useMemo((): TunerTarget[] => {
+    const slots = plan?.slots;
+    if (!slots) return [];
+    const list: TunerTarget[] = TUNER_SLOT_ORDER.filter(
+      (name) => slots[name],
+    ).map((name) => ({ id: name, label: name, kind: "slot" as const }));
+    if (viewMode === "carousel" && slots.main) {
+      list.push(
+        { id: "ghost-prev", label: "ghost · prev", kind: "ghost" },
+        { id: "ghost-next", label: "ghost · next", kind: "ghost" },
+      );
+    }
+    return list;
+  }, [plan, viewMode]);
+
+  // Merge slot + ghost overrides for the tuner's per-target state map.
+  const tunerOverrides = useMemo(
+    (): Record<string, TuneState> => ({ ...slotTune, ...ghostTune }),
+    [slotTune, ghostTune],
+  );
+
+  // Seed values (pre-override slot geometry / computed ghost placement).
+  const ghostSeedMap = useMemo(
+    () => (plan?.slots ? ghostSeeds(plan.slots) : {}),
+    [plan],
+  );
+  const seedFor = useCallback(
+    (id: string): TuneState | null => {
+      if (id.startsWith("ghost-")) return ghostSeedMap[id] ?? null;
+      const s = plan?.slots?.[id as SlotName];
+      return s ? slotToTune(s) : null;
+    },
+    [plan, ghostSeedMap],
+  );
+  const sizeFor = useCallback(
+    (id: string): { width: number; height: number } | null => {
+      const src = id.startsWith("ghost-") ? "main" : id;
+      return plan?.slots?.[src as SlotName]?.size ?? null;
+    },
+    [plan],
+  );
+  const anchorFor = useCallback(
+    (id: string): { x: number; y: number; z: number } | null => {
+      if (!id.startsWith("ghost-")) return null;
+      return plan?.slots?.main?.position ?? null;
+    },
+    [plan],
+  );
+  const onTuneChange = useCallback(
+    (id: string, next: TuneState | null) => {
+      if (id.startsWith("ghost-")) {
+        setGhostTune((prev) => {
+          const copy = { ...prev };
+          if (next) copy[id] = next;
+          else delete copy[id];
+          return copy;
+        });
+      } else {
+        setSlotTune((prev) => {
+          const copy = { ...prev };
+          if (next) copy[id as SlotName] = next;
+          else delete copy[id as SlotName];
+          return copy;
+        });
+      }
+    },
+    [],
   );
 
   // Anchor for the in-world chrome stack (layout switcher + tab switcher):
@@ -291,38 +399,6 @@ export function XRSceneRenderer({
       bottomY: e.position.y - viewportH,
     };
   }, [deviceProfile, mainPanelId, plan]);
-
-  const topLevelCards = useMemo(
-    () => (scene && plan ? getSectionCards(scene, plan, null) : []),
-    [scene, plan],
-  );
-
-  const focusedCard = useMemo(
-    () =>
-      cardsFocusedId
-        ? (topLevelCards.find((c) => c.id === cardsFocusedId) ?? null)
-        : null,
-    [topLevelCards, cardsFocusedId],
-  );
-
-  // Section-scoped page range for the reading view: clamps Prev/Next to this
-  // section's pages only. null when not in cards reading mode.
-  const cardsSectionRange = useMemo(
-    (): [number, number] | null =>
-      viewMode === "cards" && cardsZoom === 1 && focusedCard
-        ? [focusedCard.pageIndex, focusedCard.endPage]
-        : null,
-    [viewMode, cardsZoom, focusedCard],
-  );
-
-  const handleCardsZoomOut = useCallback(() => {
-    setCardsZoom(0);
-    setCardsFocusedId(null);
-  }, []);
-
-  const handlePointerMissed = useCallback(() => {
-    if (viewMode === "cards" && cardsZoom > 0) handleCardsZoomOut();
-  }, [viewMode, cardsZoom, handleCardsZoomOut]);
 
   useEffect(() => {
     if (plan && onPlanReady) onPlanReady(plan);
@@ -379,6 +455,22 @@ export function XRSceneRenderer({
       </div>
 
       <div style={{ width, height, position: "relative" }}>
+        {/* ── Live panel tuning HUD (flat preview only) ───────────── */}
+        {sessionState !== "immersive" &&
+          parserBackend !== "flat" &&
+          tunerTargets.length > 0 && (
+            <PanelTuner
+              targets={tunerTargets}
+              overrides={tunerOverrides}
+              seedFor={seedFor}
+              sizeFor={sizeFor}
+              anchorFor={anchorFor}
+              deviceType={deviceType}
+              template={plan?.template}
+              viewMode={viewMode}
+              onChange={onTuneChange}
+            />
+          )}
         {/* ── Flat backend: raw HTML in a floating browser panel ───── */}
         {parserBackend === "flat" && html && (
           <div style={styles.flatOverlay}>
@@ -412,7 +504,6 @@ export function XRSceneRenderer({
             gl.localClippingEnabled = true;
             gl.xr.enabled = true;
           }}
-          onPointerMissed={handlePointerMissed}
         >
           <Suspense fallback={null}>
             <XRSessionBinder session={session} />
@@ -438,59 +529,25 @@ export function XRSceneRenderer({
             <RenderMetricsContext.Provider value={deviceProfile.renderMetrics}>
               <ThemeContext.Provider value={theme}>
                 <FontContext.Provider value={fontType}>
-                  {/* Level 0 (overview): locked fly-out position, no orbit */}
-                  {viewMode === "cards" && cardsZoom === 0 && (
-                    <CameraRig
-                      targetPos={[0, 1.5, 1.8]}
-                      targetLook={CARDS_LOOK_TARGET}
-                    />
-                  )}
-                  {/* Level 1 (reading): snap camera to reading position, then
-                    hand off to OrbitControls so the user can look around */}
-                  {viewMode === "cards" && cardsZoom === 1 && (
-                    <CameraSnapTo
-                      position={CARDS_READ_POS}
-                      lookAt={CARDS_READ_LOOK}
-                    />
-                  )}
-
                   {/* Web2VR backend: CSS layout extracted from hidden iframe → 3D */}
                   {parserBackend === "web2vr" && html && (
                     <Web2VRScene html={html} />
                   )}
 
-                  {parserBackend !== "web2vr" &&
-                    scene &&
-                    plan &&
-                    (viewMode === "cards" && cardsZoom === 0 ? (
-                      /* Level 0: overview grid of all top-level section cards */
-                      <CardsGridMesh
-                        cards={topLevelCards}
-                        focusedId={cardsFocusedId}
-                        onCardClick={(id, pageIndex) => {
-                          setCardsFocusedId(id);
-                          setCardsZoom(1);
-                          if (mainPanelId) setPage(mainPanelId, pageIndex);
-                        }}
+                  {parserBackend !== "web2vr" && scene && plan && (
+                    <ReferenceFrameGroup frame={plan.referenceFrame ?? "world"}>
+                      <XRSceneGraph
+                        scene={scene}
+                        plan={plan}
+                        pageState={pageState}
+                        setPage={setPage}
+                        viewMode={viewMode}
+                        onExternalNavigate={onExternalNavigate}
+                        sourceUrl={url}
+                        ghostOverride={ghostTune}
                       />
-                    ) : (
-                      /* Level 1: reading view — pagination scoped to the focused section */
-                      <PageRangeContext.Provider value={cardsSectionRange}>
-                        <ReferenceFrameGroup
-                          frame={plan.referenceFrame ?? "world"}
-                        >
-                          <XRSceneGraph
-                            scene={scene}
-                            plan={plan}
-                            pageState={pageState}
-                            setPage={setPage}
-                            viewMode={viewMode}
-                            onExternalNavigate={onExternalNavigate}
-                            sourceUrl={url}
-                          />
-                        </ReferenceFrameGroup>
-                      </PageRangeContext.Provider>
-                    ))}
+                    </ReferenceFrameGroup>
+                  )}
 
                   {/* ── In-world browser chrome (replaces HTML overlays) ────
                     Layout switcher (top) and tab switcher (bottom) form a
@@ -530,21 +587,17 @@ export function XRSceneRenderer({
                       />
                     )}
 
-                  {/* OrbitControls: disabled only during cards overview (level 0) */}
-                  {sessionState !== "immersive" &&
-                    (viewMode !== "cards" || cardsZoom === 1) && (
-                      <OrbitControls
-                        target={
-                          viewMode === "cards" ? CARDS_READ_LOOK : readingLook
-                        }
-                        enablePan
-                        enableDamping
-                        dampingFactor={0.08}
-                      />
-                    )}
+                  {sessionState !== "immersive" && (
+                    <OrbitControls
+                      target={readingLook}
+                      enablePan
+                      enableDamping
+                      dampingFactor={0.08}
+                    />
+                  )}
 
-                  {/* Debug helpers: grid/gizmo hidden in cards mode entirely */}
-                  {sessionState !== "immersive" && viewMode !== "cards" && (
+                  {/* Debug helpers */}
+                  {sessionState !== "immersive" && (
                     <>
                       <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
                         <GizmoViewport
@@ -574,45 +627,7 @@ export function XRSceneRenderer({
             </RenderMetricsContext.Provider>
           </Suspense>
         </Canvas>
-
-        {/* ── Cards mode breadcrumb ───────────────────────────── */}
-        {viewMode === "cards" && cardsZoom > 0 && (
-          <div style={styles.cardsBreadcrumb}>
-            <button
-              onClick={handleCardsZoomOut}
-              style={styles.cardsBreadcrumbBack}
-            >
-              ← All sections
-            </button>
-            {focusedCard && (
-              <span style={styles.cardsBreadcrumbLabel}>
-                {focusedCard.label}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* ── Door mode TOC navigation overlay ───────────────── */}
-        {viewMode === "door" && scene && plan && (
-          <DoorTOCNav
-            scene={scene}
-            plan={plan}
-            expandedSectionId={expandedSectionId}
-            setExpandedSectionId={setExpandedSectionId}
-            setPage={setPage}
-          />
-        )}
       </div>
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────
-// Door TOC navigation overlay
-// ─────────────────────────────────────────────────────────────
-
-/**
- * Always-visible sidebar navigation for door mode.
- * Shows TOC items; clicking one jumps the main content panel to that section.
- * The active item is highlighted so the user knows where they are.
- */

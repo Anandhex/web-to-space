@@ -290,8 +290,7 @@ type ViewDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
 /**
  * View catalogue for the in-world switcher. `fit` lists the device types the
  * view is usable on (arrangement views gate on 6DoF / room-scale; legacy
- * front-facing views work everywhere). Superseded views (cards/door) are kept
- * in the codebase but omitted here — see docs/views-plan.md.
+ * front-facing views work everywhere).
  */
 const VIEW_MODES: {
   id: ViewMode;

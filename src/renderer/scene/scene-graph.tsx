@@ -15,14 +15,8 @@ import type { ViewMode } from "../../components/viewTypes";
 import {
   flattenInlineWrappers,
   isInlinePrimitive,
-  angularRotation,
 } from "../../layout/utils";
-import {
-  CAROUSEL_GHOST_PREV_ANGLE_DEG,
-  CAROUSEL_GHOST_NEXT_ANGLE_DEG,
-  CAROUSEL_GHOST_GAP,
-  CAROUSEL_Z_STEP,
-} from "../../layout/slots";
+import { carouselGhostPlacement } from "../../layout/placement";
 import { NavigateContext } from "../primitives";
 import { CurrentPageContext, type PageState } from "./contexts";
 import { hasDescendant } from "./dispatch-children";
@@ -149,6 +143,16 @@ export function ReferenceFrameGroup({
 // Scene graph
 // ─────────────────────────────────────────────────────────────
 
+/** Absolute placement override for a carousel ghost panel (from the tuning HUD). */
+export interface GhostPose {
+  x: number;
+  y: number;
+  z: number;
+  rotX: number;
+  rotY: number;
+  rotZ: number;
+}
+
 export function XRSceneGraph({
   scene,
   plan,
@@ -157,6 +161,7 @@ export function XRSceneGraph({
   viewMode,
   onExternalNavigate,
   sourceUrl,
+  ghostOverride,
 }: {
   scene: SemanticScene;
   plan: LayoutPlan;
@@ -165,6 +170,8 @@ export function XRSceneGraph({
   viewMode?: ViewMode;
   onExternalNavigate?: (href: string) => void;
   sourceUrl?: string;
+  /** Live ghost overrides keyed "ghost-prev"/"ghost-next" (tuning HUD). */
+  ghostOverride?: Record<string, GhostPose>;
 }) {
   const primitiveMap = React.useMemo(() => {
     // Start with the tree walk so ordering is preserved for normal nodes,
@@ -347,26 +354,19 @@ export function XRSceneGraph({
         if (viewMode === "carousel" && primitive === mainContentPanel) {
           const entry = plan.entries[primitive.id];
           if (!entry) return null;
-          // Ghost panels: flat x-offset from main (no overlap), z pulled
-          // toward the viewer by one step (tier 1 = -d + Z_STEP).
-          const prevEntry: LayoutEntry = {
+          // Ghost panels: default placement from the shared helper (so the
+          // tuning HUD seeds from the same values), overridable live per ghost.
+          const ghost = carouselGhostPlacement(entry.position, entry.size);
+          const poseEntry = (
+            base: { position: { x: number; y: number; z: number }; rotation: LayoutEntry["rotation"] },
+            ov: GhostPose | undefined,
+          ): LayoutEntry => ({
             ...entry,
-            position: {
-              x: entry.position.x - entry.size.width + CAROUSEL_GHOST_GAP * 2.5,
-              y: entry.position.y,
-              z: entry.position.z + CAROUSEL_Z_STEP * 3.5,
-            },
-            rotation: angularRotation(CAROUSEL_GHOST_PREV_ANGLE_DEG),
-          };
-          const nextEntry: LayoutEntry = {
-            ...entry,
-            position: {
-              x: entry.position.x + entry.size.width + CAROUSEL_GHOST_GAP,
-              y: entry.position.y,
-              z: entry.position.z,
-            },
-            rotation: angularRotation(CAROUSEL_GHOST_NEXT_ANGLE_DEG),
-          };
+            position: ov ? { x: ov.x, y: ov.y, z: ov.z } : base.position,
+            rotation: ov ? { x: ov.rotX, y: ov.rotY, z: ov.rotZ } : base.rotation,
+          });
+          const prevEntry = poseEntry(ghost.prev, ghostOverride?.["ghost-prev"]);
+          const nextEntry = poseEntry(ghost.next, ghostOverride?.["ghost-next"]);
 
           const currentPage = pageState[primitive.id] ?? 0;
           const pageCount = entry.pagination?.pageCount ?? 1;

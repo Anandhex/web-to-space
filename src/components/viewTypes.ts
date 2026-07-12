@@ -4,8 +4,6 @@ export type ViewMode =
   // Legacy bespoke views (hand-tuned SlotMaps + renderer branches)
   | "standard"
   | "carousel"
-  | "cards"
-  | "door"
   | "theatre"
   // Two-axis arrangement views (frame + distribution over the content template)
   | "focus"

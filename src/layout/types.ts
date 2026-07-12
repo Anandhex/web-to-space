@@ -20,13 +20,9 @@ import type {
  */
 export type LayoutTemplate =
   | "document" // Long-form article / blog / docs
-  | "dashboard" // Data-heavy, card grids, metrics
-  | "form" // Single-purpose input page
   | "landing" // Hero + feature sections, marketing
   | "generic" // Safe fallback
   | "carousel" // Arc of panels: TOC, prev-page, main, next-page, aside
-  | "cards" // Paginated grid of section cards with expand-on-click
-  | "door" // Progressive drill-down columns (TOC + drillPath)
   | "theatre"; // Wide IMAX-style curved panel, peripheral TOC/aside
 
 // ─────────────────────────────────────────────────────────────
@@ -137,6 +133,11 @@ export interface LayoutPlan {
   entries: Record<string, LayoutEntry>;
   template: LayoutTemplate;
   config: LayoutConfig;
+  /**
+   * The resolved landmark slot map (post-override) that drove placement. The
+   * tuning HUD reads this to enumerate tunable slots and seed its sliders.
+   */
+  slots: SlotMap;
   diagnostics: LayoutDiagnostics;
   /**
    * Reference frame the landmark positions are authored in. The renderer wraps
@@ -417,6 +418,11 @@ export interface LayoutConfig {
    * content is re-homed in the slot.
    */
   complementaryExtractedToSlot?: boolean;
+  /**
+   * Live per-slot overrides, applied after slot resolution. Set by the DOM
+   * tuning HUD; omitted in normal rendering. See SlotOverride.
+   */
+  slotOverrides?: Partial<Record<SlotName, SlotOverride>>;
 }
 
 export interface LandmarkSlot {
@@ -425,6 +431,28 @@ export interface LandmarkSlot {
   size: Size2;
   curveRadius: number;
   worldLocked: boolean;
+}
+
+/**
+ * Live tuning override for a single landmark slot.
+ *
+ * When present in LayoutConfig.slotOverrides (set by the DOM tuning HUD), these
+ * values are stamped onto the resolved slot AFTER the template/arrangement
+ * produces it — so you can dial in a panel's placement in the running scene and
+ * export the numbers into a slot definition. Every field is optional; only the
+ * fields that are set are applied, leaving the rest at the template's value.
+ *
+ * Angles are in radians (WebXR). Distances/radii are in metres. `x` is the
+ * panel's LEFT edge (top-left anchor), matching LandmarkSlot.position.
+ */
+export interface SlotOverride {
+  x?: number;
+  y?: number;
+  z?: number;
+  rotX?: number;
+  rotY?: number;
+  rotZ?: number;
+  curveRadius?: number;
 }
 
 export type SlotName =

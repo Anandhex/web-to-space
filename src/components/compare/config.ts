@@ -135,7 +135,7 @@ export const METRIC_DESCRIPTIONS: Record<string, string> = {
 
   // XR Layout & Usability
   "Layout template":
-    "Scene archetype auto-selected by the layout engine based on landmark counts, control density, and content volume. Determines spatial slot arrangement. Options: document, dashboard, form, landing, generic, carousel, cards, door, theatre.",
+    "Scene archetype auto-selected by the layout engine based on landmark counts, control density, and content volume. Determines spatial slot arrangement. Options: document, landing, generic, carousel, theatre.",
   "Primitives placed":
     "Total primitives assigned a valid 3D LayoutEntry — position, size, and rotation. The count of spatially realised nodes the renderer will draw.",
   "Paginated panels":
