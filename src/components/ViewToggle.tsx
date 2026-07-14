@@ -16,14 +16,15 @@ const MODES: {
   label: string;
   fit: ViewDeviceType[];
 }[] = [
-  { id: "standard", icon: "▣", label: "Standard", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "carousel", icon: "◎", label: "Carousel", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "theatre",  icon: "⬭", label: "Theatre",  fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "focus",    icon: "◉", label: "Focus",    fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "stack",    icon: "▤", label: "Stack",    fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "orbital",  icon: "◍", label: "Orbital",  fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "palm",     icon: "✋", label: "Palm",     fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "gallery",  icon: "▦", label: "Gallery",  fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "standard",      icon: "▣", label: "Standard",      fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "carousel",      icon: "◎", label: "Carousel",      fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "theatre",       icon: "⬭", label: "Theatre",       fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "cockpit",       icon: "⛭", label: "Cockpit",       fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "strata",        icon: "☰", label: "Strata",        fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "dome",          icon: "◠", label: "Dome",          fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "hud",           icon: "⊡", label: "HUD",           fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "exploded",      icon: "✳", label: "Exploded",      fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "constellation", icon: "❈", label: "Constellation", fit: ["QUEST_3", "QUEST_PRO"] },
 ];
 
 export function ViewToggle({ mode, onChange, deviceType = "QUEST_3" }: ViewToggleProps) {

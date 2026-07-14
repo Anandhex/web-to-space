@@ -62,7 +62,27 @@ export const METRIC_DESCRIPTIONS: Record<string, string> = {
   "Explicit role honor rate":
     "Explicit-source IR nodes with a non-generic role ÷ total explicit-source nodes. Measures the fraction of author-declared ARIA roles that were successfully classified into a typed XR primitive (not left as XRGenericPanel).",
   "Alt text coverage":
-    "XRImage primitives with a resolved label ÷ total images with non-empty alt text in the raw HTML. Indicates how much visual content information is preserved for the XR scene.",
+    "Fraction of the DOM's non-empty alt strings that survive into the scene as an XRImage's alt/label (matched by content). A true set intersection, so it is ≤100% — the parser cannot preserve more alt text than the page contains.",
+
+  // Structure & Interaction
+  "Interactive affordance preservation":
+    "Interactive XR primitives produced (buttons, links, form fields, toggles, sliders, combo/search boxes, tabs, menu/tree items) ÷ interactive elements in the raw HTML (links, buttons, inputs, interactive ARIA roles). Clamped at 100% — the scene should not invent affordances the page lacks.",
+  "Control label coverage":
+    "Of the interactive primitives placed in the scene, the fraction that carry a non-empty label. Unlabeled controls are unusable in XR — there is nothing to speak aloud or show on laser-pointer hover — so higher is critical for an accessible spatial UI.",
+  "Heading hierarchy validity":
+    "Fraction of consecutive heading transitions (in reading order) that do not skip a level when descending — e.g. h2→h4 is a violation, h2→h3 or h3→h2 are valid. A proxy for WCAG 1.3.1 structural correctness that drives sane section nesting in XR. 100% when there are fewer than two headings.",
+  "Reading-order fidelity":
+    "Does the scene present content in the same order as the page? Kendall's τ rank agreement between the DOM document order of content units and the scene's reading order (aligned by text), mapped so 100% = identical order, 50% = uncorrelated, 0% = fully reversed. A reordered scene disorients spatial reading and screen-reader traversal.",
+  "Link target retention":
+    "Combined rollup: all links that survived with a usable href ÷ all DOM <a href> (clamped at 100%). A dropped href is a dead link in XR. Broken out below into navigation vs inline, which are different XR affordances with independent failure modes.",
+  "— navigation links":
+    "Navigation/standalone links (in a nav/menu, or a link-only list item) that became a placed XRLink primitive with a usable href ÷ DOM navigation links. These are the spatial, raycast-targetable wayfinding affordances.",
+  "— inline links":
+    "In-prose links (surrounded by other text) that survived as an inline run carrying a usable href ÷ DOM in-prose links. These are followable links within reading flow, not standalone spatial buttons.",
+  "Table structure preservation":
+    "XRTableCell primitives ÷ DOM table cells (td + th), clamped at 100%. Indicates how much tabular structure the pipeline reconstructed; low values mean tables collapsed or cells were lost. 100% when the page has no tables.",
+  "Media preservation":
+    "XRMediaPlayer primitives ÷ DOM <video> + <audio> elements, clamped at 100%. Whether embedded media survived into the spatial scene as a playable panel. 100% when the page has no media.",
 
   // Information Fidelity
   "Text coverage":
@@ -162,6 +182,36 @@ export const METRIC_DESCRIPTIONS: Record<string, string> = {
   // Composite
   "Semantic richness score":
     "Weighted composite (0–100) combining five dimensions equally: heading recall (structural capture), landmark recall (spatial frame), labeling rate (content accessibility), semantic node ratio (classification coverage), and accessibility preservation (ARIA fidelity). A single number summarising how semantically complete the XR representation is relative to the source HTML.",
+
+  // XR Spatial Quality (literature-grounded — see src/eval/xr-quality.ts)
+  "Mean text angular size":
+    "Char-weighted mean cap-height visual angle (degrees) of all text primitives at the profile's viewing distance (1.2 m), θ = 2·atan(h/2d). Legibility floor ≈ 0.29°; comfortable-reading target ≈ 1.375° per VR text-legibility studies (IEEE VR 2020, ACM VRST 2025).",
+  "Legible text fraction":
+    "Fraction of text (weighted by character count) whose angular size is at or above the 0.29° legibility floor. Below the floor, XR text becomes hard to read.",
+  "Comfortable text fraction":
+    "Fraction of text at or above the 1.375° comfortable-reading target. A value near 0 means text is legible but smaller than the cited XR comfort ideal.",
+  "Comfort envelope coverage":
+    "Fraction of top-level panel area whose centre lies within the ±comfort-half-angle horizontal cone around forward gaze. Content outside the cone costs a head turn.",
+  "Peripheral panels":
+    "Number of top-level panels whose centre falls beyond the comfort cone and therefore requires a head rotation to read. Lower is better.",
+  "Main panel FOV fill":
+    "Main content-panel area ÷ comfort-viewport area at the viewing distance. ~0.4–0.9 is a comfortable fill; ≫1 spills past the cone, ≪ wastes the field of view.",
+  "Page turns to read all":
+    "Sequential virtual-page transitions needed to read every paginated panel (Σ pages − #paginated panels). A navigation-cost proxy; lower is better.",
+  "Reading distance error":
+    "Area-weighted mean |panel distance − profile viewing distance| in metres. Panels placed nearer than 0.5 m or farther than 20 m are outside the legible window.",
+
+  // Segmentation (per backend — see src/eval/segmentation.ts)
+  "Segmentation F-measure":
+    "Harmonic mean of segmentation precision and recall (0–1). Measures how well THIS backend's produced scene groups the page into blocks, vs the page's semantic sectioning. Size-weighted BCubed per Kiesel et al., CIKM 2020. Higher is better.",
+  "Segmentation precision":
+    "Of the content this backend grouped together into a block, the fraction that truly belongs together in the reference. Low precision = the backend merged distinct sections. Size-weighted BCubed.",
+  "Segmentation recall":
+    "Of the content that belongs together in the reference, the fraction this backend kept in the same block. Low recall = the backend split one section across several blocks. Size-weighted BCubed.",
+  "Segments produced":
+    "Number of distinct blocks this backend's scene grouped the aligned content into. Not better-or-worse on its own — read alongside precision/recall.",
+  "Aligned units (of reference)":
+    "How many of the reference's atomic content units were found in this backend's scene (text-matched). Lower means the backend dropped or transformed more content; the F-measure is computed over these matched units only.",
 };
 
 // ─────────────────────────────────────────────────────────────

@@ -1,12 +1,23 @@
 /**
  * compare/components.tsx — presentational building blocks for the comparison
  * table (tooltip, section header, cells, rows, ground-truth bar).
+ *
+ * Light theme. Palette kept in one place so every piece stays consistent:
+ *   ink #1f2937 · muted #6b7280 · faint #9aa3af · border #e6e8ec
+ *   accent #4f46e5 · good #15803d/#f1faf4 · warn #b45309/#fdf6ec
+ * Numbers use tabular-nums in the system font (not monospace) for a cleaner,
+ * less "terminal" feel while still aligning columns.
  */
 import React, { useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 
 import { METRIC_DESCRIPTIONS } from "./config";
 import type { HTMLGroundTruth } from "./types";
+
+const NUM: React.CSSProperties = {
+  fontVariantNumeric: "tabular-nums",
+  fontFeatureSettings: '"tnum"',
+};
 
 export function Tooltip({ text }: { text: string }) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
@@ -28,10 +39,10 @@ export function Tooltip({ text }: { text: string }) {
         onMouseEnter={show}
         onMouseLeave={hide}
         style={{
-          color: "#2a4a6a",
+          color: "#b7bcc6",
           fontSize: 10,
           marginLeft: 5,
-          cursor: "default",
+          cursor: "help",
           userSelect: "none",
         }}
       >
@@ -45,17 +56,17 @@ export function Tooltip({ text }: { text: string }) {
               left: pos.x,
               top: pos.y - 8,
               transform: "translate(-50%, -100%)",
-              background: "rgba(6,12,22,0.97)",
-              border: "1px solid rgba(88,166,255,0.22)",
-              borderRadius: 7,
+              background: "#ffffff",
+              border: "1px solid #e6e8ec",
+              borderRadius: 8,
               padding: "9px 12px",
-              fontSize: 11,
-              color: "#8aaac8",
-              lineHeight: 1.6,
+              fontSize: 11.5,
+              color: "#4b5563",
+              lineHeight: 1.55,
               width: 290,
               zIndex: 999999,
               pointerEvents: "none",
-              boxShadow: "0 10px 40px rgba(0,0,0,0.7)",
+              boxShadow: "0 8px 28px rgba(17,24,39,0.14)",
               whiteSpace: "normal",
             }}
           >
@@ -83,13 +94,12 @@ export function SectionHeader({
       <td
         colSpan={colCount + 1}
         style={{
-          padding: "10px 10px 4px",
-          color: "#2a4a6a",
-          fontSize: 10,
-          fontWeight: 700,
+          padding: "16px 10px 6px",
+          color: "#8a91a0",
+          fontSize: 10.5,
+          fontWeight: 600,
           textTransform: "uppercase",
-          letterSpacing: "0.1em",
-          borderTop: "1px solid rgba(30,45,61,0.6)",
+          letterSpacing: "0.07em",
         }}
       >
         {label}
@@ -112,23 +122,24 @@ export function Cell({
   return (
     <td
       style={{
-        padding: "4px 10px",
+        ...NUM,
+        padding: "6px 10px",
         textAlign: "right",
-        fontFamily: "monospace",
-        fontSize: 12,
+        fontSize: 12.5,
+        fontWeight: best || worst ? 600 : 400,
         color: dim
-          ? "#3a5a7a"
+          ? "#aeb4bf"
           : best
-            ? "#4ec966"
+            ? "#15803d"
             : worst
-              ? "#f6a623"
-              : "#c8d8e8",
+              ? "#b45309"
+              : "#1f2937",
         background: best
-          ? "rgba(78,201,102,0.06)"
+          ? "#f1faf4"
           : worst
-            ? "rgba(246,166,35,0.06)"
+            ? "#fdf6ec"
             : "transparent",
-        borderBottom: "1px solid rgba(20,30,40,0.7)",
+        borderBottom: "1px solid #f0f1f4",
       }}
     >
       {typeof value === "number" ? value.toLocaleString() : value}
@@ -171,11 +182,11 @@ export function Row({
     <tr>
       <td
         style={{
-          padding: "4px 10px",
-          fontSize: 12,
-          color: dim ? "#3a5a7a" : "#8a9aaa",
+          padding: "6px 10px",
+          fontSize: 12.5,
+          color: dim ? "#aeb4bf" : "#4b5563",
           whiteSpace: "nowrap",
-          borderBottom: "1px solid rgba(20,30,40,0.7)",
+          borderBottom: "1px solid #f0f1f4",
           paddingLeft: indent ? 22 : 10,
         }}
       >
@@ -195,7 +206,6 @@ export function Row({
   );
 }
 
-
 export function BoolRow({ label, values }: { label: string; values: boolean[] }) {
   const tooltipText = METRIC_DESCRIPTIONS[label];
   const allTrue = values.every(Boolean);
@@ -204,11 +214,11 @@ export function BoolRow({ label, values }: { label: string; values: boolean[] })
     <tr>
       <td
         style={{
-          padding: "4px 10px",
-          fontSize: 12,
-          color: "#8a9aaa",
+          padding: "6px 10px",
+          fontSize: 12.5,
+          color: "#4b5563",
           whiteSpace: "nowrap",
-          borderBottom: "1px solid rgba(20,30,40,0.7)",
+          borderBottom: "1px solid #f0f1f4",
         }}
       >
         {label}
@@ -218,21 +228,18 @@ export function BoolRow({ label, values }: { label: string; values: boolean[] })
         <td
           key={i}
           style={{
-            padding: "4px 10px",
+            ...NUM,
+            padding: "6px 10px",
             textAlign: "right",
-            fontFamily: "monospace",
-            fontSize: 12,
-            color: v ? "#4ec966" : "#f6a623",
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: v ? "#15803d" : "#b45309",
             background:
-              allTrue || allFalse
-                ? "transparent"
-                : v
-                  ? "rgba(78,201,102,0.06)"
-                  : "rgba(246,166,35,0.06)",
-            borderBottom: "1px solid rgba(20,30,40,0.7)",
+              allTrue || allFalse ? "transparent" : v ? "#f1faf4" : "#fdf6ec",
+            borderBottom: "1px solid #f0f1f4",
           }}
         >
-          {v ? "yes" : "no"}
+          {v ? "Yes" : "No"}
         </td>
       ))}
     </tr>
@@ -254,21 +261,22 @@ export function GroundTruthBar({ gt }: { gt: HTMLGroundTruth }) {
     <div
       style={{
         display: "flex",
-        gap: 16,
+        gap: 18,
         flexWrap: "wrap",
-        padding: "8px 10px",
-        marginBottom: 10,
-        background: "rgba(20,35,55,0.4)",
-        borderRadius: 6,
-        border: "1px solid rgba(30,45,61,0.5)",
+        padding: "10px 14px",
+        marginBottom: 14,
+        background: "#f7f8fa",
+        borderRadius: 8,
+        border: "1px solid #ebedf1",
       }}
     >
       <span
         style={{
           fontSize: 10,
-          color: "#2a4a6a",
+          color: "#8a91a0",
           textTransform: "uppercase",
-          letterSpacing: "0.08em",
+          letterSpacing: "0.07em",
+          fontWeight: 600,
           alignSelf: "center",
           whiteSpace: "nowrap",
         }}
@@ -278,17 +286,12 @@ export function GroundTruthBar({ gt }: { gt: HTMLGroundTruth }) {
       {items.map(({ label, value }) => (
         <span
           key={label}
-          style={{ fontSize: 11, color: "#4a6a8a", fontFamily: "monospace" }}
+          style={{ fontSize: 12, color: "#6b7280", ...NUM }}
         >
-          <span style={{ color: "#58a6ff" }}>{value}</span>
-          <span style={{ color: "#2a4a6a", marginLeft: 3 }}>{label}</span>
+          <span style={{ color: "#111827", fontWeight: 600 }}>{value}</span>
+          <span style={{ color: "#9aa3af", marginLeft: 4 }}>{label}</span>
         </span>
       ))}
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────
-// Main component
-// ─────────────────────────────────────────────────────────────
-

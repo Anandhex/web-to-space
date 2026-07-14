@@ -7,10 +7,16 @@
  */
 import React, { useCallback, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
+import { Line, Text } from "@react-three/drei";
 import * as THREE from "three";
 
 import type { SemanticScene, XRPrimitive } from "../../mapper/types";
-import type { LayoutEntry, LayoutPlan } from "../../layout/types";
+import type {
+  LandmarkSlot,
+  LayoutEntry,
+  LayoutPlan,
+  SlotMap,
+} from "../../layout/types";
 import type { ViewMode } from "../../components/viewTypes";
 import {
   flattenInlineWrappers,
@@ -18,7 +24,11 @@ import {
 } from "../../layout/utils";
 import { carouselGhostPlacement } from "../../layout/placement";
 import { NavigateContext } from "../primitives";
-import { CurrentPageContext, type PageState } from "./contexts";
+import {
+  CurrentPageContext,
+  PageRangeContext,
+  type PageState,
+} from "./contexts";
 import { hasDescendant } from "./dispatch-children";
 import { PrimitiveDispatcher } from "./dispatcher";
 import { CarouselGhostPanel } from "./panels";
@@ -30,6 +40,154 @@ export function buildPrimitiveMap(
   out.set(root.id, root);
   for (const child of root.children) buildPrimitiveMap(child, out);
   return out;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Slot tethers (EXPLODED / CONSTELLATION)
+// ─────────────────────────────────────────────────────────────
+
+/** Panel centre from a top-left-origin slot (y grows downward). */
+function slotCentre(slot: LandmarkSlot): [number, number, number] {
+  return [
+    slot.position.x + slot.size.width / 2,
+    slot.position.y - slot.size.height / 2,
+    slot.position.z,
+  ];
+}
+
+/**
+ * Draws relationship lines from the primary (`main`) panel to every other
+ * landmark panel. EXPLODED reads them as the connective spine of a disassembled
+ * page; CONSTELLATION reads them as the spokes of a node-link mind-map. The
+ * endpoints come straight from the resolved SlotMap, so the tethers always track
+ * whatever the active distribution placed — no separate geometry to keep in sync.
+ */
+function SlotTethers({ slots }: { slots: SlotMap }) {
+  const main = slots.main;
+  if (!main) return null;
+  const hub = slotCentre(main);
+  const roles: (keyof SlotMap)[] = [
+    "navigation",
+    "complementary",
+    "toc",
+    "banner",
+    "footer",
+  ];
+  return (
+    <>
+      {roles.map((role) => {
+        const slot = slots[role];
+        if (!slot) return null;
+        return (
+          <Line
+            key={role}
+            points={[hub, slotCentre(slot)]}
+            color="#58a6ff"
+            lineWidth={1.5}
+            transparent
+            opacity={0.4}
+            dashed
+            dashSize={0.06}
+            gapSize={0.04}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Section drill-down (click a section → read only its pages)
+// ─────────────────────────────────────────────────────────────
+
+function collectSubtreeIds(node: XRPrimitive, out: Set<string>): Set<string> {
+  out.add(node.id);
+  for (const child of node.children) collectSubtreeIds(child, out);
+  return out;
+}
+
+/**
+ * The page span [firstPage, lastPage] of the section that owns `targetId`.
+ *
+ * A TOC entry links to a heading (`#domId`); that heading begins an XRSection.
+ * We find the *deepest* (smallest) XRSection containing the target, then take
+ * the min/max `pageIndex` across its descendants that the engine paginated. The
+ * pager (PageRangeContext) clamps prev/next to this span, so focusing a section
+ * lets the reader page through only that section's pages. Returns null when the
+ * target isn't inside a section or the panel isn't paginated.
+ */
+function sectionRangeForTarget(
+  targetId: string,
+  primitiveMap: Map<string, XRPrimitive>,
+  plan: LayoutPlan,
+): [number, number] | null {
+  let ownerIds: Set<string> | null = null;
+  for (const [, p] of primitiveMap) {
+    if (p.type !== "XRSection") continue;
+    if (p.id !== targetId && !hasDescendant(p, targetId)) continue;
+    const ids = collectSubtreeIds(p, new Set());
+    if (!ownerIds || ids.size < ownerIds.size) ownerIds = ids; // deepest wins
+  }
+  if (!ownerIds) return null;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const id of ownerIds) {
+    const page = plan.entries[id]?.pageIndex;
+    if (page !== undefined) {
+      min = Math.min(min, page);
+      max = Math.max(max, page);
+    }
+  }
+  return min === Infinity ? null : [min, max];
+}
+
+/**
+ * A small "← All sections" chip floated just above the content panel while a
+ * section is focused. Clicking it clears the focus and restores full-document
+ * paging. Positioned from the resolved `main` slot so it tracks whichever view
+ * is active.
+ */
+function SectionResetChip({
+  slots,
+  onClear,
+}: {
+  slots: SlotMap;
+  onClear: () => void;
+}) {
+  const main = slots.main;
+  const [hover, setHover] = React.useState(false);
+  if (!main) return null;
+  const cx = main.position.x + main.size.width / 2;
+  const topY = main.position.y + 0.1;
+  const z = main.position.z + 0.03;
+  return (
+    <group position={[cx, topY, z]}>
+      <mesh
+        onClick={(e) => {
+          e.stopPropagation();
+          onClear();
+        }}
+        onPointerOver={() => setHover(true)}
+        onPointerOut={() => setHover(false)}
+      >
+        <planeGeometry args={[0.36, 0.062]} />
+        <meshBasicMaterial
+          color={hover ? "#1f6feb" : "#0d1b2e"}
+          transparent
+          opacity={0.94}
+        />
+      </mesh>
+      <Text
+        position={[0, 0, 0.002]}
+        fontSize={0.024}
+        color="#cfe6ff"
+        anchorX="center"
+        anchorY="middle"
+      >
+        ← All sections
+      </Text>
+    </group>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -184,6 +342,16 @@ export function XRSceneGraph({
     return map;
   }, [scene.root, scene.primitives]);
 
+  // Section drill-down: when set, the pager (PageRangeContext) clamps to this
+  // section's page span so the reader sees only that section. Cleared whenever
+  // the page/tab content changes out from under us.
+  const [focusedRange, setFocusedRange] = React.useState<
+    [number, number] | null
+  >(null);
+  React.useEffect(() => {
+    setFocusedRange(null);
+  }, [scene.root.id]);
+
   React.useEffect(() => {
     // Inline children of inline-owning types (XRParagraph, XRHeading,
     // XRListItem, XRBlockQuote) are rendered as text runs by the mesh
@@ -300,9 +468,12 @@ export function XRSceneGraph({
         }
         const targetEntry = targetId ? plan.entries[targetId] : undefined;
         if (targetId && targetEntry?.pageIndex !== undefined) {
+          // Drill down: clamp paging to the target's section, jump to its start.
+          const range = sectionRangeForTarget(targetId, primitiveMap, plan);
+          setFocusedRange(range);
           for (const [, p] of primitiveMap) {
             if (p.type === "XRContentPanel" && hasDescendant(p, targetId)) {
-              setPage(p.id, targetEntry.pageIndex);
+              setPage(p.id, range ? range[0] : targetEntry.pageIndex);
               return;
             }
           }
@@ -327,7 +498,7 @@ export function XRSceneGraph({
         window.open(resolved, "_blank", "noopener,noreferrer");
       }
     },
-    [plan, primitiveMap, setPage, onExternalNavigate, sourceUrl],
+    [plan, primitiveMap, setPage, onExternalNavigate, sourceUrl, setFocusedRange],
   );
 
   // The page-paginated content panel drives the current page for gating the
@@ -349,6 +520,7 @@ export function XRSceneGraph({
 
   return (
     <NavigateContext.Provider value={navigate}>
+      <PageRangeContext.Provider value={focusedRange}>
       {scene.root.children.map((primitive) => {
         // In carousel mode, the main content panel is rendered via CarouselPanelGroup
         if (viewMode === "carousel" && primitive === mainContentPanel) {
@@ -437,6 +609,16 @@ export function XRSceneGraph({
         }
         return dispatcher;
       })}
+      {focusedRange && (
+        <SectionResetChip
+          slots={plan.slots}
+          onClear={() => setFocusedRange(null)}
+        />
+      )}
+      {(viewMode === "exploded" || viewMode === "constellation") && (
+        <SlotTethers slots={plan.slots} />
+      )}
+      </PageRangeContext.Provider>
     </NavigateContext.Provider>
   );
 }

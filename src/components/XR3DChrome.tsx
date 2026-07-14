@@ -313,14 +313,19 @@ const VIEW_MODES: {
     fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
   },
   {
-    id: "focus",
-    label: "Focus",
+    id: "cockpit",
+    label: "Cockpit",
     fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
   },
-  { id: "stack", label: "Stack", fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "orbital", label: "Orbital", fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "palm", label: "Palm", fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "gallery", label: "Gallery", fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "strata", label: "Strata", fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "dome", label: "Dome", fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "hud", label: "HUD", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "exploded", label: "Exploded", fit: ["QUEST_3", "QUEST_PRO"] },
+  {
+    id: "constellation",
+    label: "Constellation",
+    fit: ["QUEST_3", "QUEST_PRO"],
+  },
 ];
 
 export interface XR3DViewToggleProps {

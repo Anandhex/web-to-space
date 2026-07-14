@@ -486,11 +486,12 @@ export type ReferenceFrame = "world" | "body" | "head" | "hand";
 /** Distribution algorithm that turns a SlotRoster into positioned slots. */
 export type Distribution =
   | "fan"
-  | "focus"
-  | "stack"
-  | "ring"
-  | "corridor"
-  | "palm";
+  | "cockpit"
+  | "strata"
+  | "dome"
+  | "hud"
+  | "exploded"
+  | "constellation";
 
 /** Device capability class, used to gate which views a profile may offer. */
 export type DeviceClass = "headset-6dof" | "headset-roomscale" | "glasses";

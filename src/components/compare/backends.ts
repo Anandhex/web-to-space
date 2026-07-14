@@ -9,11 +9,14 @@ import { computeLayoutPlan } from "../../layout/engine";
 import { DEFAULT_CONFIG } from "../../ir/defaults";
 import { applyParserBackend } from "../../ir/backends";
 import { QUEST_3_PROFILE } from "../../layout/profiles";
+import { computeXRQuality } from "../../eval/xr-quality";
+import { scoreSceneSegmentation } from "../../eval/segmentation";
 import { INLINE_PRIMITIVE_TYPES } from "./config";
 import {
   deriveIRQuality,
   derivePrecisionRecall,
   deriveAccessibility,
+  deriveStructuralFidelity,
   deriveInformationFidelity,
   deriveXRUsability,
   deriveComposite,
@@ -27,6 +30,7 @@ import type {
   IRQuality,
   PrecisionRecall,
   AccessibilityPreservation,
+  StructuralFidelity,
   InformationFidelity,
   XRUsability,
 } from "./types";
@@ -92,10 +96,13 @@ export async function runBackend(
       primitiveTypeBreakdown,
       gt,
     );
-    const accessibility = deriveAccessibility(
+    const accessibility = deriveAccessibility(nodes, gt);
+    const refBody = new DOMParser().parseFromString(html, "text/html").body;
+    const structuralFidelity = deriveStructuralFidelity(
       nodes,
+      scene,
       gt,
-      primitiveTypeBreakdown,
+      refBody,
     );
     const fidelity = deriveInformationFidelity(
       ir.analytics,
@@ -125,6 +132,7 @@ export async function runBackend(
       irQuality,
       precisionRecall,
       accessibility,
+      structuralFidelity,
       fidelity,
       usability,
       composite,
@@ -136,6 +144,8 @@ export async function runBackend(
       totalPages,
       fallbackHeightCount: plan.diagnostics.fallbackHeightIds.length,
       layoutTemplate: plan.template,
+      xr: computeXRQuality(plan, QUEST_3_PROFILE, scene),
+      segmentation: scoreSceneSegmentation(scene.root, refBody),
     };
   } catch (err) {
     const totalMs = Math.round(performance.now() - t0);
@@ -174,6 +184,17 @@ export async function runBackend(
       explicitRoleHonorRate: 0,
       altTextCoverage: 0,
     };
+    const emptyStructural: StructuralFidelity = {
+      interactiveAffordanceRate: 0,
+      controlLabelCoverage: 0,
+      headingHierarchyValidity: 0,
+      linkRetention: 0,
+      navLinkRetention: 0,
+      inlineLinkRetention: 0,
+      tablePreservation: 0,
+      mediaPreservation: 0,
+      readingOrderFidelity: 0,
+    };
     const emptyFidelity: InformationFidelity = {
       textCoverage: 0,
       headingTextRetention: 0,
@@ -195,6 +216,7 @@ export async function runBackend(
       irQuality: emptyQuality,
       precisionRecall: emptyPR,
       accessibility: emptyA11y,
+      structuralFidelity: emptyStructural,
       fidelity: emptyFidelity,
       usability: emptyUsability,
       composite: { semanticRichness: 0 },
@@ -206,6 +228,14 @@ export async function runBackend(
       totalPages: 0,
       fallbackHeightCount: 0,
       layoutTemplate: "generic",
+      xr: null,
+      segmentation: {
+        precision: 0,
+        recall: 0,
+        f: 0,
+        segmentCount: 0,
+        coveredUnits: 0,
+      },
       error: err instanceof Error ? err.message : "Unknown error",
     };
   }

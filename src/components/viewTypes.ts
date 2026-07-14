@@ -6,19 +6,21 @@ export type ViewMode =
   | "carousel"
   | "theatre"
   // Two-axis arrangement views (frame + distribution over the content template)
-  | "focus"
-  | "stack"
-  | "orbital"
-  | "palm"
-  | "gallery";
+  | "cockpit"
+  | "strata"
+  | "dome"
+  | "hud"
+  | "exploded"
+  | "constellation";
 
 /** ViewModes that route through the arrangement (two-axis) path. */
 export const ARRANGEMENT_VIEW_MODES: ReadonlySet<ViewMode> = new Set<ViewMode>([
-  "focus",
-  "stack",
-  "orbital",
-  "palm",
-  "gallery",
+  "cockpit",
+  "strata",
+  "dome",
+  "hud",
+  "exploded",
+  "constellation",
 ]);
 
 export interface Tab {

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Pipeline API — Docs</title></head>
+<body>
+  <header><h1>Pipeline API Reference</h1></header>
+  <nav aria-label="Table of contents">
+    <a href="#parse">parsePageToIR</a>
+    <a href="#map">mapIRToScene</a>
+    <a href="#layout">computeLayoutPlan</a>
+  </nav>
+  <main>
+    <section id="parse">
+      <h2>parsePageToIR(html, url, provider, config)</h2>
+      <p>Converts raw HTML into the accessibility-semantic intermediate representation.
+      Returns a flat dictionary of nodes keyed by string id.</p>
+      <pre><code>const ir = await parsePageToIR(html, url);
+console.log(ir.analytics.headingCount);</code></pre>
+      <h3>Parameters</h3>
+      <ul>
+        <li><code>html</code> — the raw document source.</li>
+        <li><code>url</code> — used to resolve relative links.</li>
+        <li><code>config</code> — toggles for structural inference and AI fallback.</li>
+      </ul>
+    </section>
+    <section id="map">
+      <h2>mapIRToScene(ir, config)</h2>
+      <p>Translates each IR role into a typed XR primitive. Every node is mapped;
+      unmapped roles fall through to XRGenericPanel so content is never dropped.</p>
+      <pre><code>const scene = mapIRToScene(ir, DEFAULT_MAPPER_CONFIG);</code></pre>
+    </section>
+    <section id="layout">
+      <h2>computeLayoutPlan(scene, profile, template, overrides)</h2>
+      <p>Places every primitive in three-dimensional space in metres, using a
+      right-handed WebXR coordinate system. Paginates content panels that overflow.</p>
+      <blockquote>Metres everywhere. Never use pixel units in layout code.</blockquote>
+    </section>
+  </main>
+  <footer><p>Generated from source. <a href="/repo">Repository</a></p></footer>
+</body>
+</html>

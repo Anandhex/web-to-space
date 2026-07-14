@@ -548,35 +548,41 @@ export function selectSlots(
  * plus a distribution function below — no bespoke SlotMap.
  */
 export const ARRANGEMENTS: Record<string, Arrangement> = {
-  focus: {
-    id: "focus",
-    frame: "world",
-    distribution: "focus",
+  cockpit: {
+    id: "cockpit",
+    frame: "body",
+    distribution: "cockpit",
     deviceFit: ["headset-6dof", "headset-roomscale", "glasses"],
   },
-  stack: {
-    id: "stack",
-    frame: "world",
-    distribution: "stack",
-    deviceFit: ["headset-6dof", "headset-roomscale"],
-  },
-  orbital: {
-    id: "orbital",
+  strata: {
+    id: "strata",
     frame: "body",
-    distribution: "ring",
+    distribution: "strata",
     deviceFit: ["headset-6dof", "headset-roomscale"],
   },
-  palm: {
-    id: "palm",
-    frame: "hand",
-    distribution: "palm",
+  dome: {
+    id: "dome",
+    frame: "body",
+    distribution: "dome",
     deviceFit: ["headset-6dof", "headset-roomscale"],
   },
-  gallery: {
-    id: "gallery",
+  hud: {
+    id: "hud",
+    frame: "body",
+    distribution: "hud",
+    deviceFit: ["headset-6dof", "headset-roomscale", "glasses"],
+  },
+  exploded: {
+    id: "exploded",
     frame: "world",
-    distribution: "corridor",
-    deviceFit: ["headset-roomscale"],
+    distribution: "exploded",
+    deviceFit: ["headset-6dof", "headset-roomscale"],
+  },
+  constellation: {
+    id: "constellation",
+    frame: "world",
+    distribution: "constellation",
+    deviceFit: ["headset-6dof", "headset-roomscale"],
   },
 };
 
@@ -655,9 +661,57 @@ function railsOf(roster: SlotRoster): SlotRoster {
   );
 }
 
-/** Angular half-width (deg) a panel of the given width subtends at radius `d`. */
-function halfAngleDeg(width: number, d: number): number {
-  return (Math.atan2(width / 2, d) * 180) / Math.PI;
+// ── Overlap-safety helpers ───────────────────────────────────
+//
+// The in-world chrome (view-mode toggle + tab bar) is anchored to the main
+// panel: the toggle sits ~1.1 m above the panel's bottom edge and the tab bar
+// ~0.3 m below it, both centred on the panel's x. That makes the vertical strip
+// through the panel centre a KEEP-OUT COLUMN (main panel + both chrome bars).
+// A scattered rail is guaranteed clear of all of it if its whole width sits
+// outside that column — hence every distribution parks its rails at |centre-x|
+// ≥ sideCentreX and caps their size so two can stack in the vertical FOV.
+
+/** Bottom edge (world y) of the main viewport — where the chrome anchors. */
+function chromeBottomY(cfg: LayoutConfig): number {
+  return cfg.eyeLevel + cfg.eyeLevelOffset - cfg.maxPanelViewportHeight;
+}
+
+/** Top edge (world y) of the view-mode toggle bar, so content can clear it. */
+function toggleTopY(cfg: LayoutConfig): number {
+  return chromeBottomY(cfg) + 1.1 + 0.1;
+}
+
+/**
+ * Minimum centre-x for a side rail so its full width clears the central column
+ * (main panel ≈ mainW wide + the chrome stack ≈ 1.1 m wide, both centred on 0).
+ */
+function sideCentreX(mainW: number, railW: number): number {
+  return Math.max(mainW, 1.1) / 2 + 0.14 + railW / 2;
+}
+
+/**
+ * Portrait size for a side-docked rail. PORTRAIT (height > width) is deliberate:
+ * it keeps a TOC rendering as a scrollable list (a wide-short panel flips the nav
+ * mesh into horizontal-chip mode and smears the entries) and gives an aside room
+ * for its content instead of clipping it.
+ */
+function sideRailSize(spec: SlotSpec, cfg: LayoutConfig): Size2 {
+  return {
+    width: Math.min(spec.size.width, 0.42),
+    height: Math.min(
+      Math.max(spec.size.height, 0.6),
+      Math.min(cfg.maxPanelViewportHeight, 0.82),
+    ),
+  };
+}
+
+/**
+ * Centre-x for the `step`-th rail on a side: extra same-side rails march OUTWARD
+ * into fresh columns rather than stacking vertically, so each rail keeps its full
+ * (content-legible) height without any same-side vertical overlap.
+ */
+function columnCentreX(side: 1 | -1, mainW: number, railW: number, step: number): number {
+  return side * (sideCentreX(mainW, railW) + step * (railW + 0.14));
 }
 
 /**
@@ -677,8 +731,15 @@ function attachBannerFooter(
   const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
   const banner = roster.find((s) => s.role === "banner");
   if (banner) {
+    // Float the header ABOVE the view-mode toggle (which is anchored just above
+    // the panel), not in the small gap between panel-top and toggle where it
+    // would collide with the toggle bar.
     map.banner = {
-      position: { x: mainX, y: eyeY + banner.size.height + 0.04, z: mainZ },
+      position: {
+        x: mainX,
+        y: toggleTopY(cfg) + 0.06 + banner.size.height,
+        z: mainZ,
+      },
       rotation,
       size: banner.size,
       curveRadius,
@@ -740,57 +801,57 @@ const fan: DistributeFn = (roster, cfg) => {
 };
 
 /**
- * FOCUS — focus+context reading. Primary at full legibility dead ahead; every
- * other role collapses to a thin peripheral ribbon at ±(ha+10)°, stacked
- * vertically, its width shrinking with lower reading priority (deeper content).
+ * COCKPIT — instrument-cluster ergonomics. Primary dead ahead at reading
+ * distance; every rail drops below the eye line and pitches back toward the
+ * viewer (like a car dashboard / mission console) arced left+right. The pitch
+ * (`rotation.x`) and the sub-eye-level drop are what a flat web arc can't do —
+ * the panels read as reachable near-field instruments, not floating billboards.
+ * Body-framed so the whole cockpit turns with you.
  */
-const focus: DistributeFn = (roster, cfg) => {
+const cockpit: DistributeFn = (roster, cfg) => {
   const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
   const d = cfg.viewingDistance;
-  const ha = cfg.comfortHalfAngleDeg;
   const map: SlotMap = {};
-  let leftY = eyeY + 0.25;
-  let rightY = eyeY + 0.25;
-  const RIBBON_H = 0.34;
-  const GAP = 0.06;
-  let toggle = false;
-  for (const spec of roster) {
-    if (spec.role === "main") {
-      map.main = {
-        position: { x: -spec.size.width / 2, y: eyeY, z: -d },
-        rotation: zeroRotation(),
-        size: spec.size,
-        curveRadius: d * 0.7,
-        worldLocked: true,
-      };
-      continue;
-    }
-    // Ribbon: compressed width scales with reading priority.
-    const ribbonW = 0.07 + spec.weight * 0.05;
-    const goLeft = !(toggle = !toggle);
-    const angle = (goLeft ? -1 : 1) * (ha + 10);
-    const yRef = goLeft
-      ? (leftY -= RIBBON_H + GAP)
-      : (rightY -= RIBBON_H + GAP);
-    const pos = angularPosition(d * 0.98, angle, yRef);
-    map[spec.role] = {
-      position: pos,
-      rotation: angularRotation(angle),
-      size: { width: ribbonW, height: RIBBON_H },
-      curveRadius: 0,
+  const main = roster.find((s) => s.role === "main");
+  const mainW = main?.size.width ?? 1.4;
+  const mainX = -mainW / 2;
+  if (main) {
+    map.main = {
+      position: { x: mainX, y: eyeY, z: -d },
+      rotation: zeroRotation(),
+      size: main.size,
+      curveRadius: d * 0.8,
       worldLocked: true,
     };
   }
+  attachBannerFooter(map, roster, mainX, -d, zeroRotation(), d * 0.8, cfg);
+  const PITCH = 0.26; // rad — top tipped back toward the eye (console tilt)
+  railsOf(roster).forEach((spec, i) => {
+    const size = sideRailSize(spec, cfg);
+    const side = i % 2 === 0 ? 1 : -1; // right, left, right, …
+    const step = Math.floor(i / 2); // extra same-side rails march outward
+    const cx = columnCentreX(side, mainW, size.width, step);
+    const y = eyeY + size.height / 2 - 0.06; // centred on the eye, a touch low
+    map[spec.role] = {
+      position: { x: cx - size.width / 2, y, z: -d },
+      rotation: { x: PITCH, y: -side * 0.4, z: 0 }, // pitched up, yawed inward
+      size,
+      curveRadius: 0,
+      worldLocked: true,
+    };
+  });
   return map;
 };
 
 /**
- * STACK — depth hierarchy. Primary at -d; each rail recedes along -Z and peeks
- * out beside the main panel (alternating sides), so secondary landmarks read as
- * a fanned card stack behind the content rather than hidden directly behind it.
- * The one axis flat web can't use. (Pull-to-front drill is a deferred interaction.)
+ * STRATA — reading hierarchy climbing in Y. The primary sits at eye level; every
+ * other role becomes a full-height, content-legible panel terraced UPWARD on
+ * alternating sides, each higher than the last and tipped down to face the eye.
+ * You traverse the hierarchy by looking up through the ascending layers. The
+ * panels sit in the outward side columns (never the centre chrome band) and each
+ * keeps a readable portrait size, so an aside/TOC shows its content in full.
  */
-const stack: DistributeFn = (roster, cfg) => {
+const strata: DistributeFn = (roster, cfg) => {
   const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
   const d = cfg.viewingDistance;
   const map: SlotMap = {};
@@ -808,15 +869,14 @@ const stack: DistributeFn = (roster, cfg) => {
   }
   attachBannerFooter(map, roster, mainX, -d, zeroRotation(), d * 0.8, cfg);
   railsOf(roster).forEach((spec, i) => {
-    const size = railSize(spec, cfg);
-    const layer = i + 1;
-    const goLeft = i % 2 === 0;
-    const z = -d - layer * 0.45;
-    const y = eyeY + 0.05 + Math.floor(i / 2) * 0.05;
-    const x = goLeft ? mainX - 0.12 - size.width : mainX + mainW + 0.12;
+    const size = sideRailSize(spec, cfg);
+    const side = i % 2 === 0 ? 1 : -1;
+    const step = Math.floor(i / 2);
+    const cx = columnCentreX(side, mainW, size.width, step);
+    const y = eyeY + size.height / 2 + 0.18 + i * 0.22; // each layer climbs higher
     map[spec.role] = {
-      position: { x, y, z },
-      rotation: zeroRotation(),
+      position: { x: cx - size.width / 2, y, z: -d },
+      rotation: { x: -0.28, y: -side * 0.3, z: 0 }, // tip down toward the eye
       size,
       curveRadius: d * 0.8,
       worldLocked: true,
@@ -826,22 +886,19 @@ const stack: DistributeFn = (roster, cfg) => {
 };
 
 /**
- * RING — body-locked cylinder. Primary faces forward; rails are placed around
- * the cylinder by CUMULATIVE angle so no two panels overlap: each rail reserves
- * its own angular width plus a gap beyond the previous panel's trailing edge.
- * Navigate by physically turning; the body frame keeps the ring comfortable.
+ * DOME — planetarium surround. Where a ring wraps a 2-D cylinder, DOME wraps a
+ * sphere: rails are distributed over BOTH azimuth and elevation, arcing up and
+ * around the viewer, each panel tilted down to face the eye. Long-form content
+ * tiles across a dome you read by leaning back and looking around — spatial
+ * memory (method of loci) does the navigation. Body-framed.
  */
-const ring: DistributeFn = (roster, cfg) => {
+const dome: DistributeFn = (roster, cfg) => {
   const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
   const d = cfg.viewingDistance;
   const map: SlotMap = {};
-  const GAP_DEG = 8;
   const main = roster.find((s) => s.role === "main");
   const mainW = main?.size.width ?? 1.4;
   if (main) {
-    // Front panel is centred on the gaze axis (top-left-x anchor at -mainW/2),
-    // matching the carousel/standard convention — angularPosition(0) would put
-    // its left edge on-axis and shove the panel off to the right.
     map.main = {
       position: { x: -mainW / 2, y: eyeY, z: -d },
       rotation: zeroRotation(),
@@ -851,26 +908,17 @@ const ring: DistributeFn = (roster, cfg) => {
     };
   }
   attachBannerFooter(map, roster, -mainW / 2, -d, zeroRotation(), d, cfg);
-  // Trailing-edge angle already consumed on each side (starts at main's edge).
-  let leftEdge = halfAngleDeg(mainW, d);
-  let rightEdge = halfAngleDeg(mainW, d);
+  // Rails arc up the sides of the dome — parked in outward side columns (clear of
+  // the centre chrome), raised above the eye, each curved and tilted down at you.
   railsOf(roster).forEach((spec, i) => {
-    const size = railSize(spec, cfg);
-    const rh = halfAngleDeg(size.width, d);
-    const goLeft = i % 2 === 0;
-    let center: number;
-    if (goLeft) {
-      center = -(leftEdge + GAP_DEG + rh);
-      leftEdge += GAP_DEG + 2 * rh;
-    } else {
-      center = rightEdge + GAP_DEG + rh;
-      rightEdge += GAP_DEG + 2 * rh;
-    }
-    // Tangent on the same radius-d cylinder as main → one continuous surround
-    // (curveRadius d makes each rail's curve axis land on the viewer).
+    const size = sideRailSize(spec, cfg);
+    const side = i % 2 === 0 ? 1 : -1;
+    const step = Math.floor(i / 2);
+    const cx = columnCentreX(side, mainW, size.width, step);
+    const y = eyeY + size.height / 2 + 0.28; // lifted up the dome
     map[spec.role] = {
-      position: angularPosition(d, center, eyeY),
-      rotation: angularRotation(center),
+      position: { x: cx - size.width / 2, y, z: -d },
+      rotation: { x: -0.34, y: -side * 0.5, z: 0 }, // tilt down + yaw inward
       size,
       curveRadius: d,
       worldLocked: true,
@@ -880,38 +928,41 @@ const ring: DistributeFn = (roster, cfg) => {
 };
 
 /**
- * CORRIDOR — gallery walk. Primary ahead; rails become alternating left/right
- * "wall" panels (width-capped, cleared of the main panel) receding in z, angled
- * inward. Reading order is a walking path (room-scale). World-locked.
+ * EXPLODED — the exploded-assembly diagram. The primary stays at the core; every
+ * rail bursts radially outward from the core center (distributed around a clock
+ * face) AND is pulled toward the viewer in Z, so the page reads as disassembled
+ * in depth — its parts floating off the spine. The renderer draws tether lines
+ * from the core to each part (see SlotTethers) to show what connects to what.
+ * World-locked so you can lean in and inspect the exploded cluster from any side.
  */
-const corridor: DistributeFn = (roster, cfg) => {
+const exploded: DistributeFn = (roster, cfg) => {
   const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
   const d = cfg.viewingDistance;
   const map: SlotMap = {};
-  const WALL_GAP = 0.35;
-  const Z_STEP = 0.9;
   const main = roster.find((s) => s.role === "main");
   const mainW = main?.size.width ?? 1.4;
-  const mainX = -mainW / 2;
   if (main) {
     map.main = {
-      position: { x: mainX, y: eyeY, z: -d },
+      position: { x: -mainW / 2, y: eyeY, z: -d },
       rotation: zeroRotation(),
       size: main.size,
-      curveRadius: 0,
+      curveRadius: d * 0.8,
       worldLocked: true,
     };
   }
-  attachBannerFooter(map, roster, mainX, -d, zeroRotation(), 0, cfg);
+  attachBannerFooter(map, roster, -mainW / 2, -d, zeroRotation(), d * 0.8, cfg);
+  // Parts burst outward into the side columns (clear of the centre chrome) and are
+  // pulled toward the viewer in Z so they read as lifted off the spine, with a
+  // slight up/down offset per side. The renderer draws the tether to each part.
   railsOf(roster).forEach((spec, i) => {
-    const size = railSize(spec, cfg);
-    const goLeft = i % 2 === 0;
-    const row = Math.floor(i / 2) + 1;
-    const x = goLeft ? mainX - WALL_GAP - size.width : mainX + mainW + WALL_GAP;
-    const yawDeg = goLeft ? 35 : -35; // turn each wall inward toward the path
+    const size = sideRailSize(spec, cfg);
+    const side = i % 2 === 0 ? 1 : -1;
+    const step = Math.floor(i / 2);
+    const cx = columnCentreX(side, mainW, size.width, step);
+    const y = eyeY + size.height / 2 + side * 0.14; // slight burst offset
     map[spec.role] = {
-      position: { x, y: eyeY, z: -d - row * Z_STEP },
-      rotation: { x: 0, y: (yawDeg * Math.PI) / 180, z: 0 },
+      position: { x: cx - size.width / 2, y, z: -d + 0.4 },
+      rotation: { x: 0, y: -side * 0.3, z: 0 },
       size,
       curveRadius: 0,
       worldLocked: true,
@@ -921,53 +972,96 @@ const corridor: DistributeFn = (roster, cfg) => {
 };
 
 /**
- * PALM — hand-anchored tablet. A compact primary panel sits ~0.4 m ahead and
- * below, tilted toward the face; peripheral roles become small chips above it.
- * Positions are authored in the hand frame — the ReferenceFrameGroup anchors
- * the whole map to a controller grip in XR (identity in flat preview).
+ * HUD — glanceable heads-up reading. A compact primary panel sits in the central
+ * FOV, pulled in close, with each other role docked as a flat, readable portrait
+ * tile in an outward side column. Body-framed so it follows you as you turn (the
+ * lightweight view for glasses) — and, crucially, the body frame preserves world
+ * Y, so the content panel's world-space clip planes line up and it renders (a
+ * head frame offsets Y by the camera and culls the whole panel).
  */
-const palm: DistributeFn = (roster) => {
+const hud: DistributeFn = (roster, cfg) => {
+  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
+  const d = Math.min(cfg.viewingDistance, 1.1); // pull the HUD in close
   const map: SlotMap = {};
-  const PANEL_W = 0.34;
-  const PANEL_H = 0.5;
-  const TILT = 0.5; // radians, tipped back toward the face
-  let chip = 0;
-  for (const spec of roster) {
-    if (spec.role === "main") {
-      map.main = {
-        position: { x: -PANEL_W / 2, y: 0.02, z: -0.42 },
-        rotation: { x: TILT, y: 0, z: 0 },
-        size: { width: PANEL_W, height: PANEL_H },
-        curveRadius: 0,
-        worldLocked: true,
-      };
-      continue;
-    }
-    const col = chip % 3;
-    const rowUp = Math.floor(chip / 3);
-    chip++;
-    map[spec.role] = {
-      position: {
-        x: -PANEL_W / 2 + col * (PANEL_W / 3),
-        y: 0.02 + PANEL_H * 0.55 + rowUp * 0.08,
-        z: -0.42,
-      },
-      rotation: { x: TILT, y: 0, z: 0 },
-      size: { width: PANEL_W / 3 - 0.01, height: 0.07 },
-      curveRadius: 0,
+  const main = roster.find((s) => s.role === "main");
+  const mainW = main?.size.width ?? 1.4;
+  if (main) {
+    map.main = {
+      position: { x: -mainW / 2, y: eyeY, z: -d },
+      rotation: zeroRotation(),
+      size: main.size,
+      curveRadius: d * 0.9,
       worldLocked: true,
     };
   }
+  attachBannerFooter(map, roster, -mainW / 2, -d, zeroRotation(), d * 0.9, cfg);
+  railsOf(roster).forEach((spec, i) => {
+    const size = sideRailSize(spec, cfg);
+    const side = i % 2 === 0 ? 1 : -1;
+    const step = Math.floor(i / 2);
+    const cx = columnCentreX(side, mainW, size.width, step);
+    map[spec.role] = {
+      position: { x: cx - size.width / 2, y: eyeY + size.height / 2, z: -d + 0.04 },
+      rotation: { x: 0, y: -side * 0.45, z: 0 }, // flat tiles yawed to face you
+      size,
+      curveRadius: 0,
+      worldLocked: true,
+    };
+  });
+  return map;
+};
+
+/**
+ * CONSTELLATION — node-link graph off the page's reading tree. The primary is
+ * the hub; every rail becomes a satellite node arranged on a ring COPLANAR with
+ * the hub (same depth), higher-priority nodes nearer the hub. The renderer draws
+ * spoke tethers from hub to satellite (see SlotTethers) so the page's structure
+ * reads as a mind-map. Distinct from EXPLODED: constellation stays flat (a graph
+ * you scan), exploded separates in depth (an assembly you inspect). World-locked.
+ */
+const constellation: DistributeFn = (roster, cfg) => {
+  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
+  const d = cfg.viewingDistance;
+  const map: SlotMap = {};
+  const main = roster.find((s) => s.role === "main");
+  const mainW = main?.size.width ?? 1.4;
+  if (main) {
+    map.main = {
+      position: { x: -mainW / 2, y: eyeY, z: -d },
+      rotation: zeroRotation(),
+      size: main.size,
+      curveRadius: d * 0.7,
+      worldLocked: true,
+    };
+  }
+  attachBannerFooter(map, roster, -mainW / 2, -d, zeroRotation(), d * 0.7, cfg);
+  // Satellite nodes orbit the hub in outward side columns (clear of the centre
+  // chrome), COPLANAR with the hub so the spoke tethers lie flat as a mind-map.
+  railsOf(roster).forEach((spec, i) => {
+    const size = sideRailSize(spec, cfg);
+    const side = i % 2 === 0 ? 1 : -1;
+    const step = Math.floor(i / 2);
+    const cx = columnCentreX(side, mainW, size.width, step);
+    const y = eyeY + size.height / 2 + side * 0.1;
+    map[spec.role] = {
+      position: { x: cx - size.width / 2, y, z: -d }, // coplanar with the hub
+      rotation: zeroRotation(),
+      size,
+      curveRadius: 0,
+      worldLocked: true,
+    };
+  });
   return map;
 };
 
 const DISTRIBUTIONS: Record<string, DistributeFn> = {
   fan,
-  focus,
-  stack,
-  ring,
-  corridor,
-  palm,
+  cockpit,
+  strata,
+  dome,
+  hud,
+  exploded,
+  constellation,
 };
 
 /**
