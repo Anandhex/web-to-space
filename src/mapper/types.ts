@@ -285,6 +285,14 @@ export interface XRImage extends XRPrimitiveBase {
   alt: string | null;
   intrinsicWidth: number | null;
   intrinsicHeight: number | null;
+  /**
+   * A genuine visible caption (from a <figcaption> on an image-only <figure>).
+   * Distinct from `alt`: alt is fallback text shown only when the image fails
+   * to load, whereas a caption is authored page content that must render
+   * *alongside* a successfully-loaded image. Null for bare <img> — their alt
+   * text is not a caption and must not be drawn as one.
+   */
+  caption: string | null;
 }
 
 /**
@@ -570,6 +578,13 @@ export interface XRGenericPanel extends XRPrimitiveBase {
   type: "XRGenericPanel";
   /** Original IR role that produced this fallback. */
   irRole: IRRole;
+  /**
+   * Navigation target when this panel stands in for a "card" anchor — a link
+   * that wraps block content (image + heading + paragraph), which must lay out
+   * as a block container rather than an inline XRLink. Null for ordinary
+   * generic panels. The renderer makes the whole card clickable when set.
+   */
+  href?: string | null;
 }
 
 /** Discriminated union of all XR primitives. */
@@ -763,6 +778,7 @@ export type MappingRule =
   | "table:scrollable→XRTable"
   | "table:cards→XRTable"
   | "generic→XRGenericPanel"
+  | "link:card→XRGenericPanel"
   | "none→(elided)"
   | "text→XRText"
   | "leaf-text-fallback→XRText"

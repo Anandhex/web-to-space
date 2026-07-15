@@ -90,7 +90,7 @@ export async function runBackend(
     );
 
     const primitiveTypeBreakdown = countPrimitiveTypes(scene.root);
-    const irQuality = deriveIRQuality(nodes, scene.root);
+    const irQuality = deriveIRQuality(nodes);
     const precisionRecall = derivePrecisionRecall(
       ir.analytics,
       primitiveTypeBreakdown,
@@ -104,12 +104,7 @@ export async function runBackend(
       gt,
       refBody,
     );
-    const fidelity = deriveInformationFidelity(
-      ir.analytics,
-      nodes.length,
-      htmlSizeKb,
-      gt,
-    );
+    const fidelity = deriveInformationFidelity(ir.analytics, gt);
     const usability = deriveXRUsability(
       scene.root,
       primitiveTypeBreakdown,
@@ -165,11 +160,8 @@ export async function runBackend(
       avgConfidence: 0,
       genericRatio: 0,
       nodesWithRelations: 0,
-      maxDepth: 0,
-      avgDepth: 0,
       parseConfidenceRate: 0,
       semanticNodeRatio: 0,
-      contentToChromeRatio: 0,
     };
     const emptyPR: PrecisionRecall = {
       headingRecall: 0,
@@ -197,8 +189,6 @@ export async function runBackend(
     };
     const emptyFidelity: InformationFidelity = {
       textCoverage: 0,
-      headingTextRetention: 0,
-      nodesPerKb: 0,
     };
     const emptyUsability: XRUsability = {
       hasContentPanel: false,

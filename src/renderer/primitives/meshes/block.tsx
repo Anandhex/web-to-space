@@ -7,11 +7,7 @@
  */
 import React from "react";
 
-import type {
-  XRHeading,
-  XRParagraph,
-  XRSection,
-} from "../../../mapper/types";
+import type { XRHeading, XRParagraph, XRSection } from "../../../mapper/types";
 import type { LayoutEntry } from "../../../layout/types";
 import {
   mergeAdjacentTextRuns,
@@ -24,6 +20,7 @@ import {
   Z_LAYER_BODY_TEXT,
   RENDER_ORDER_ACCENT,
   RENDER_ORDER_TEXT,
+  Z_CURVE_CONTENT_BASE_LIFT,
 } from "../constants";
 import {
   Surface,
@@ -33,6 +30,7 @@ import {
   resolveHeadingMetric,
 } from "../surface";
 import { useClipPlanes, useRenderMetrics } from "../contexts";
+import { usePanelCurve } from "../curve";
 import { ClippedText, buildInlineRows, InlineProseRows } from "../inline";
 
 // ─────────────────────────────────────────────────────────────
@@ -137,8 +135,6 @@ export function XRHeadingMesh({
 // Used by XRParagraphMesh and XRListItemMesh — must stay in sync
 // with engine.ts's estimateInlineFlowHeight + flattenInlineWrappers.
 // ─────────────────────────────────────────────────────────────
-
-
 
 // ─────────────────────────────────────────────────────────────
 // 2. XRParagraphMesh
@@ -363,7 +359,6 @@ export function XRSectionMesh({
 // 4. XRNavigationMesh
 // ─────────────────────────────────────────────────────────────
 
-
 export interface XRCodeBlockMeshProps {
   primitive: import("../../../mapper/types").XRCodeBlock;
   entry: LayoutEntry;
@@ -523,6 +518,7 @@ export function XRBlockQuoteMesh({
           fontSize={m.fontSize}
           lineHeightRatio={m.lineHeightRatio}
           xInset={X_INSET}
+          clearCurvedBacking
           renderChild={renderChild}
         />
       ) : hasAnyChildren ? null : ( // their content via the text fallback below. // XRSceneRenderer.tsx) — render nothing here to avoid duplicating // positioned siblings by the caller (see the "XRBlockQuote" case in // Block-only children (e.g. a wrapped <p>) are dispatched as true
@@ -539,6 +535,7 @@ export function XRBlockQuoteMesh({
           maxWidth={w - 0.04}
           lineHeight={1.5}
           letterSpacing={0.003}
+          clearCurvedBacking
         >
           {primitive.content ?? primitive.label ?? ""}
         </ClippedText>
@@ -560,21 +557,30 @@ export function XRSeparatorMesh({ primitive, entry }: XRSeparatorMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const curve = usePanelCurve();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const isHoriz = primitive.orientation !== "vertical";
 
+  // Render the rule as a thin <Surface> so it BENDS onto the panel cylinder
+  // instead of staying a flat chord that the curved backing bulges in front of
+  // (which hid the line). On a curved panel also nudge it forward by the same
+  // base clearance the text uses so it reads just in front of the backing; on a
+  // flat panel it sits on the shared accent Z band as before.
+  const zPos = Z_LAYER_ACCENT + (curve ? Z_CURVE_CONTENT_BASE_LIFT : 0);
+
   return (
     <group position={pos} rotation={rot}>
-      <mesh position={[w / 2, -h / 2, 0]}>
-        <planeGeometry args={[isHoriz ? w : 0.002, isHoriz ? 0.002 : h]} />
-        <meshBasicMaterial
-          color={theme.panelRim}
-          transparent
-          opacity={0.6}
-          clippingPlanes={clips}
-        />
-      </mesh>
+      <Surface
+        width={isHoriz ? w : 0.002}
+        height={isHoriz ? 0.002 : h}
+        radius={0.0005}
+        color={theme.panelRim}
+        opacity={0.6}
+        flat
+        z={zPos}
+        clips={clips}
+      />
     </group>
   );
 }
@@ -644,4 +650,3 @@ export function XRProgressBarMesh({
 // ─────────────────────────────────────────────────────────────
 // 10. XRImageMesh
 // ─────────────────────────────────────────────────────────────
-

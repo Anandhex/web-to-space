@@ -75,14 +75,19 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
         clips={clips}
       />
 
+      {/* Left-aligned label: on a curved panel a centred label sits at the
+          pill's mid-x, where the surface has curved away from the viewer, so it
+          reads truncated/rotated. Anchoring left starts the text near the pill's
+          left edge (on the panel tangent, facing the reader) and lets it flow
+          along the curve like body text. */}
       <ClippedText
-        anchorX="center"
+        anchorX="left"
         anchorY="middle"
-        position={[w / 2, -h / 2, Z_LAYER_BODY_TEXT]}
+        position={[Math.max(0.03, h * 0.6), -h / 2, Z_LAYER_BODY_TEXT]}
         fontSize={metrics.button.font.fontSize}
         color={isDisabled ? theme.mutedTextCol : theme.panelBg}
         fontWeight="600"
-        maxWidth={w - 0.02}
+        maxWidth={w - Math.max(0.03, h * 0.6) * 2}
       >
         {labelText}
       </ClippedText>
@@ -162,6 +167,7 @@ export function XRAlertMesh({
           fontSize={m.fontSize}
           lineHeightRatio={m.lineHeightRatio}
           xInset={X_INSET}
+          clearCurvedBacking
           renderChild={renderChild}
         />
       ) : (
@@ -182,6 +188,7 @@ export function XRAlertMesh({
           color={isAssertive ? "#B3261E" : theme.infoTextCol}
           maxWidth={w - 0.032}
           lineHeight={1.4}
+          clearCurvedBacking
         >
           {primitive.content ?? primitive.label ?? ""}
         </ClippedText>

@@ -25,6 +25,7 @@ import type {
   XRListItem,
   XRTable,
   XRTabGroup,
+  XRGenericPanel,
 } from "../../mapper/types";
 import type { LayoutEntry, LayoutPlan } from "../../layout/types";
 import { useTheme } from "../theme";
@@ -86,6 +87,8 @@ import {
   GenericPanelMesh,
   buildPanelClipPlanes,
 } from "./panels";
+import { NavigateContext } from "../primitives/contexts";
+import { safeDim, useHoverScale } from "../primitives/surface";
 
 export interface DispatcherProps {
   primitive: XRPrimitive;
@@ -798,6 +801,27 @@ export function PrimitiveDispatcher({
           );
         }
 
+        // Card link (a block-content anchor mapped to XRGenericPanel by
+        // mapLink): dispatch the image/heading/paragraph children as positioned
+        // siblings AND lay a transparent, full-card click target over them so
+        // the whole card navigates to its href.
+        const cardHref = (primitive as XRGenericPanel).href;
+        if (cardHref) {
+          return (
+            <WithSiblingChildren
+              entry={entry}
+              backing={
+                <CardClickBacking entry={zeroedEntry(entry)} href={cardHref} />
+              }
+              primitives={primitive.children}
+              plan={plan}
+              pageState={pageState}
+              setPage={setPage}
+              primitiveMap={primitiveMap}
+            />
+          );
+        }
+
         return (
           <DispatchChildren
             primitives={primitive.children}
@@ -832,4 +856,41 @@ export function PrimitiveDispatcher({
 // ─────────────────────────────────────────────────────────────
 // Sub-components
 // ─────────────────────────────────────────────────────────────
+
+/**
+ * Transparent, full-card click target for a card link (a block-content anchor
+ * mapped to XRGenericPanel). Sits behind the card's dispatched image/heading/
+ * paragraph siblings and navigates to `href` on click. Drawn invisibly so it
+ * adds no visual of its own — the card's real content renders on top.
+ */
+function CardClickBacking({
+  entry,
+  href,
+}: {
+  entry: LayoutEntry;
+  href: string;
+}) {
+  const navigate = React.useContext(NavigateContext);
+  const w = safeDim(entry.size.width);
+  const h = safeDim(entry.size.height);
+  const { ref, handlers } = useHoverScale(1.0, 1.01);
+  return (
+    <group ref={ref} {...handlers}>
+      <mesh
+        position={[w / 2, -h / 2, 0.0005]}
+        onClick={
+          navigate
+            ? (e: { stopPropagation: () => void }) => {
+                e.stopPropagation();
+                navigate(href);
+              }
+            : undefined
+        }
+      >
+        <planeGeometry args={[w, h]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+    </group>
+  );
+}
 

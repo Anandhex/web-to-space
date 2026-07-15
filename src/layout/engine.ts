@@ -13,6 +13,7 @@ import {
   isIconSizedImage,
   PRIMITIVE_CONFIG,
   resolveImageDisplaySize,
+  imageCaptionBandHeight,
 } from "./positionConfigs";
 import { selectSlots, resolveArrangementSlots } from "./placement";
 import { selectLayoutTemplate } from "./templates";
@@ -276,7 +277,11 @@ export function attachResolvedStrategies(
       entry.size.width,
       metrics,
     );
-    entry.size = { width, height };
+    // A genuine <figcaption> renders in a band beneath the image, so the entry
+    // must be tall enough to hold both — otherwise the caption overlaps the
+    // next stacked element (or is clipped away entirely).
+    const captionH = imageCaptionBandHeight(img.caption, width);
+    entry.size = { width, height: height + captionH };
   }
 }
 

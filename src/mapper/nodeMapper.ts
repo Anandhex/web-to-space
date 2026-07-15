@@ -63,6 +63,7 @@ import {
   flattenInlineWrappers,
   isInlinePrimitive,
   countWords,
+  linkHasBlockChildren,
 } from "../layout/utils";
 
 // ─────────────────────────────────────────────────────────────
@@ -735,6 +736,9 @@ function mapImg(node: IRNode, ctx: MappingContext): XRImage {
     alt: node.attributes.alt ?? node.label,
     intrinsicWidth: node.attributes.intrinsicWidth,
     intrinsicHeight: node.attributes.intrinsicHeight,
+    // A bare <img> has no caption — its alt text is a load-failure fallback,
+    // not visible page content.
+    caption: null,
     children: [],
   };
   registerPrimitive(ctx, primitive, "img→XRImage");
@@ -757,7 +761,17 @@ function mapFigure(node: IRNode, ctx: MappingContext): XRImage | XRFigure {
 
   if (imgChildren.length === 1 && otherChildren.length === 0) {
     const imgNode = imgChildren[0];
-    const captionText = captionChildren[0]?.label ?? null;
+    const imgAlt = imgNode.attributes.alt ?? null;
+    // The figcaption text usually survives as a caption-role child, but a
+    // single-figcaption <figure> often has that child elided during IR
+    // construction with its text aggregated onto the figure's own label. Fall
+    // back to node.label in that case — but only when it differs from the
+    // image's alt, so a caption-less <figure> (whose label is just the alt)
+    // doesn't fabricate a caption out of alt text.
+    const captionText =
+      captionChildren[0]?.label ??
+      captionChildren[0]?.content ??
+      (node.label && node.label !== imgAlt ? node.label : null);
     const primitive: XRImage = {
       ...baseFrom(node, "XRImage"),
       id: node.id,
@@ -765,9 +779,12 @@ function mapFigure(node: IRNode, ctx: MappingContext): XRImage | XRFigure {
       label: captionText ?? node.label,
       sourceIds: [node.id, imgNode.id],
       src: imgNode.attributes.src,
-      alt: imgNode.attributes.alt ?? captionText ?? node.label,
+      alt: imgAlt ?? captionText ?? node.label,
       intrinsicWidth: imgNode.attributes.intrinsicWidth,
       intrinsicHeight: imgNode.attributes.intrinsicHeight,
+      // A <figcaption> is authored, visible content: render it under the image
+      // whether or not the image loads (unlike alt, which is a failure fallback).
+      caption: captionText,
       children: [],
     };
     registerPrimitive(ctx, primitive, "figure:image-only→XRImage");
@@ -1010,13 +1027,34 @@ function mapButton(node: IRNode, ctx: MappingContext): XRButton {
   return primitive;
 }
 
-function mapLink(node: IRNode, ctx: MappingContext): XRLink {
+function mapLink(node: IRNode, ctx: MappingContext): XRLink | XRGenericPanel {
+  const children = resolveChildren(node, ctx);
+
+  // A "card" anchor wraps block content — e.g. a news teaser linking an image +
+  // heading + paragraph in one <a>. XRLink is an INLINE primitive, so the layout
+  // engine would flow the whole subtree as a single prose run (collapsing the
+  // image and structure into one line of concatenated label text) — and a chain
+  // of generic wrappers around it drags their ancestors into inline-owning mode
+  // too, so none of the block descendants ever get positioned. Represent it as a
+  // block container instead, carrying the href so the whole card stays clickable.
+  if (linkHasBlockChildren(children)) {
+    const panel: XRGenericPanel = {
+      ...baseFrom(node, "XRGenericPanel"),
+      type: "XRGenericPanel",
+      irRole: node.role,
+      href: node.attributes.href,
+      children,
+    };
+    registerPrimitive(ctx, panel, "link:card→XRGenericPanel");
+    return panel;
+  }
+
   const primitive: XRLink = {
     ...baseFrom(node, "XRLink"),
     type: "XRLink",
     href: node.attributes.href,
     isCurrent: node.state.current !== null && node.state.current !== "false",
-    children: resolveChildren(node, ctx),
+    children,
   };
   primitive.label = primitive.label || node.content || node.label || "Link";
   registerPrimitive(ctx, primitive, "link→XRLink");

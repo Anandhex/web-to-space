@@ -93,13 +93,12 @@ async function runOneBackend(
 
     const nodes = Object.values(ir.nodes);
     const breakdown = countPrimitiveTypes(scene.root);
-    const quality = deriveIRQuality(nodes, scene.root);
+    const quality = deriveIRQuality(nodes);
     const pr = derivePrecisionRecall(ir.analytics, breakdown, gt);
     const acc = deriveAccessibility(nodes, gt);
     const refBody = new DOMParser().parseFromString(html, "text/html").body;
     const structural = deriveStructuralFidelity(nodes, scene, gt, refBody);
-    const htmlSizeKb = Math.round((new Blob([html]).size / 1024) * 10) / 10;
-    const fidelity = deriveInformationFidelity(ir.analytics, nodes.length, htmlSizeKb, gt);
+    const fidelity = deriveInformationFidelity(ir.analytics, gt);
     const composite = deriveComposite(pr, quality, acc, fidelity);
 
     return {

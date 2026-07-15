@@ -48,11 +48,11 @@ export const METRIC_DESCRIPTIONS: Record<string, string> = {
   "Landmark recall":
     "IR landmarks extracted ÷ actual landmark elements in the raw HTML DOM (main, nav, header, footer, aside plus role= equivalents). Measures how completely the page's spatial frame was captured.",
   "Form input recall":
-    "IR interactive controls extracted ÷ actual form inputs + buttons in the raw HTML. Indicates how well the parser captured interactive affordances.",
+    "XR form-control primitives (XRFormField, XRToggle, XRSlider, XRComboBox, XRSearchBox) ÷ actual form inputs in the raw HTML (text/number/select/textarea/checkbox/radio/range/search — excludes hidden, submit, button). Each input type maps to a different primitive, so all are counted. Clamped at 100%.",
   "Image recall":
     "IR image primitives with labels ÷ images with non-empty alt text in the raw HTML. Measures how well alt-text-bearing images were surfaced for the XR scene.",
   "Nav region recall":
-    "XRNavigationBar primitives ÷ actual nav / role=navigation elements in the raw HTML. A score of 100% means every navigation region was detected and mapped to a spatial nav panel.",
+    "XRNavigationBar primitives ÷ actual nav / role=navigation elements in the raw HTML — excluding navs nested inside page chrome (header/footer/banner/contentinfo), which the parser drops and so are not recoverable. 100% when there are no such content navs to recover.",
 
   // Accessibility preservation
   "aria-labelledby preserved":
@@ -87,10 +87,6 @@ export const METRIC_DESCRIPTIONS: Record<string, string> = {
   // Information Fidelity
   "Text coverage":
     "IR word count ÷ full DOM word count of the raw HTML, as a percentage. 100% would mean every word in the page is represented in the IR. Values below 100% indicate text that was filtered, skipped, or lost during parsing.",
-  "Heading text retention":
-    "IR heading nodes with resolved labels ÷ actual heading elements in the raw HTML. A proxy for structural text fidelity — heading text drives section navigation in XR.",
-  "Nodes per KB":
-    "IR node count ÷ HTML input size in KB. Measures extraction density — how many semantic nodes were produced per kilobyte of source HTML. Higher values indicate more efficient semantic extraction from the same input.",
 
   // IR Quality
   "Labeling rate":
@@ -103,14 +99,8 @@ export const METRIC_DESCRIPTIONS: Record<string, string> = {
     "Percentage of IR nodes that are neither generic (unclassified) nor inline (text runs). Represents the proportion of nodes that carry a meaningful typed role and will become a distinct spatial primitive in XR.",
   "Generic node ratio":
     "Percentage of IR nodes whose source is 'generic' — no semantic role could be inferred. High ratios indicate heavy reliance on unsemantic markup (div-soup). Generic nodes become transparent XRGenericPanel wrappers.",
-  "Content-to-chrome ratio":
-    "Content nodes (paragraph, heading, article, code, blockquote) ÷ chrome nodes (navigation, banner, footer). Higher values indicate the parser surfaced more readable content relative to page furniture.",
   "Nodes with ARIA relations":
     "Count of nodes carrying at least one ARIA relationship: aria-controls, aria-labelledby, aria-describedby, aria-owns, aria-flowto. Indicates richness of cross-element relationships preserved in the IR.",
-  "Max semantic depth":
-    "Deepest nesting level in the semantic containment tree. Top-level landmarks are depth 0; each nested section, article, list, or region adds 1. Affects Z-axis layering of nested panels in XR.",
-  "Avg semantic depth":
-    "Mean readingDepth across all IR nodes. Values near 0 indicate flat landmark-only structures; values above 2–3 indicate deeply nested content hierarchies.",
 
   // Source Breakdown
   explicit:

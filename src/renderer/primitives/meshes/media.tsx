@@ -20,6 +20,10 @@ import { Surface, safeDim, entryTransform, CurvedTexturePlane } from "../surface
 import { useClipPlanes } from "../contexts";
 import { ClippedText } from "../inline";
 import { proxyImageSrc } from "../../../proxy";
+import {
+  imageCaptionBandHeight,
+  IMAGE_CAPTION_FONT_SIZE,
+} from "../../../layout/positionConfigs";
 
 export interface XRMediaMeshProps {
   primitive: XRMediaPlayer;
@@ -138,12 +142,13 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
         )}
       </group>
 
-      {/* Label */}
+      {/* Label — left-anchored: on a curved panel a centred label sits at the
+          panel's mid-x where the surface has rotated away, reading truncated. */}
       {primitive.label && (
         <ClippedText
-          anchorX="center"
+          anchorX="left"
           anchorY="top"
-          position={[w / 2, -h + 0.03, Z_LAYER_OVERLAY_TEXT]}
+          position={[0.03, -h + 0.03, Z_LAYER_OVERLAY_TEXT]}
           renderOrder={RENDER_ORDER_TEXT}
           fontSize={0.02}
           color={theme.bodyCol}
@@ -200,6 +205,13 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const IMG_BG = theme.inputBg;
+
+  // A <figcaption> occupies a band at the bottom of the entry that the layout
+  // engine reserved via imageCaptionBandHeight; the image texture fills the
+  // remaining area above it. Kept in sync with that helper so the drawn split
+  // matches the reserved space exactly.
+  const captionH = imageCaptionBandHeight(primitive.caption, w);
+  const imgH = Math.max(0.001, h - captionH);
 
   // Proxy external URLs so Three.js can load them without CORS errors.
   const proxiedSrc = proxyImageSrc(primitive.src ?? "");
@@ -260,7 +272,7 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
 
   return (
     <group position={pos} rotation={rot}>
-      <Surface width={w} height={h} color={IMG_BG} clips={clips} />
+      <Surface width={w} height={imgH} color={IMG_BG} clips={clips} />
 
       {/* Mesh only mounts once the texture is ready: creating it earlier
           with map=undefined bakes a shader program compiled without the
@@ -270,15 +282,15 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
       {texture && (
         <CurvedTexturePlane
           width={w}
-          height={h}
-          position={[w / 2, -h / 2, Z_LAYER_IMAGE]}
+          height={imgH}
+          position={[w / 2, -imgH / 2, Z_LAYER_IMAGE]}
           renderOrder={RENDER_ORDER_IMAGE}
         >
           <meshBasicMaterial map={texture} transparent clippingPlanes={clips} />
         </CurvedTexturePlane>
       )}
-      <mesh position={[w / 2, -h / 2, 0.002]} rotation={[0, 0, Math.PI / 2]}>
-        <planeGeometry args={[h * 0.4, 0.002]} />
+      <mesh position={[w / 2, -imgH / 2, 0.002]} rotation={[0, 0, Math.PI / 2]}>
+        <planeGeometry args={[imgH * 0.4, 0.002]} />
         <meshBasicMaterial
           color={theme.panelRim}
           transparent
@@ -289,15 +301,32 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
 
       {loadFailed && (primitive.alt ?? primitive.label) && (
         <ClippedText
-          anchorX="center"
+          anchorX="left"
           anchorY="bottom"
-          position={[w / 2, -h + 0.02, Z_LAYER_OVERLAY_TEXT]}
+          position={[0.03, -imgH + 0.02, Z_LAYER_OVERLAY_TEXT]}
           renderOrder={RENDER_ORDER_TEXT}
           fontSize={0.016}
           color={theme.bodyCol}
-          maxWidth={w - 0.04}
+          maxWidth={w - 0.06}
         >
           {primitive.alt ?? primitive.label ?? ""}
+        </ClippedText>
+      )}
+
+      {/* Figure caption band beneath the image. Rendered whether or not the
+          image loaded — it is authored, visible page content (unlike alt). */}
+      {captionH > 0 && primitive.caption && (
+        <ClippedText
+          anchorX="left"
+          anchorY="top"
+          position={[0.004, -imgH - 0.006, Z_LAYER_OVERLAY_TEXT]}
+          renderOrder={RENDER_ORDER_TEXT}
+          fontSize={IMAGE_CAPTION_FONT_SIZE}
+          color={theme.mutedTextCol}
+          maxWidth={w - 0.008}
+          lineHeight={1.35}
+        >
+          {primitive.caption}
         </ClippedText>
       )}
     </group>

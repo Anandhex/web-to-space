@@ -87,14 +87,6 @@ export function buildMarkdownTable(
       "Text coverage (%)",
       stats.map((s) => s.fidelity.textCoverage),
     ),
-    row(
-      "Heading text retention (%)",
-      stats.map((s) => s.fidelity.headingTextRetention),
-    ),
-    row(
-      "Nodes per KB",
-      stats.map((s) => s.fidelity.nodesPerKb),
-    ),
     "**IR Structure** | " + stats.map(() => "").join(" | "),
     row(
       "IR nodes total",
@@ -148,18 +140,6 @@ export function buildMarkdownTable(
     row(
       "Generic node ratio (%)",
       stats.map((s) => s.irQuality.genericRatio),
-    ),
-    row(
-      "Content-to-chrome ratio",
-      stats.map((s) => s.irQuality.contentToChromeRatio),
-    ),
-    row(
-      "Max semantic depth",
-      stats.map((s) => s.irQuality.maxDepth),
-    ),
-    row(
-      "Avg semantic depth",
-      stats.map((s) => s.irQuality.avgDepth),
     ),
     "**Node Source Breakdown** | " + stats.map(() => "").join(" | "),
     row(

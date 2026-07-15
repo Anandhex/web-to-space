@@ -53,6 +53,14 @@ export const Z_LAYER_BODY_TEXT = 0.0028; // block body text
 export const Z_LAYER_IMAGE = 0.0034; // image / poster planes
 export const Z_LAYER_OVERLAY_TEXT = 0.0046; // labels/icons drawn on top of imagery
 
+// Base forward lift (metres, toward the viewer) for content inside a CURVED
+// panel, added on top of the per-element sagitta (see curveLift in curve.ts).
+// The sagitta R·(1−cos(x/R)) puts the element on the backing cylinder at its own
+// x; this small base then clears it just in front of the backing so it reads
+// without grazing/z-fighting. Keep it SMALL — too large and content floats
+// noticeably off the surface toward the viewer. Zero effect on flat panels.
+export const Z_CURVE_CONTENT_BASE_LIFT = 0.008;
+
 export const RENDER_ORDER_SURFACE = 0;
 export const RENDER_ORDER_ACCENT = 1;
 export const RENDER_ORDER_IMAGE = 2;

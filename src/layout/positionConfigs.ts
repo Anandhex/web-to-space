@@ -80,11 +80,16 @@ function _estimateBlockQuoteHeight(
   const lineH = m.fontSize * m.lineHeightRatio;
   const minH = lineH + m.verticalPadding;
   if (primitive.children.length > 0) {
+    // XRBlockQuoteMesh flows its prose at panelWidth − X_INSET with an extra
+    // X_INSET left inset (see block.tsx), i.e. a usable width of w − 2·X_INSET.
+    // Estimate at that SAME narrower width or the engine under-counts lines and
+    // the last line/footer overflows behind the following block.
+    const flowW = Math.max(0.05, panelUsableWidth - 2 * BLOCKQUOTE_X_INSET);
     return Math.max(
       minH,
       estimateMixedContentHeight(
         flattenAndMerge(primitive.children),
-        panelUsableWidth,
+        flowW,
         panelUsableWidth,
         metrics,
         config,
@@ -343,6 +348,37 @@ const IMAGE_REFERENCE_PX = 300;
  * When intrinsic dimensions are unknown, falls back to the legacy full-width ×
  * fixed-height box (we can't do better without knowing the source aspect).
  */
+/** Font size (metres) used to render a figure caption under an image. */
+export const IMAGE_CAPTION_FONT_SIZE = 0.016;
+
+/**
+ * Left inset (metres) XRBlockQuoteMesh flows its prose at (must match X_INSET in
+ * block.tsx). The mesh wraps at w − 2·X_INSET, so the height estimator uses the
+ * same width to avoid under-counting lines (which overflowed behind the code).
+ */
+export const BLOCKQUOTE_X_INSET = 0.026;
+
+/**
+ * Height (metres) of the caption band drawn beneath a captioned image. Shared by
+ * the layout engine (which reserves this space in the image entry) and the
+ * renderer (which draws the caption into it) so the two never disagree. Returns
+ * 0 for images with no caption.
+ */
+export function imageCaptionBandHeight(
+  caption: string | null | undefined,
+  width: number,
+): number {
+  if (!caption) return 0;
+  const fs = IMAGE_CAPTION_FONT_SIZE;
+  const lineH = fs * 1.35;
+  const topPad = 0.008;
+  // Rough proportional-glyph estimate (~0.5·fontSize average advance), matching
+  // the wrapping the renderer's troika <Text> will produce at this width.
+  const charsPerLine = Math.max(1, Math.floor(width / (fs * 0.5)));
+  const lines = Math.min(3, Math.max(1, Math.ceil(caption.length / charsPerLine)));
+  return topPad + lines * lineH;
+}
+
 export function resolveImageDisplaySize(
   intrinsicWidth: number | null,
   intrinsicHeight: number | null,
@@ -388,12 +424,16 @@ function _estimateImageHeight(
   metrics: RenderMetrics,
 ): number {
   const img = primitive as XRImage;
-  return resolveImageDisplaySize(
+  const { height } = resolveImageDisplaySize(
     img.intrinsicWidth,
     img.intrinsicHeight,
     panelUsableWidth,
     metrics,
-  ).height;
+  );
+  // Reserve room for a <figcaption> band beneath the image so the caption the
+  // renderer draws isn't clipped or overlapping the next element. The renderer
+  // wraps the caption at the entry's full width, so reserve at that same width.
+  return height + imageCaptionBandHeight(img.caption, panelUsableWidth);
 }
 
 function _estimateFigureHeight(

@@ -654,15 +654,6 @@ export function ComparePanel({
                   values={stats.map((s) => s.fidelity.textCoverage)}
                   suffix="%"
                 />
-                <Row
-                  label="Heading text retention"
-                  values={stats.map((s) => s.fidelity.headingTextRetention)}
-                  suffix="%"
-                />
-                <Row
-                  label="Nodes per KB"
-                  values={stats.map((s) => s.fidelity.nodesPerKb)}
-                />
                   </>
                 )}
 
@@ -742,20 +733,8 @@ export function ComparePanel({
                   suffix="%"
                 />
                 <Row
-                  label="Content-to-chrome ratio"
-                  values={stats.map((s) => s.irQuality.contentToChromeRatio)}
-                />
-                <Row
                   label="Nodes with ARIA relations"
                   values={stats.map((s) => s.irQuality.nodesWithRelations)}
-                />
-                <Row
-                  label="Max semantic depth"
-                  values={stats.map((s) => s.irQuality.maxDepth)}
-                />
-                <Row
-                  label="Avg semantic depth"
-                  values={stats.map((s) => s.irQuality.avgDepth)}
                 />
                   </>
                 )}

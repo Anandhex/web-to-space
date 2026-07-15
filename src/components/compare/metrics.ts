@@ -95,15 +95,24 @@ export function extractHTMLGroundTruth(html: string): HTMLGroundTruth {
 
   // Banner (<header>/[role=banner]) and contentinfo (<footer>/[role=contentinfo])
   // are intentionally excluded — the XR scene drops that page chrome, so it is
-  // not counted as a landmark to be recovered.
-  const landmarkElements = doc.querySelectorAll(
-    'main, [role="main"], nav, [role="navigation"], ' +
-      'aside, [role="complementary"], [role="search"], form[aria-label], [role="form"]',
-  );
+  // not counted as a landmark to be recovered. This also means a landmark NESTED
+  // inside that chrome (e.g. a <nav> inside <footer>) is dropped with it, so it
+  // must not count toward the recoverable ground truth either.
+  const isInChrome = (el: Element): boolean =>
+    el.closest('header, footer, [role="banner"], [role="contentinfo"]') !== null;
+  const landmarkElements = Array.from(
+    doc.querySelectorAll(
+      'main, [role="main"], nav, [role="navigation"], ' +
+        'aside, [role="complementary"], [role="search"], form[aria-label], [role="form"]',
+    ),
+  ).filter((el) => !isInChrome(el));
+  const contentNavs = Array.from(
+    doc.querySelectorAll('nav, [role="navigation"]'),
+  ).filter((el) => !isInChrome(el));
 
   return {
     headingCount: doc.querySelectorAll("h1,h2,h3,h4,h5,h6").length,
-    navCount: doc.querySelectorAll('nav, [role="navigation"]').length,
+    navCount: contentNavs.length,
     formInputCount: doc.querySelectorAll(
       'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea',
     ).length,
@@ -149,18 +158,15 @@ export function pct(numerator: number, denominator: number): number {
   return Math.round((numerator / denominator) * 100);
 }
 
-export function deriveIRQuality(nodes: IRNode[], scene: XRPrimitive): IRQuality {
+export function deriveIRQuality(nodes: IRNode[]): IRQuality {
   if (nodes.length === 0) {
     return {
       labelingRate: 0,
       avgConfidence: 0,
       genericRatio: 0,
       nodesWithRelations: 0,
-      maxDepth: 0,
-      avgDepth: 0,
       parseConfidenceRate: 0,
       semanticNodeRatio: 0,
-      contentToChromeRatio: 0,
     };
   }
   let labeledCount = 0;
@@ -169,8 +175,6 @@ export function deriveIRQuality(nodes: IRNode[], scene: XRPrimitive): IRQuality 
   let inlineCount = 0;
   let withRelations = 0;
   let aboveThreshold = 0;
-  let maxDepth = 0;
-  let depthSum = 0;
 
   for (const n of nodes) {
     if (n.label !== null) labeledCount++;
@@ -182,48 +186,18 @@ export function deriveIRQuality(nodes: IRNode[], scene: XRPrimitive): IRQuality 
       (arr) => arr.length > 0,
     );
     if (hasRelation) withRelations++;
-    if (n.readingDepth > maxDepth) maxDepth = n.readingDepth;
-    depthSum += n.readingDepth;
   }
-
-  // Content nodes = paragraph, heading, code, blockquote, text
-  // Chrome nodes = navigation, banner, footer/contentinfo
-  const contentRoles = new Set([
-    "paragraph",
-    "heading",
-    "code",
-    "blockquote",
-    "text",
-    "article",
-  ]);
-  const chromeRoles = new Set(["navigation", "banner", "contentinfo"]);
-  const contentCount = nodes.filter((n) => contentRoles.has(n.role)).length;
-  const chromeCount = nodes.filter((n) => chromeRoles.has(n.role)).length;
-
-  // Count distinct primitive types used in the scene
-  const typeSeen = new Set<string>();
-  function walkTypes(p: XRPrimitive) {
-    typeSeen.add(p.type);
-    for (const c of p.children) walkTypes(c);
-  }
-  walkTypes(scene);
 
   return {
     labelingRate: pct(labeledCount, nodes.length),
     avgConfidence: Math.round((confidenceSum / nodes.length) * 100) / 100,
     genericRatio: pct(genericCount, nodes.length),
     nodesWithRelations: withRelations,
-    maxDepth,
-    avgDepth: Math.round((depthSum / nodes.length) * 10) / 10,
     parseConfidenceRate: pct(aboveThreshold, nodes.length),
     semanticNodeRatio: pct(
       nodes.length - genericCount - inlineCount,
       nodes.length,
     ),
-    contentToChromeRatio:
-      chromeCount === 0
-        ? contentCount
-        : Math.round((contentCount / chromeCount) * 10) / 10,
   };
 }
 
@@ -249,12 +223,19 @@ export function derivePrecisionRecall(
         Math.max(gt.landmarkCount, 1),
       ),
     ),
-    // XRFormField is the direct XR equivalent of HTML form inputs — more accurate than
-    // analytics.controlCount which includes all interactive roles (links, tabs, etc.)
+    // Every XR form-control primitive is the equivalent of some HTML form input,
+    // not just XRFormField (text/number). A <select> becomes XRComboBox, a
+    // checkbox/radio → XRToggle, a range → XRSlider, a search box → XRSearchBox —
+    // so the numerator must sum all of them or the recall undercounts by exactly
+    // those input types (they sit in the DOM denominator but not the numerator).
     formInputRecall: Math.min(
       100,
       pct(
-        primitiveBreakdown["XRFormField"] ?? 0,
+        (primitiveBreakdown["XRFormField"] ?? 0) +
+          (primitiveBreakdown["XRToggle"] ?? 0) +
+          (primitiveBreakdown["XRSlider"] ?? 0) +
+          (primitiveBreakdown["XRComboBox"] ?? 0) +
+          (primitiveBreakdown["XRSearchBox"] ?? 0),
         Math.max(gt.formInputCount, 1),
       ),
     ),
@@ -265,10 +246,16 @@ export function derivePrecisionRecall(
         Math.max(gt.imageWithAltCount, 1),
       ),
     ),
-    navRecall: Math.min(
-      100,
-      pct(primitiveBreakdown["XRNavigationBar"] ?? 0, Math.max(gt.navCount, 1)),
-    ),
+    // gt.navCount already excludes <nav>s nested in dropped page chrome
+    // (header/footer/banner/contentinfo). With no recoverable nav regions there
+    // is nothing to miss, so recall is 100% rather than 0%.
+    navRecall:
+      gt.navCount === 0
+        ? 100
+        : Math.min(
+            100,
+            pct(primitiveBreakdown["XRNavigationBar"] ?? 0, gt.navCount),
+          ),
   };
 }
 
@@ -492,8 +479,6 @@ export function deriveReadingOrderFidelity(
 
 export function deriveInformationFidelity(
   analytics: IRAnalytics,
-  irNodeCount: number,
-  htmlSizeKb: number,
   gt: HTMLGroundTruth,
 ): InformationFidelity {
   return {
@@ -501,15 +486,6 @@ export function deriveInformationFidelity(
       100,
       pct(analytics.wordCount, Math.max(gt.totalTextWordCount, 1)),
     ),
-    // Use analytics.headingCount — the parser's own authoritative heading tally —
-    // rather than re-filtering ir.nodes (where heading labels may be null if the
-    // text-label layer was disabled, e.g. naive/baseline config).
-    headingTextRetention: Math.min(
-      100,
-      pct(analytics.headingCount, Math.max(gt.headingCount, 1)),
-    ),
-    nodesPerKb:
-      htmlSizeKb > 0 ? Math.round((irNodeCount / htmlSizeKb) * 10) / 10 : 0,
   };
 }
 

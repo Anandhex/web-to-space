@@ -18,19 +18,16 @@ export interface IRQuality {
   avgConfidence: number;
   genericRatio: number;
   nodesWithRelations: number;
-  maxDepth: number;
-  avgDepth: number;
   parseConfidenceRate: number; // % nodes above confidence threshold 0.6
   semanticNodeRatio: number; // % that are not generic/inline
-  contentToChromeRatio: number; // content nodes / nav+banner+footer nodes
 }
 
 export interface PrecisionRecall {
   headingRecall: number; // IR headings / DOM h1-h6
   landmarkRecall: number; // IR landmarks / DOM landmark elements
-  formInputRecall: number; // IR controls / DOM form inputs
+  formInputRecall: number; // XR form-control primitives / DOM form inputs (≤100)
   imageRecall: number; // IR images / DOM images with alt
-  navRecall: number; // IR nav bars / DOM nav elements
+  navRecall: number; // IR nav bars / DOM navs (excl. header/footer chrome), ≤100
 }
 
 export interface AccessibilityPreservation {
@@ -56,8 +53,6 @@ export interface StructuralFidelity {
 
 export interface InformationFidelity {
   textCoverage: number; // IR words / DOM words
-  headingTextRetention: number; // IR heading labels present / DOM heading text nodes
-  nodesPerKb: number; // irNodeCount / htmlSizeKb
 }
 
 export interface XRUsability {

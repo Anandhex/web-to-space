@@ -323,6 +323,25 @@ export function isInlinePrimitive(type: string): boolean {
 }
 
 /**
+ * A link whose children include block-level content (an image, heading,
+ * paragraph, or a nested panel) is a clickable "card"/teaser — e.g. a news
+ * teaser wrapping `<img> + <h2> + <p>` in one `<a>` — not an inline text link.
+ * It must be laid out and dispatched as a block container that stacks its
+ * children, never flowed as a single prose run (which collapses the image and
+ * structure into one line of concatenated label text).
+ *
+ * The renderer's XRLink dispatcher (to pick the sibling-dispatch path) and
+ * XRLinkMesh (to draw a bare clickable backing instead of the label) both gate
+ * on this, so it lives here to keep the two decisions in sync.
+ */
+export function linkHasBlockChildren(
+  children: { type: string; children?: unknown[] }[],
+): boolean {
+  const flat = flattenInlineWrappers(children as any[]);
+  return flat.length > 0 && flat.some((c) => !isInlinePrimitive(c.type));
+}
+
+/**
  * Flatten XRGenericPanel wrappers that contain only inline children.
  *
  * The parser wraps Korean-romanisation spans, citation superscripts, and

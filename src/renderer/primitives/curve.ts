@@ -56,6 +56,50 @@ export function resolveCurveRadius(entryCurveRadius: number): number | null {
   return entryCurveRadius / PANEL_CURVE_STRENGTH;
 }
 
+/**
+ * Forward Z offset (toward the viewer) that puts a flat element sitting at
+ * panel-local `x` onto the backing cylinder plus a small clearance, so the
+ * curved backing (which bulges toward the viewer by the sagitta at x) doesn't
+ * occlude it. Returns just the clearance when flat/no-curve. `x` is the
+ * element's x within its tangent-placed group (its anchor for text, its centre
+ * for a full-width rule). Shared by ClippedText and non-text meshes (separators)
+ * so they clear the backing the same way.
+ */
+export function curveLift(
+  x: number,
+  curve: PanelCurve | null,
+  base: number,
+): number {
+  if (!curve) return 0;
+  // Clamp to a quarter turn so the sagitta doesn't fold back past 90°.
+  const theta = Math.min(Math.abs(x) / curve.radius, Math.PI / 2);
+  const sagitta = curve.radius * (1 - Math.cos(theta));
+  return sagitta + base;
+}
+
+/**
+ * Extra forward lift (metres) so a LEFT-anchored text run of usable width
+ * `runWidth`, anchored at panel-local x = `anchorX`, clears the curved backing
+ * along its WHOLE length — not just at its anchor.
+ *
+ * The run's glyphs bend (troika curveRadius) around a cylinder centred on the
+ * run's own anchor (x = anchorX), while the panel backing bends around the panel
+ * tangent (x = 0). The two cylinders share a radius but their axes are offset by
+ * `anchorX`, so the run's far end recedes behind the backing by up to
+ * anchorX·sin(runWidth/R). curveLift() only clears the backing at the anchor;
+ * add THIS on top so the far end stays in front too. Zero when flat or when the
+ * run is anchored on the tangent (anchorX ≤ 0).
+ */
+export function runBackingClearance(
+  anchorX: number,
+  runWidth: number,
+  curve: PanelCurve | null,
+): number {
+  if (!curve || anchorX <= 0 || runWidth <= 0) return 0;
+  const theta = Math.min(runWidth / curve.radius, Math.PI / 2);
+  return anchorX * Math.sin(theta);
+}
+
 // ─────────────────────────────────────────────────────────────
 // Context
 // ─────────────────────────────────────────────────────────────

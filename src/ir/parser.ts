@@ -1032,6 +1032,13 @@ function promoteLinkedImageDeep(
     anchor.querySelector("img") || anchor.querySelector("picture > img");
   if (!imgEl) return null;
 
+  // A bare image link (`<a><img></a>`, optional caption) promotes cleanly to a
+  // figure. But an anchor that also wraps a heading and/or body copy is a
+  // teaser/card — collapsing it to a figure would silently drop that text.
+  // Bail so createNode traverses the subtree normally and keeps the heading and
+  // paragraph alongside the image.
+  if (!isBareThumbnailLink(anchor)) return null;
+
   const fig = anchor.ownerDocument!.createElement("figure");
   fig.setAttribute("data-ir-figure-href", anchor.getAttribute("href") || "");
   fig.setAttribute("data-ir-src", imgEl.getAttribute("src") || "");
@@ -1044,6 +1051,32 @@ function promoteLinkedImageDeep(
   );
   if (desc) fig.appendChild(desc.cloneNode(true) as Element);
   return { element: fig, isFigure: true };
+}
+
+// True when a linked image is just a thumbnail — safe to collapse into a
+// synthetic <figure>. False when the anchor also carries a heading or body copy
+// (a teaser/content card), where promotion would discard that text.
+function isBareThumbnailLink(anchor: Element): boolean {
+  // Real or CMS-styled headings, or paragraphs, mark it as a teaser card.
+  // Many CMSs (e.g. TU Dresden) render headings as `<div class="h2">`, so match
+  // the h1–h6 class convention as well as the actual heading tags.
+  const TEASER_MARKERS =
+    "p, h1, h2, h3, h4, h5, h6, " +
+    "[class~='h1'], [class~='h2'], [class~='h3'], [class~='h4'], [class~='h5'], [class~='h6']";
+  if (anchor.querySelector(TEASER_MARKERS)) return false;
+
+  // Fall back to a text-length check for cards that use none of those markers.
+  // Ignore the image, captions, and visually-hidden / decorative chrome; a short
+  // alt-like label is fine, sentences of body copy are not.
+  const clone = anchor.cloneNode(true) as Element;
+  clone
+    .querySelectorAll(
+      "img, figcaption, .caption, .devsite-landing-row-item-description-content, " +
+        ".show-for-sr, .sr-only, .visually-hidden, .copyright-wrapper, .link-icon",
+    )
+    .forEach((el) => el.remove());
+  const leftover = (clone.textContent ?? "").replace(/\s+/g, " ").trim();
+  return leftover.length <= 24;
 }
 
 async function createListItem(

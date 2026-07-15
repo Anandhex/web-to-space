@@ -16,8 +16,12 @@ import { isInlinePrimitive } from "../../layout/utils";
 import { useTheme, type XRTheme } from "../theme";
 import { FontContext } from "../XRSceneRenderer";
 import { useClipPlanes, NavigateContext } from "./contexts";
-import { usePanelCurve } from "./curve";
-import { Z_LAYER_INLINE_TEXT, RENDER_ORDER_TEXT } from "./constants";
+import { usePanelCurve, curveLift, runBackingClearance } from "./curve";
+import {
+  Z_LAYER_INLINE_TEXT,
+  RENDER_ORDER_TEXT,
+  Z_CURVE_CONTENT_BASE_LIFT,
+} from "./constants";
 
 // ─────────────────────────────────────────────────────────────
 // ClippedText — troika Text with clipping plane support
@@ -36,7 +40,9 @@ import { Z_LAYER_INLINE_TEXT, RENDER_ORDER_TEXT } from "./constants";
  */
 type TextProps = React.ComponentPropsWithoutRef<typeof Text>;
 
-export function ClippedText(props: TextProps) {
+export function ClippedText(
+  props: TextProps & { clearCurvedBacking?: boolean },
+) {
   const clips = useClipPlanes();
   const curve = usePanelCurve();
 
@@ -49,6 +55,33 @@ export function ClippedText(props: TextProps) {
   // explicit curveRadius passed by the caller always wins.
   const curveRadius =
     (props as { curveRadius?: number }).curveRadius ?? (curve ? curve.radius : undefined);
+
+  // Inside a curved panel, push the text toward the viewer (＋z) so it sits in
+  // FRONT of the backing instead of buried behind it. The backing bends onto the
+  // cylinder, bulging toward the viewer by the sagitta R·(1−cos(x/R)) at
+  // panel-local x — worst near the panel edges, and for centre-anchored labels
+  // on wide pills whose anchor is the chord midpoint. Lift each run by that exact
+  // sagitta so it clears the bulge, plus a base clearance. The text is NOT
+  // rotated — it keeps its orientation and just moves forward on z. Flat panels
+  // (no curve context) get no lift, so coplanar text is unchanged.
+  // A wide, left-anchored run bends around its own anchor while the backing
+  // bends around the panel tangent; opt-in callers (curved alerts/blockquotes)
+  // add `clearCurvedBacking` so the run's far end clears the backing too — see
+  // runBackingClearance. Default false leaves every other primitive unchanged.
+  const clearBacking = props.clearCurvedBacking;
+  const liftedPosition = React.useMemo(() => {
+    const p = props.position;
+    if (!curve || p == null || !Array.isArray(p)) return p;
+    const [x = 0, y = 0, z = 0] = p as number[];
+    const extra = clearBacking
+      ? runBackingClearance(x, (props.maxWidth as number) ?? 0, curve)
+      : 0;
+    return [
+      x,
+      y,
+      z + curveLift(x, curve, Z_CURVE_CONTENT_BASE_LIFT) + extra,
+    ] as [number, number, number];
+  }, [props.position, props.maxWidth, curve, clearBacking]);
 
   const handleSync = React.useCallback(
     (mesh: THREE.Mesh) => {
@@ -76,8 +109,18 @@ export function ClippedText(props: TextProps) {
     curveRadius !== undefined ? { curveRadius } : {}
   ) as Record<string, unknown>;
 
+  // `clearCurvedBacking` is our own flag, not a troika prop — drop it from the
+  // spread so it never reaches <Text>.
+  const { clearCurvedBacking: _clearCurvedBacking, ...textProps } = props;
+
   return (
-    <Text {...props} {...curveProp} font={fontType} onSync={handleSync} />
+    <Text
+      {...textProps}
+      position={liftedPosition}
+      {...curveProp}
+      font={fontType}
+      onSync={handleSync}
+    />
   );
 }
 
@@ -244,6 +287,8 @@ interface InlineProseRowsProps {
   lineHeightRatio: number;
   xInset?: number;
   forceColor?: number;
+  /** Opt-in: lift rows clear of a curved backing (see ClippedText). */
+  clearCurvedBacking?: boolean;
   renderChild: (id: string) => React.ReactNode;
 }
 
@@ -256,6 +301,7 @@ export function InlineProseRows({
   xInset = 0,
   renderChild,
   forceColor,
+  clearCurvedBacking,
 }: InlineProseRowsProps) {
   const lineH = fontSize * lineHeightRatio;
   const usableWidth = panelWidth - xInset;
@@ -282,6 +328,7 @@ export function InlineProseRows({
             fontSize={fontSize}
             lineHeightRatio={lineHeightRatio}
             forceColor={forceColor}
+            clearCurvedBacking={clearCurvedBacking}
           />
         );
       })}
@@ -323,6 +370,7 @@ interface ProseRowProps {
   fontSize: number;
   lineHeightRatio: number;
   forceColor?: number;
+  clearCurvedBacking?: boolean;
 }
 
 /**
@@ -345,6 +393,7 @@ function ProseRow({
   fontSize,
   lineHeightRatio,
   forceColor,
+  clearCurvedBacking,
 }: ProseRowProps) {
   const navigate = useContext(NavigateContext);
   const theme = useTheme();
@@ -440,6 +489,7 @@ function ProseRow({
         lineHeight={lineHeightRatio}
         letterSpacing={0.005}
         overflowWrap="break-word"
+        clearCurvedBacking={clearCurvedBacking}
         onSync={navigate ? handleSync : undefined}
       >
         {text}
