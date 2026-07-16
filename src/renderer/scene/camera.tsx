@@ -1,40 +1,30 @@
 /**
  * scene/camera.tsx
  *
- * Camera rigs: the XR-session binder that puts the R3F renderer into and out of
- * XR presentation, and the viewer recentre that lines the headset up with the
- * content.
+ * Camera rig: the viewer recentre that lines the headset up with the content.
+ *
+ * Session binding lives in @react-three/xr's <XR store={...}> now — it owns
+ * gl.xr.setSession() as well as rendering the controllers/hands that drive
+ * R3F's pointer handlers.
  */
 import React from "react";
-import { useFrame, useThree } from "@react-three/fiber";
-import * as THREE from "three";
-
-/**
- * Binds the imperatively-requested XRSession (from useXRSession) to the R3F
- * WebGLRenderer. Canvas's `onCreated` only fires once at mount, when the
- * session is still null — it can't pick up a session granted later by
- * clicking "Enter VR". This effect re-runs on every session change instead,
- * which is what actually puts the renderer into (and out of) XR presentation.
- */
-export function XRSessionBinder({ session }: { session: XRSession | null }) {
-  const { gl } = useThree();
-  React.useEffect(() => {
-    gl.xr.enabled = true;
-    gl.xr.setSession(session);
-  }, [gl, session]);
-  return null;
-}
+import { useFrame } from "@react-three/fiber";
+import { XROrigin } from "@react-three/xr";
 
 /**
  * Recentres the viewer on `target` (the main content panel's centre) once per
  * immersive session.
  *
  * Panels are top-left anchored at eyeLevel + eyeLevelOffset, so a panel's centre
- * hangs half a viewport BELOW that line — roughly 0.95 m for Quest. `local-floor`
- * meanwhile reports the user's true standing eye height (~1.6-1.75 m), which
- * leaves the content sitting well below the sight line. The flat preview solves
- * this by aiming OrbitControls at the panel centre (`readingLook`); in XR the
- * camera is owned by the device, so we move the reference space instead.
+ * hangs half a viewport BELOW that line — 0.95 m for Quest against a real
+ * standing eye height of ~1.65 m, which left the content well under the sight
+ * line. The flat preview solves this by aiming OrbitControls at the panel centre
+ * (`readingLook`); in XR the camera is owned by the device, so we move the
+ * player's origin instead.
+ *
+ * <XROrigin> is the player's feet. Rather than needing the user's real height,
+ * we let one frame render and then correct by however far the head actually
+ * landed from the target — the delta folds the unknown height in for free.
  *
  * Applied as a one-shot recentre rather than every frame: once the offset is in,
  * the user must remain free to physically lean and walk relative to the panel.
@@ -48,20 +38,19 @@ export function XRViewerAnchor({
 }: {
   target: [number, number, number] | null;
 }) {
-  /** Translation currently baked into the active offset reference space. */
-  const applied = React.useRef<THREE.Vector3 | null>(null);
-  const baseSpace = React.useRef<XRReferenceSpace | null>(null);
+  const [origin, setOrigin] = React.useState<[number, number, number]>([
+    0, 0, 0,
+  ]);
+  /** Target the current origin was solved for; null = not yet applied. */
   const appliedKey = React.useRef<string | null>(null);
-  const headBase = React.useRef(new THREE.Vector3());
 
   useFrame((state) => {
-    const { gl, camera } = state;
-
-    if (!gl.xr.isPresenting) {
-      // Session ended — drop the cached spaces so the next entry re-measures.
-      baseSpace.current = null;
-      applied.current = null;
-      appliedKey.current = null;
+    if (!state.gl.xr.isPresenting) {
+      // Session ended — reset so the next entry re-measures against a fresh head pose.
+      if (appliedKey.current !== null) {
+        appliedKey.current = null;
+        setOrigin([0, 0, 0]);
+      }
       return;
     }
     if (!target) return;
@@ -69,31 +58,17 @@ export function XRViewerAnchor({
     const key = target.join(",");
     if (appliedKey.current === key) return;
 
-    const current = gl.xr.getReferenceSpace();
-    if (!current) return;
-    if (!baseSpace.current) baseSpace.current = current;
-
-    // The head pose three reports is expressed in whatever space is active, so
-    // add back any offset we already applied to recover the base-space pose.
-    headBase.current.copy(camera.position);
-    if (applied.current) headBase.current.add(applied.current);
-
-    // getOffsetReferenceSpace(T) yields a space where pose = poseInBase - T.
-    // Solving pose.xy == target.xy gives T = headBase.xy - target.xy.
-    const next = new THREE.Vector3(
-      headBase.current.x - target[0],
-      headBase.current.y - target[1],
-      0,
-    );
-
-    gl.xr.setReferenceSpace(
-      baseSpace.current.getOffsetReferenceSpace(
-        new XRRigidTransform({ x: next.x, y: next.y, z: next.z }),
-      ),
-    );
-    applied.current = next;
+    // camera.position is the head in world space, i.e. it already includes the
+    // current origin. Shifting the origin by (target - head) therefore lands the
+    // head exactly on target, whatever the user's height.
+    const cam = state.camera;
+    setOrigin((prev) => [
+      prev[0] + (target[0] - cam.position.x),
+      prev[1] + (target[1] - cam.position.y),
+      prev[2],
+    ]);
     appliedKey.current = key;
   });
 
-  return null;
+  return <XROrigin position={origin} />;
 }

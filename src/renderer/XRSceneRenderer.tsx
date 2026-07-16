@@ -48,6 +48,7 @@ import React, {
   Suspense,
 } from "react";
 import { Canvas } from "@react-three/fiber";
+import { XR } from "@react-three/xr";
 import {
   Environment,
   GizmoHelper,
@@ -85,8 +86,7 @@ import { Web2VRScene } from "./Web2VRScene";
 import { EMPTY_CONFIG } from "./scene/config";
 import { FontContext, type PageState } from "./scene/contexts";
 import { usePipeline } from "./scene/use-pipeline";
-import { XRSessionBinder, XRViewerAnchor } from "./scene/camera";
-import { XRControllers } from "./scene/xr-input";
+import { XRViewerAnchor } from "./scene/camera";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
 import { VRButton, styles } from "./scene/chrome";
 import {
@@ -282,9 +282,9 @@ export function XRSceneRenderer({
   );
 
   const {
+    store: xrStore,
     sessionState,
     capabilities,
-    session,
     enterVR,
     exitVR,
     error: xrError,
@@ -523,137 +523,140 @@ export function XRSceneRenderer({
           }}
         >
           <Suspense fallback={null}>
-            <XRSessionBinder session={session} />
-            <XRControllers />
-            {/* Level the headset with the content panel's centre. Only for the
-                "world" frame: body/head/hand frames already carry the scene
-                with the viewer, and their entries aren't world-space, so
-                there'd be nothing static to recentre against. */}
-            <XRViewerAnchor
-              target={
-                (plan?.referenceFrame ?? "world") === "world"
-                  ? panelCentre
-                  : null
-              }
-            />
-            {/* Even, mostly-neutral lighting so panels read as one flat
-                material regardless of how far each is tilted toward the user.
-                A strong directional + saturated blue point light previously
-                shaded angled panels (e.g. the TOC) noticeably lighter/bluer
-                than the head-on content panel. */}
-            <ambientLight intensity={0.72} />
-            <directionalLight
-              position={[0, 3, 2]}
-              intensity={0.42}
-              castShadow={false}
-            />
-            <pointLight
-              position={[0, 1.5, -1.2]}
-              intensity={0.28}
-              color="#9ec5ff"
-              distance={4}
-            />
-            <Environment preset="city" />
+            {/* <XR> binds the session to the renderer and mounts the
+                controllers/hands whose pointers drive the same onClick /
+                onPointerOver handlers the mouse uses in the flat preview. */}
+            <XR store={xrStore}>
+              {/* Level the headset with the content panel's centre. Only for the
+                  "world" frame: body/head/hand frames already carry the scene
+                  with the viewer, and their entries aren't world-space, so
+                  there'd be nothing static to recentre against. */}
+              <XRViewerAnchor
+                target={
+                  (plan?.referenceFrame ?? "world") === "world"
+                    ? panelCentre
+                    : null
+                }
+              />
+              {/* Even, mostly-neutral lighting so panels read as one flat
+                  material regardless of how far each is tilted toward the user.
+                  A strong directional + saturated blue point light previously
+                  shaded angled panels (e.g. the TOC) noticeably lighter/bluer
+                  than the head-on content panel. */}
+              <ambientLight intensity={0.72} />
+              <directionalLight
+                position={[0, 3, 2]}
+                intensity={0.42}
+                castShadow={false}
+              />
+              <pointLight
+                position={[0, 1.5, -1.2]}
+                intensity={0.28}
+                color="#9ec5ff"
+                distance={4}
+              />
+              <Environment preset="city" />
 
-            <RenderMetricsContext.Provider value={deviceProfile.renderMetrics}>
-              <ThemeContext.Provider value={theme}>
-                <FontContext.Provider value={fontType}>
-                  {/* Web2VR backend: CSS layout extracted from hidden iframe → 3D */}
-                  {parserBackend === "web2vr" && html && (
-                    <Web2VRScene html={html} />
-                  )}
+              <RenderMetricsContext.Provider value={deviceProfile.renderMetrics}>
+                <ThemeContext.Provider value={theme}>
+                  <FontContext.Provider value={fontType}>
+                    {/* Web2VR backend: CSS layout extracted from hidden iframe → 3D */}
+                    {parserBackend === "web2vr" && html && (
+                      <Web2VRScene html={html} />
+                    )}
 
-                  {parserBackend !== "web2vr" && scene && plan && (
-                    <ReferenceFrameGroup frame={plan.referenceFrame ?? "world"}>
-                      <XRSceneGraph
-                        scene={scene}
-                        plan={plan}
-                        pageState={pageState}
-                        setPage={setPage}
-                        viewMode={viewMode}
-                        onExternalNavigate={onExternalNavigate}
-                        sourceUrl={url}
-                        ghostOverride={ghostTune}
-                      />
-                    </ReferenceFrameGroup>
-                  )}
+                    {parserBackend !== "web2vr" && scene && plan && (
+                      <ReferenceFrameGroup frame={plan.referenceFrame ?? "world"}>
+                        <XRSceneGraph
+                          scene={scene}
+                          plan={plan}
+                          pageState={pageState}
+                          setPage={setPage}
+                          viewMode={viewMode}
+                          onExternalNavigate={onExternalNavigate}
+                          sourceUrl={url}
+                          ghostOverride={ghostTune}
+                        />
+                      </ReferenceFrameGroup>
+                    )}
 
-                  {/* ── In-world browser chrome (replaces HTML overlays) ────
-                    Layout switcher (top) and tab switcher (bottom) form a
-                    vertical stack, horizontally centred on the content panel
-                    and pulled forward of it (parallax separation), with a
-                    breathable gap between the two rows. */}
-                  {viewMode && onViewModeChange && (
-                    <XR3DViewToggle
-                      mode={viewMode}
-                      onChange={onViewModeChange}
-                      deviceType={deviceType}
-                      position={[
-                        chromeAnchor.cx,
-                        chromeAnchor.bottomY + 1.1,
-                        chromeAnchor.z,
-                      ]}
-                      tiltX={0.34}
-                    />
-                  )}
-                  {tabs &&
-                    activeTabId &&
-                    onSwitchTab &&
-                    onCloseTab &&
-                    onNewTab && (
-                      <XR3DTabBar
-                        tabs={tabs}
-                        activeTabId={activeTabId}
-                        onSwitch={onSwitchTab}
-                        onClose={onCloseTab}
-                        onNewTab={onNewTab}
+                    {/* ── In-world browser chrome (replaces HTML overlays) ────
+                      Layout switcher (top) and tab switcher (bottom) form a
+                      vertical stack, horizontally centred on the content panel
+                      and pulled forward of it (parallax separation), with a
+                      breathable gap between the two rows. */}
+                    {viewMode && onViewModeChange && (
+                      <XR3DViewToggle
+                        mode={viewMode}
+                        onChange={onViewModeChange}
+                        deviceType={deviceType}
                         position={[
                           chromeAnchor.cx,
-                          chromeAnchor.bottomY - 0.3,
+                          chromeAnchor.bottomY + 1.1,
                           chromeAnchor.z,
                         ]}
                         tiltX={0.34}
                       />
                     )}
-
-                  {sessionState !== "immersive" && (
-                    <OrbitControls
-                      target={readingLook}
-                      enablePan
-                      enableDamping
-                      dampingFactor={0.08}
-                    />
-                  )}
-
-                  {/* Debug helpers */}
-                  {sessionState !== "immersive" && (
-                    <>
-                      <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
-                        <GizmoViewport
-                          axisColors={["#ff4444", "#44ff44", "#4488ff"]}
-                          labelColor="white"
+                    {tabs &&
+                      activeTabId &&
+                      onSwitchTab &&
+                      onCloseTab &&
+                      onNewTab && (
+                        <XR3DTabBar
+                          tabs={tabs}
+                          activeTabId={activeTabId}
+                          onSwitch={onSwitchTab}
+                          onClose={onCloseTab}
+                          onNewTab={onNewTab}
+                          position={[
+                            chromeAnchor.cx,
+                            chromeAnchor.bottomY - 0.3,
+                            chromeAnchor.z,
+                          ]}
+                          tiltX={0.34}
                         />
-                      </GizmoHelper>
-                      <gridHelper
-                        args={[10, 40, "#1e2d3d", "#111927"]}
-                        position={[0, 0, 0]}
+                      )}
+
+                    {sessionState !== "immersive" && (
+                      <OrbitControls
+                        target={readingLook}
+                        enablePan
+                        enableDamping
+                        dampingFactor={0.08}
                       />
-                      <mesh
-                        position={[0, 1.5, 0]}
-                        rotation={[Math.PI / 2, 0, 0]}
-                      >
-                        <planeGeometry args={[0.05, 0.05]} />
-                        <meshBasicMaterial
-                          color="#58a6ff"
-                          transparent
-                          opacity={0.6}
+                    )}
+
+                    {/* Debug helpers */}
+                    {sessionState !== "immersive" && (
+                      <>
+                        <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
+                          <GizmoViewport
+                            axisColors={["#ff4444", "#44ff44", "#4488ff"]}
+                            labelColor="white"
+                          />
+                        </GizmoHelper>
+                        <gridHelper
+                          args={[10, 40, "#1e2d3d", "#111927"]}
+                          position={[0, 0, 0]}
                         />
-                      </mesh>
-                    </>
-                  )}
-                </FontContext.Provider>
-              </ThemeContext.Provider>
-            </RenderMetricsContext.Provider>
+                        <mesh
+                          position={[0, 1.5, 0]}
+                          rotation={[Math.PI / 2, 0, 0]}
+                        >
+                          <planeGeometry args={[0.05, 0.05]} />
+                          <meshBasicMaterial
+                            color="#58a6ff"
+                            transparent
+                            opacity={0.6}
+                          />
+                        </mesh>
+                      </>
+                    )}
+                  </FontContext.Provider>
+                </ThemeContext.Provider>
+              </RenderMetricsContext.Provider>
+            </XR>
           </Suspense>
         </Canvas>
       </div>

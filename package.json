@@ -25,6 +25,7 @@
     "@mozilla/readability": "^0.6.0",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
+    "@react-three/xr": "^6.6.30",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "aria-query": "^5.3.2",
     "dom-accessibility-api": "^0.7.1",

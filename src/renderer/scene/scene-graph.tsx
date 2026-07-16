@@ -8,6 +8,7 @@
 import React, { useCallback, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { Line, Text } from "@react-three/drei";
+import { useXRInputSourceState } from "@react-three/xr";
 import * as THREE from "three";
 
 import type { SemanticScene, XRPrimitive } from "../../mapper/types";
@@ -224,23 +225,16 @@ export function ReferenceFrameGroup({
   const gripScale = useRef(new THREE.Vector3());
 
   /**
-   * Pick the grip space for the off-hand (left for a right-handed user) so the
-   * palm/tablet sits on the non-dominant hand and the dominant hand is free to
-   * point. Falls back to grip 0. Returns null when no grip has a live pose.
+   * The off-hand (left) controller, so the palm/tablet sits on the non-dominant
+   * hand and the dominant hand stays free to point.
+   *
+   * Read from the XR store rather than gl.xr.getControllerGrip(): three only
+   * populates the objects it hands out if they are added to the scene, and this
+   * component doesn't own that. @react-three/xr mounts the controller itself and
+   * exposes it here, so `object` is a live, scene-attached transform.
+   * `undefined` while the controller has no pose.
    */
-  function offHandGrip(gl: THREE.WebGLRenderer): THREE.Object3D | null {
-    const session = gl.xr.getSession();
-    let index = 0;
-    if (session) {
-      const sources = Array.from(session.inputSources);
-      const left = sources.findIndex((s) => s.handedness === "left");
-      if (left >= 0) index = left;
-    }
-    const grip = gl.xr.getControllerGrip(index);
-    // three toggles grip.visible based on whether the input source has a pose.
-    if (!grip || grip.visible === false) return null;
-    return grip;
-  }
+  const offHand = useXRInputSourceState("controller", "left");
 
   useFrame((state) => {
     const g = ref.current;
@@ -271,7 +265,7 @@ export function ReferenceFrameGroup({
       return;
     }
     if (frame === "hand") {
-      const grip = offHandGrip(state.gl);
+      const grip = offHand?.object;
       if (grip) {
         // Anchor the whole arrangement to the controller's grip pose. The grip
         // and this group are both scene-root children, so matrixWorld is the

@@ -1,23 +1,35 @@
 /**
  * useXRSession.ts
  *
- * React hook that manages the full WebXR session lifecycle:
- *   - Detects whether the browser supports immersive-vr
- *   - Tracks session state: "idle" | "inline" | "immersive"
- *   - Exposes enterVR / exitVR imperatively
- *   - Provides the raw XRSession to the renderer so R3F can tick
- *     the XR frame loop via @react-three/xr's <XR> provider
+ * Owns the @react-three/xr store and adapts it to the DOM-side session API the
+ * chrome needs (VRButton) plus the flat-preview gating in XRSceneRenderer.
  *
- * Architecture position:
- *   useXRSession  ←→  XRSceneRenderer (wires session to <XR session={...}>)
+ * Why a store rather than a raw XRSession
+ * ───────────────────────────────────────
+ * We previously called navigator.xr.requestSession() directly and handed the
+ * session to three via gl.xr.setSession(). That put the renderer into XR, but
+ * input was left unimplemented: the app drives every interaction through R3F's
+ * declarative handlers (onClick / onPointerOver on links, pager buttons, the
+ * tab bar), and R3F sources those from DOM pointer events on the canvas — which
+ * an immersive session never delivers. Every handler went dead inside VR.
+ *
+ * @react-three/xr's store renders the controllers/hands and drives the same R3F
+ * handlers from their pointers, so interaction works in VR and on the desktop
+ * preview from one set of props.
+ *
+ * The hooks in @react-three/xr (useXR, useXRStore) only work inside the <XR>
+ * component, which lives inside <Canvas>. VRButton is DOM, outside the canvas —
+ * so this hook reads the store directly via useSyncExternalStore instead.
  *
  * Usage
  * ─────
- * const { sessionState, capabilities, session, enterVR, exitVR, error }
+ * const { store, sessionState, capabilities, enterVR, exitVR, error }
  *   = useXRSession();
+ * // <XR store={store}> inside <Canvas>
  */
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useSyncExternalStore } from "react";
+import { createXRStore, type XRStore } from "@react-three/xr";
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -30,16 +42,18 @@ export type XRSessionState =
   | "immersive";
 
 export interface XRSessionCapabilities {
-  /** True when the UA declares support for immersive-vr. */
+  /** True when immersive-vr can be entered — real device or injected emulator. */
   immersiveVR: boolean;
 }
 
 export interface UseXRSessionReturn {
+  /** Pass to <XR store={...}> inside the Canvas. */
+  store: XRStore;
   sessionState: XRSessionState;
   capabilities: XRSessionCapabilities;
-  /** The active XRSession, or null when idle. */
-  session: XRSession | null;
-  /** Enter immersive-vr. Rejects on failure. */
+  /** The active XRSession, or undefined when idle. */
+  session: XRSession | undefined;
+  /** Enter immersive-vr. */
   enterVR: () => Promise<void>;
   /** Exit the current immersive session. No-op if already idle. */
   exitVR: () => void;
@@ -48,89 +62,79 @@ export interface UseXRSessionReturn {
 }
 
 // ─────────────────────────────────────────────────────────────
-// WebXR session init options
-// ─────────────────────────────────────────────────────────────
-
-/**
- * local-floor: reference space anchored to the physical floor.
- * Essential for correct eye-level placement in our scene — the layout
- * engine places panels relative to a 1.5 m eye-level origin.
- *
- * Optional: hand-tracking for future pointer/ray input.
- */
-const REQUIRED_FEATURES: XRSessionInit["requiredFeatures"] = ["local-floor"];
-const OPTIONAL_FEATURES: XRSessionInit["optionalFeatures"] = ["hand-tracking"];
-
-// ─────────────────────────────────────────────────────────────
 // Hook
 // ─────────────────────────────────────────────────────────────
 
 export function useXRSession(): UseXRSessionReturn {
-  const [sessionState, setSessionState] = useState<XRSessionState>("idle");
-  const [capabilities, setCapabilities] = useState<XRSessionCapabilities>({
-    immersiveVR: false,
-  });
-  const [session, setSession] = useState<XRSession | null>(null);
+  // One store for the app's lifetime.
+  //
+  // `emulate` would inject IWER's Quest 3 emulator on localhost, but it is
+  // broken upstream as of @pmndrs/xr 6.6.30 and buys us only a heavy dynamic
+  // import (iwer + devui + sem) and a console warning every dev load:
+  //   • iwer >= 2.3.0 (what ^2.1.0 resolves to) refuses to install over
+  //     Chromium's native navigator.xr, so emulation silently no-ops.
+  //   • iwer <= 2.2.1 installs and the session starts, but its frame loop never
+  //     pumps, so nothing renders and no input sources appear.
+  // Turn this back on (and pin iwer) if the upstream fix lands. Real headsets
+  // are unaffected — they never take this path.
+  const store = useMemo(
+    () =>
+      createXRStore({
+        emulate: false,
+        handTracking: true,
+      }),
+    [],
+  );
+
+  const session = useSyncExternalStore(
+    store.subscribe,
+    () => store.getState().session,
+    () => undefined,
+  );
+
+  const [vrSupported, setVRSupported] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Ref so cleanup callbacks see the current session without stale closures
-  const sessionRef = useRef<XRSession | null>(null);
-
-  // ── Capability detection (once on mount) ─────────────────
+  // isSessionSupported is the single source of truth for the button. Notably it
+  // is NOT the same question as "is an emulator object present" — an emulator
+  // can exist whose runtime failed to install, and gating on that would light up
+  // an Enter-VR button that can only throw "No XR hardware found".
   useEffect(() => {
     if (!("xr" in navigator)) return;
+    let cancelled = false;
     (navigator.xr as XRSystem)
       .isSessionSupported("immersive-vr")
-      .then((supported) => setCapabilities({ immersiveVR: supported }))
+      .then((supported) => {
+        if (!cancelled) setVRSupported(supported);
+      })
       .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // ── Session end handler ───────────────────────────────────
-  const handleSessionEnd = useCallback(() => {
-    sessionRef.current = null;
-    setSession(null);
-    setSessionState("idle");
-  }, []);
-
-  // ── enterVR ───────────────────────────────────────────────
   const enterVR = useCallback(async () => {
-    if (!("xr" in navigator)) {
-      setError("WebXR is not supported in this browser.");
-      return;
-    }
-    if (sessionRef.current) return; // already in session
     setError(null);
-
     try {
-      const newSession = await (navigator.xr as XRSystem).requestSession(
-        "immersive-vr",
-        {
-          requiredFeatures: REQUIRED_FEATURES,
-          optionalFeatures: OPTIONAL_FEATURES,
-        },
-      );
-      newSession.addEventListener("end", handleSessionEnd);
-      sessionRef.current = newSession;
-      setSession(newSession);
-      setSessionState("immersive");
+      await store.enterVR();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to start XR session.",
       );
     }
-  }, [handleSessionEnd]);
+  }, [store]);
 
-  // ── exitVR ────────────────────────────────────────────────
   const exitVR = useCallback(() => {
-    sessionRef.current?.end().catch(() => {});
-  }, []);
+    store.getState().session?.end().catch(() => {});
+  }, [store]);
 
-  // ── Cleanup on unmount ────────────────────────────────────
-  useEffect(() => {
-    return () => {
-      sessionRef.current?.end().catch(() => {});
-    };
-  }, []);
-
-  return { sessionState, capabilities, session, enterVR, exitVR, error };
+  return {
+    store,
+    sessionState: session ? "immersive" : "idle",
+    capabilities: { immersiveVR: vrSupported },
+    session,
+    enterVR,
+    exitVR,
+    error,
+  };
 }
