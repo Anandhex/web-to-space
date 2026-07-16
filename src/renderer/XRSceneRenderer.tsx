@@ -85,7 +85,8 @@ import { Web2VRScene } from "./Web2VRScene";
 import { EMPTY_CONFIG } from "./scene/config";
 import { FontContext, type PageState } from "./scene/contexts";
 import { usePipeline } from "./scene/use-pipeline";
-import { XRSessionBinder } from "./scene/camera";
+import { XRSessionBinder, XRViewerAnchor } from "./scene/camera";
+import { XRControllers } from "./scene/xr-input";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
 import { VRButton, styles } from "./scene/chrome";
 import {
@@ -400,6 +401,22 @@ export function XRSceneRenderer({
     };
   }, [deviceProfile, mainPanelId, plan]);
 
+  // Centre of the main content panel, in world space. This is what the headset
+  // should be levelled with in XR — the immersive counterpart of `readingLook`,
+  // which aims the flat preview's OrbitControls at the same point. Panels are
+  // top-left anchored, so the centre is half a viewport below the panel's top.
+  const panelCentre = useMemo((): [number, number, number] | null => {
+    const cfg = deviceProfile.layoutConfig;
+    const e = mainPanelId ? plan?.entries[mainPanelId] : null;
+    if (!e) return null;
+    const viewportH = Math.min(e.size.height, cfg.maxPanelViewportHeight);
+    return [
+      e.position.x + e.size.width / 2,
+      e.position.y - viewportH / 2,
+      e.position.z,
+    ];
+  }, [deviceProfile, mainPanelId, plan]);
+
   useEffect(() => {
     if (plan && onPlanReady) onPlanReady(plan);
   }, [plan, onPlanReady]);
@@ -507,6 +524,18 @@ export function XRSceneRenderer({
         >
           <Suspense fallback={null}>
             <XRSessionBinder session={session} />
+            <XRControllers />
+            {/* Level the headset with the content panel's centre. Only for the
+                "world" frame: body/head/hand frames already carry the scene
+                with the viewer, and their entries aren't world-space, so
+                there'd be nothing static to recentre against. */}
+            <XRViewerAnchor
+              target={
+                (plan?.referenceFrame ?? "world") === "world"
+                  ? panelCentre
+                  : null
+              }
+            />
             {/* Even, mostly-neutral lighting so panels read as one flat
                 material regardless of how far each is tilted toward the user.
                 A strong directional + saturated blue point light previously
