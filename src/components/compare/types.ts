@@ -14,7 +14,7 @@ export interface StageTiming {
 }
 
 export interface IRQuality {
-  labelingRate: number;
+  labelingRate: number; // % nodes with an explicit label OR text content
   avgConfidence: number;
   genericRatio: number;
   nodesWithRelations: number;

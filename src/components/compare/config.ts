@@ -90,7 +90,7 @@ export const METRIC_DESCRIPTIONS: Record<string, string> = {
 
   // IR Quality
   "Labeling rate":
-    "Percentage of IR nodes that have a non-null resolved label. Labels come from aria-label, aria-labelledby, <label for>, alt text, or text content. Higher rates mean more content is surfaced for XR display.",
+    "Percentage of IR nodes that surface something readable in XR — either an explicit accessible name (aria-label, aria-labelledby, <label for>, alt) OR text content. Structural and prose nodes (headings, paragraphs, text runs) carry their text in content rather than a label, so they count here too; the shortfall is empty wrapper/container nodes that carry neither.",
   "Avg node confidence":
     "Mean classification confidence across all IR nodes (0–1). Confidence is assigned per source: explicit ARIA = 1.0, structural = 0.8, generic = 0.3. Higher averages indicate stronger overall evidence for role assignments.",
   "Parse confidence rate":

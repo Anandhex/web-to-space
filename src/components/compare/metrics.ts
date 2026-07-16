@@ -169,7 +169,7 @@ export function deriveIRQuality(nodes: IRNode[]): IRQuality {
       semanticNodeRatio: 0,
     };
   }
-  let labeledCount = 0;
+  let surfacedCount = 0;
   let confidenceSum = 0;
   let genericCount = 0;
   let inlineCount = 0;
@@ -177,7 +177,11 @@ export function deriveIRQuality(nodes: IRNode[]): IRQuality {
   let aboveThreshold = 0;
 
   for (const n of nodes) {
-    if (n.label !== null) labeledCount++;
+    // A node's content is "surfaced" in XR if it carries either an explicit
+    // accessible name (label) OR text content. Structural/prose nodes (heading,
+    // paragraph, text run) carry their text in `content`, not `label`, so they
+    // must count here too — otherwise the rate reads as if that text were lost.
+    if (n.label !== null || (n.content ?? "").trim() !== "") surfacedCount++;
     confidenceSum += n.confidence;
     if (n.source === "generic") genericCount++;
     if (n.source === "inline") inlineCount++;
@@ -189,7 +193,7 @@ export function deriveIRQuality(nodes: IRNode[]): IRQuality {
   }
 
   return {
-    labelingRate: pct(labeledCount, nodes.length),
+    labelingRate: pct(surfacedCount, nodes.length),
     avgConfidence: Math.round((confidenceSum / nodes.length) * 100) / 100,
     genericRatio: pct(genericCount, nodes.length),
     nodesWithRelations: withRelations,
@@ -368,12 +372,17 @@ export function deriveStructuralFidelity(
   }
 
   // DOM links split by context (same classifier the pipeline mirrors), keyed by
-  // href so both numerator and denominator use one classification basis.
+  // href so both numerator and denominator use one classification basis. Links
+  // inside dropped page chrome (header/footer/banner/contentinfo) are not
+  // recoverable, so they must not sit in the retention denominators — mirrors
+  // the nav-region-recall ground-truth exclusion.
   const domNavHrefs = new Set<string>();
   const domInlineHrefs = new Set<string>();
   for (const a of Array.from(refRoot.querySelectorAll("a[href]"))) {
     const h = (a.getAttribute("href") ?? "").trim();
     if (!h) continue;
+    if (a.closest('header, footer, [role="banner"], [role="contentinfo"]'))
+      continue;
     (classifyLink(a) === "nav" ? domNavHrefs : domInlineHrefs).add(h);
   }
   const hrefCoverage = (dom: Set<string>): number => {
