@@ -46,6 +46,7 @@ import {
   isFlattenedIntoProse,
 } from "./engine/classify";
 import { paginateContentPanel } from "./engine/pagination";
+import { computeSectionOutline } from "./outline";
 
 export function stackChildrenSimple(
   children: XRPrimitive[],
@@ -713,6 +714,31 @@ export function computeLayoutPlan(
   // page an overflowing aside lands on is left blank after extraction.
   config.complementaryExtractedToSlot = !!slots.complementary;
 
+  // Content-only page views (elevator/wall/deck/rooms): the roster collapsed
+  // to [main], so top-level landmarks whose slot no longer exists must NOT
+  // fall through to the main slot (they'd overlap the content panel).
+  // Foldable landmarks (banner/aside/footer) were already re-parented into
+  // the panel's flow by foldSceneContentOnly before this ran; whatever still
+  // classifies to a missing slot here (nav/TOC — or a foldable landmark if
+  // the fold pass was skipped) gets suppressed stub entries instead: every
+  // node keeps an entry (no-nodes-dropped invariant) but the renderer skips
+  // the subtree.
+  const contentOnly =
+    !!arrangement?.pageDistribution && arrangement.pageDistribution !== "flip";
+
+  const stubSuppressedSubtree = (primitive: XRPrimitive): void => {
+    entries[primitive.id] = {
+      id: primitive.id,
+      position: zeroVec(),
+      rotation: zeroRotation(),
+      size: { width: 0, height: 0 },
+      curveRadius: 0,
+      worldLocked: true,
+      suppressed: true,
+    };
+    for (const child of primitive.children) stubSuppressedSubtree(child);
+  };
+
   const topLevelPrimitives = scene.root.children;
   const usedSlots = new Set<SlotName>();
 
@@ -727,6 +753,11 @@ export function computeLayoutPlan(
 
   for (const primitive of topLevelPrimitives) {
     let slotName = classifyLandmark(primitive);
+
+    if (contentOnly && slotName !== "main" && !slots[slotName]) {
+      stubSuppressedSubtree(primitive);
+      continue;
+    }
 
     if (usedSlots.has(slotName) && slotName !== "main") {
       slotName = "main";
@@ -1007,6 +1038,11 @@ export function computeLayoutPlan(
     slots,
     diagnostics: diag,
     referenceFrame: arrangement?.frame ?? "world",
+    contentOnly: contentOnly || undefined,
+    pageDistribution: arrangement?.pageDistribution,
+    // Section → pages. Only pagination knows where each primitive landed, so
+    // the outline is derived here rather than re-walked by every page view.
+    sections: computeSectionOutline(scene, entries),
   };
 }
 

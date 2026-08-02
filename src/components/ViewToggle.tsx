@@ -18,13 +18,11 @@ const MODES: {
 }[] = [
   { id: "standard",      icon: "▣", label: "Standard",      fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
   { id: "carousel",      icon: "◎", label: "Carousel",      fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "theatre",       icon: "⬭", label: "Theatre",       fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "cockpit",       icon: "⛭", label: "Cockpit",       fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "strata",        icon: "☰", label: "Strata",        fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "dome",          icon: "◠", label: "Dome",          fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "hud",           icon: "⊡", label: "HUD",           fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "exploded",      icon: "✳", label: "Exploded",      fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "constellation", icon: "❈", label: "Constellation", fit: ["QUEST_3", "QUEST_PRO"] },
+  // Page views — the page set itself becomes the spatial structure
+  { id: "elevator",      icon: "⇕", label: "Elevator",      fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
+  { id: "wall",          icon: "⊞", label: "Wall",          fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "deck",          icon: "⛁", label: "Deck",          fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "rooms",         icon: "⌂", label: "Rooms",         fit: ["QUEST_3", "QUEST_PRO"] },
 ];
 
 export function ViewToggle({ mode, onChange, deviceType = "QUEST_3" }: ViewToggleProps) {

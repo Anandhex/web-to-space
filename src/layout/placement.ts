@@ -415,86 +415,6 @@ function carouselSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
 }
 
 /**
- * THEATRE template
- * ```
- * [      Wide curved IMAX panel (2.4 m)      ]
- * TOC and aside as near-eye peripheral overlays (worldLocked=false)
- * ```
- */
-function theatreSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = cfg.viewingDistance;
-  const mw = 2.4;
-  const mhw = mw / 2;
-  const tocW = 0.36;
-  const navW = 0.32;
-  // IMAX wrap: the wide panel curves around the viewer on the shared cylinder,
-  // and nav sits tangent just beyond its (wide) angular edge so it continues
-  // the wrap instead of floating flat in front of it. (toc / complementary are
-  // hand-placed below, so their facing angles are no longer computed here.)
-  const navDeg = outsideMainDeg(-1, mw, navW, d, [tocW]);
-  return {
-    main: {
-      position: { x: -mhw, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: { width: mw, height: cfg.maxPanelViewportHeight },
-      curveRadius: d,
-      worldLocked: true,
-    },
-    toc: {
-      position: { x: -1.159, y: 1.4, z: -0.312 },
-      rotation: { x: 0, y: 1.202, z: 0 },
-      // Same height as the content panel (main); width kept slim.
-      size: { width: 0.36, height: cfg.maxPanelViewportHeight },
-      curveRadius: 1.2,
-      worldLocked: true,
-    },
-    navigation: {
-      position: angularPosition(d, navDeg, eyeY),
-      rotation: angularRotation(navDeg),
-      size: { width: navW, height: metrics.navigationBar.height },
-      curveRadius: d,
-      worldLocked: true,
-    },
-    complementary: {
-      position: { x: 1.06, y: 1.4, z: -0.6 },
-      rotation: { x: 0, y: -1.227, z: 0 },
-      size: { width: 0.42, height: 0.9 },
-      curveRadius: 1.2,
-      worldLocked: true,
-    },
-    alert: {
-      position: { x: 0, y: eyeY - 0.5, z: -(d - 0.15) },
-      rotation: zeroRotation(),
-      size: { width: 0.6, height: metrics.alert.minHeight },
-      curveRadius: 0,
-      worldLocked: false,
-    },
-    dialog: {
-      position: { x: 0, y: eyeY, z: -(d - 0.2) },
-      rotation: zeroRotation(),
-      size: { width: 0.85, height: 0.65 },
-      curveRadius: 0,
-      worldLocked: false,
-    },
-    banner: {
-      position: { x: -mhw, y: eyeY + 0.56, z: -d },
-      rotation: zeroRotation(),
-      size: { width: mw, height: metrics.banner.height },
-      curveRadius: d,
-      worldLocked: true,
-    },
-    footer: {
-      position: { x: -mhw, y: eyeY - cfg.maxPanelViewportHeight * 0.6, z: -d },
-      rotation: zeroRotation(),
-      size: { width: mw, height: metrics.footer.height },
-      curveRadius: d,
-      worldLocked: true,
-    },
-  };
-}
-
-/**
  * Landmark slots use a top-left x origin: `position.x` is the panel's LEFT
  * edge, so a slot authored at `x: 0` actually sits centred at `+width/2` —
  * pushing wide panels off to the right of the viewer. For the page-style
@@ -526,8 +446,6 @@ export function selectSlots(
       return centreStackedPanels(landingSlots(cfg, metrics));
     case "carousel":
       return carouselSlots(cfg, metrics);
-    case "theatre":
-      return theatreSlots(cfg, metrics);
     default:
       return centreStackedPanels(genericSlots(cfg, metrics));
   }
@@ -548,41 +466,38 @@ export function selectSlots(
  * plus a distribution function below — no bespoke SlotMap.
  */
 export const ARRANGEMENTS: Record<string, Arrangement> = {
-  cockpit: {
-    id: "cockpit",
-    frame: "body",
-    distribution: "cockpit",
-    deviceFit: ["headset-6dof", "headset-roomscale", "glasses"],
-  },
-  strata: {
-    id: "strata",
-    frame: "body",
-    distribution: "strata",
-    deviceFit: ["headset-6dof", "headset-roomscale"],
-  },
-  dome: {
-    id: "dome",
-    frame: "body",
-    distribution: "dome",
-    deviceFit: ["headset-6dof", "headset-roomscale"],
-  },
-  hud: {
-    id: "hud",
-    frame: "body",
-    distribution: "hud",
-    deviceFit: ["headset-6dof", "headset-roomscale", "glasses"],
-  },
-  exploded: {
-    id: "exploded",
+  // ── Page views (content-only) ──────────────────────────────
+  // The page SET is the spatial structure: the roster collapses to [main]
+  // (see resolveArrangementSlots) and the renderer scatters page ghosts via
+  // src/renderer/page-placements.ts. All world-framed: the page field is an
+  // exocentric structure the user surveys, not a HUD.
+  elevator: {
+    id: "elevator",
     frame: "world",
-    distribution: "exploded",
-    deviceFit: ["headset-6dof", "headset-roomscale"],
+    distribution: "fan",
+    deviceFit: ["headset-6dof", "headset-roomscale", "glasses"],
+    pageDistribution: "elevator",
   },
-  constellation: {
-    id: "constellation",
+  wall: {
+    id: "wall",
     frame: "world",
-    distribution: "constellation",
+    distribution: "fan",
     deviceFit: ["headset-6dof", "headset-roomscale"],
+    pageDistribution: "wall",
+  },
+  deck: {
+    id: "deck",
+    frame: "world",
+    distribution: "fan",
+    deviceFit: ["headset-6dof", "headset-roomscale"],
+    pageDistribution: "deck",
+  },
+  rooms: {
+    id: "rooms",
+    frame: "world",
+    distribution: "fan",
+    deviceFit: ["headset-6dof", "headset-roomscale"],
+    pageDistribution: "rooms",
   },
 };
 
@@ -666,10 +581,8 @@ function railsOf(roster: SlotRoster): SlotRoster {
 // The in-world chrome (view-mode toggle + tab bar) is anchored to the main
 // panel: the toggle sits ~1.1 m above the panel's bottom edge and the tab bar
 // ~0.3 m below it, both centred on the panel's x. That makes the vertical strip
-// through the panel centre a KEEP-OUT COLUMN (main panel + both chrome bars).
-// A scattered rail is guaranteed clear of all of it if its whole width sits
-// outside that column — hence every distribution parks its rails at |centre-x|
-// ≥ sideCentreX and caps their size so two can stack in the vertical FOV.
+// through the panel centre a KEEP-OUT COLUMN (main panel + both chrome bars),
+// so anything a distribution places must keep its full width outside it.
 
 /** Bottom edge (world y) of the main viewport — where the chrome anchors. */
 function chromeBottomY(cfg: LayoutConfig): number {
@@ -679,39 +592,6 @@ function chromeBottomY(cfg: LayoutConfig): number {
 /** Top edge (world y) of the view-mode toggle bar, so content can clear it. */
 function toggleTopY(cfg: LayoutConfig): number {
   return chromeBottomY(cfg) + 1.1 + 0.1;
-}
-
-/**
- * Minimum centre-x for a side rail so its full width clears the central column
- * (main panel ≈ mainW wide + the chrome stack ≈ 1.1 m wide, both centred on 0).
- */
-function sideCentreX(mainW: number, railW: number): number {
-  return Math.max(mainW, 1.1) / 2 + 0.14 + railW / 2;
-}
-
-/**
- * Portrait size for a side-docked rail. PORTRAIT (height > width) is deliberate:
- * it keeps a TOC rendering as a scrollable list (a wide-short panel flips the nav
- * mesh into horizontal-chip mode and smears the entries) and gives an aside room
- * for its content instead of clipping it.
- */
-function sideRailSize(spec: SlotSpec, cfg: LayoutConfig): Size2 {
-  return {
-    width: Math.min(spec.size.width, 0.42),
-    height: Math.min(
-      Math.max(spec.size.height, 0.6),
-      Math.min(cfg.maxPanelViewportHeight, 0.82),
-    ),
-  };
-}
-
-/**
- * Centre-x for the `step`-th rail on a side: extra same-side rails march OUTWARD
- * into fresh columns rather than stacking vertically, so each rail keeps its full
- * (content-legible) height without any same-side vertical overlap.
- */
-function columnCentreX(side: 1 | -1, mainW: number, railW: number, step: number): number {
-  return side * (sideCentreX(mainW, railW) + step * (railW + 0.14));
 }
 
 /**
@@ -800,268 +680,8 @@ const fan: DistributeFn = (roster, cfg) => {
   return map;
 };
 
-/**
- * COCKPIT — instrument-cluster ergonomics. Primary dead ahead at reading
- * distance; every rail drops below the eye line and pitches back toward the
- * viewer (like a car dashboard / mission console) arced left+right. The pitch
- * (`rotation.x`) and the sub-eye-level drop are what a flat web arc can't do —
- * the panels read as reachable near-field instruments, not floating billboards.
- * Body-framed so the whole cockpit turns with you.
- */
-const cockpit: DistributeFn = (roster, cfg) => {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = cfg.viewingDistance;
-  const map: SlotMap = {};
-  const main = roster.find((s) => s.role === "main");
-  const mainW = main?.size.width ?? 1.4;
-  const mainX = -mainW / 2;
-  if (main) {
-    map.main = {
-      position: { x: mainX, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: main.size,
-      curveRadius: d * 0.8,
-      worldLocked: true,
-    };
-  }
-  attachBannerFooter(map, roster, mainX, -d, zeroRotation(), d * 0.8, cfg);
-  const PITCH = 0.26; // rad — top tipped back toward the eye (console tilt)
-  railsOf(roster).forEach((spec, i) => {
-    const size = sideRailSize(spec, cfg);
-    const side = i % 2 === 0 ? 1 : -1; // right, left, right, …
-    const step = Math.floor(i / 2); // extra same-side rails march outward
-    const cx = columnCentreX(side, mainW, size.width, step);
-    const y = eyeY + size.height / 2 - 0.06; // centred on the eye, a touch low
-    map[spec.role] = {
-      position: { x: cx - size.width / 2, y, z: -d },
-      rotation: { x: PITCH, y: -side * 0.4, z: 0 }, // pitched up, yawed inward
-      size,
-      curveRadius: 0,
-      worldLocked: true,
-    };
-  });
-  return map;
-};
-
-/**
- * STRATA — reading hierarchy climbing in Y. The primary sits at eye level; every
- * other role becomes a full-height, content-legible panel terraced UPWARD on
- * alternating sides, each higher than the last and tipped down to face the eye.
- * You traverse the hierarchy by looking up through the ascending layers. The
- * panels sit in the outward side columns (never the centre chrome band) and each
- * keeps a readable portrait size, so an aside/TOC shows its content in full.
- */
-const strata: DistributeFn = (roster, cfg) => {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = cfg.viewingDistance;
-  const map: SlotMap = {};
-  const main = roster.find((s) => s.role === "main");
-  const mainW = main?.size.width ?? 1.4;
-  const mainX = -mainW / 2;
-  if (main) {
-    map.main = {
-      position: { x: mainX, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: main.size,
-      curveRadius: d * 0.8,
-      worldLocked: true,
-    };
-  }
-  attachBannerFooter(map, roster, mainX, -d, zeroRotation(), d * 0.8, cfg);
-  railsOf(roster).forEach((spec, i) => {
-    const size = sideRailSize(spec, cfg);
-    const side = i % 2 === 0 ? 1 : -1;
-    const step = Math.floor(i / 2);
-    const cx = columnCentreX(side, mainW, size.width, step);
-    const y = eyeY + size.height / 2 + 0.18 + i * 0.22; // each layer climbs higher
-    map[spec.role] = {
-      position: { x: cx - size.width / 2, y, z: -d },
-      rotation: { x: -0.28, y: -side * 0.3, z: 0 }, // tip down toward the eye
-      size,
-      curveRadius: d * 0.8,
-      worldLocked: true,
-    };
-  });
-  return map;
-};
-
-/**
- * DOME — planetarium surround. Where a ring wraps a 2-D cylinder, DOME wraps a
- * sphere: rails are distributed over BOTH azimuth and elevation, arcing up and
- * around the viewer, each panel tilted down to face the eye. Long-form content
- * tiles across a dome you read by leaning back and looking around — spatial
- * memory (method of loci) does the navigation. Body-framed.
- */
-const dome: DistributeFn = (roster, cfg) => {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = cfg.viewingDistance;
-  const map: SlotMap = {};
-  const main = roster.find((s) => s.role === "main");
-  const mainW = main?.size.width ?? 1.4;
-  if (main) {
-    map.main = {
-      position: { x: -mainW / 2, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: main.size,
-      curveRadius: d,
-      worldLocked: true,
-    };
-  }
-  attachBannerFooter(map, roster, -mainW / 2, -d, zeroRotation(), d, cfg);
-  // Rails arc up the sides of the dome — parked in outward side columns (clear of
-  // the centre chrome), raised above the eye, each curved and tilted down at you.
-  railsOf(roster).forEach((spec, i) => {
-    const size = sideRailSize(spec, cfg);
-    const side = i % 2 === 0 ? 1 : -1;
-    const step = Math.floor(i / 2);
-    const cx = columnCentreX(side, mainW, size.width, step);
-    const y = eyeY + size.height / 2 + 0.28; // lifted up the dome
-    map[spec.role] = {
-      position: { x: cx - size.width / 2, y, z: -d },
-      rotation: { x: -0.34, y: -side * 0.5, z: 0 }, // tilt down + yaw inward
-      size,
-      curveRadius: d,
-      worldLocked: true,
-    };
-  });
-  return map;
-};
-
-/**
- * EXPLODED — the exploded-assembly diagram. The primary stays at the core; every
- * rail bursts radially outward from the core center (distributed around a clock
- * face) AND is pulled toward the viewer in Z, so the page reads as disassembled
- * in depth — its parts floating off the spine. The renderer draws tether lines
- * from the core to each part (see SlotTethers) to show what connects to what.
- * World-locked so you can lean in and inspect the exploded cluster from any side.
- */
-const exploded: DistributeFn = (roster, cfg) => {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = cfg.viewingDistance;
-  const map: SlotMap = {};
-  const main = roster.find((s) => s.role === "main");
-  const mainW = main?.size.width ?? 1.4;
-  if (main) {
-    map.main = {
-      position: { x: -mainW / 2, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: main.size,
-      curveRadius: d * 0.8,
-      worldLocked: true,
-    };
-  }
-  attachBannerFooter(map, roster, -mainW / 2, -d, zeroRotation(), d * 0.8, cfg);
-  // Parts burst outward into the side columns (clear of the centre chrome) and are
-  // pulled toward the viewer in Z so they read as lifted off the spine, with a
-  // slight up/down offset per side. The renderer draws the tether to each part.
-  railsOf(roster).forEach((spec, i) => {
-    const size = sideRailSize(spec, cfg);
-    const side = i % 2 === 0 ? 1 : -1;
-    const step = Math.floor(i / 2);
-    const cx = columnCentreX(side, mainW, size.width, step);
-    const y = eyeY + size.height / 2 + side * 0.14; // slight burst offset
-    map[spec.role] = {
-      position: { x: cx - size.width / 2, y, z: -d + 0.4 },
-      rotation: { x: 0, y: -side * 0.3, z: 0 },
-      size,
-      curveRadius: 0,
-      worldLocked: true,
-    };
-  });
-  return map;
-};
-
-/**
- * HUD — glanceable heads-up reading. A compact primary panel sits in the central
- * FOV, pulled in close, with each other role docked as a flat, readable portrait
- * tile in an outward side column. Body-framed so it follows you as you turn (the
- * lightweight view for glasses) — and, crucially, the body frame preserves world
- * Y, so the content panel's world-space clip planes line up and it renders (a
- * head frame offsets Y by the camera and culls the whole panel).
- */
-const hud: DistributeFn = (roster, cfg) => {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = Math.min(cfg.viewingDistance, 1.1); // pull the HUD in close
-  const map: SlotMap = {};
-  const main = roster.find((s) => s.role === "main");
-  const mainW = main?.size.width ?? 1.4;
-  if (main) {
-    map.main = {
-      position: { x: -mainW / 2, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: main.size,
-      curveRadius: d * 0.9,
-      worldLocked: true,
-    };
-  }
-  attachBannerFooter(map, roster, -mainW / 2, -d, zeroRotation(), d * 0.9, cfg);
-  railsOf(roster).forEach((spec, i) => {
-    const size = sideRailSize(spec, cfg);
-    const side = i % 2 === 0 ? 1 : -1;
-    const step = Math.floor(i / 2);
-    const cx = columnCentreX(side, mainW, size.width, step);
-    map[spec.role] = {
-      position: { x: cx - size.width / 2, y: eyeY + size.height / 2, z: -d + 0.04 },
-      rotation: { x: 0, y: -side * 0.45, z: 0 }, // flat tiles yawed to face you
-      size,
-      curveRadius: 0,
-      worldLocked: true,
-    };
-  });
-  return map;
-};
-
-/**
- * CONSTELLATION — node-link graph off the page's reading tree. The primary is
- * the hub; every rail becomes a satellite node arranged on a ring COPLANAR with
- * the hub (same depth), higher-priority nodes nearer the hub. The renderer draws
- * spoke tethers from hub to satellite (see SlotTethers) so the page's structure
- * reads as a mind-map. Distinct from EXPLODED: constellation stays flat (a graph
- * you scan), exploded separates in depth (an assembly you inspect). World-locked.
- */
-const constellation: DistributeFn = (roster, cfg) => {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = cfg.viewingDistance;
-  const map: SlotMap = {};
-  const main = roster.find((s) => s.role === "main");
-  const mainW = main?.size.width ?? 1.4;
-  if (main) {
-    map.main = {
-      position: { x: -mainW / 2, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: main.size,
-      curveRadius: d * 0.7,
-      worldLocked: true,
-    };
-  }
-  attachBannerFooter(map, roster, -mainW / 2, -d, zeroRotation(), d * 0.7, cfg);
-  // Satellite nodes orbit the hub in outward side columns (clear of the centre
-  // chrome), COPLANAR with the hub so the spoke tethers lie flat as a mind-map.
-  railsOf(roster).forEach((spec, i) => {
-    const size = sideRailSize(spec, cfg);
-    const side = i % 2 === 0 ? 1 : -1;
-    const step = Math.floor(i / 2);
-    const cx = columnCentreX(side, mainW, size.width, step);
-    const y = eyeY + size.height / 2 + side * 0.1;
-    map[spec.role] = {
-      position: { x: cx - size.width / 2, y, z: -d }, // coplanar with the hub
-      rotation: zeroRotation(),
-      size,
-      curveRadius: 0,
-      worldLocked: true,
-    };
-  });
-  return map;
-};
-
 const DISTRIBUTIONS: Record<string, DistributeFn> = {
   fan,
-  cockpit,
-  strata,
-  dome,
-  hud,
-  exploded,
-  constellation,
 };
 
 /**
@@ -1074,7 +694,14 @@ export function resolveArrangementSlots(
   cfg: LayoutConfig,
   metrics: RenderMetrics,
 ): SlotMap {
-  const roster = rosterFor(template, cfg, metrics);
+  let roster = rosterFor(template, cfg, metrics);
+  // Content-only page views: the page set replaces the landmark panels, so
+  // only the main slot survives. With no complementary/banner/footer slots
+  // in the map the engine's extraction passes never fire — folded landmarks
+  // paginate in-flow (see layout/content-only.ts).
+  if (arrangement.pageDistribution && arrangement.pageDistribution !== "flip") {
+    roster = roster.filter((s) => s.role === "main");
+  }
   const distribute = DISTRIBUTIONS[arrangement.distribution] ?? fan;
   const map = distribute(roster, cfg, metrics);
   // Modal overlays always sit head-on, near the viewer — reuse the template's

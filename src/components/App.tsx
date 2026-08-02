@@ -6,12 +6,7 @@ import {
   DEFAULT_HOME_SETTINGS,
 } from "./HomeScreen";
 import { ComparePanel } from "./ComparePanel";
-import {
-  type Tab,
-  type ViewMode,
-  makeTabId,
-  labelFromUrl,
-} from "./viewTypes";
+import { type Tab, makeTabId, labelFromUrl } from "./viewTypes";
 import { proxyUrl } from "../proxy";
 
 function makeHomeTab(): Tab {
@@ -27,7 +22,6 @@ function makeHomeTab(): Tab {
 export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([makeHomeTab()]);
   const [activeTabId, setActiveTabId] = useState(tabs[0].id);
-  const [viewMode, setViewMode] = useState<ViewMode>("standard");
   const [showCompare, setShowCompare] = useState(false);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
@@ -169,10 +163,8 @@ export default function App() {
             {activeTab.url}
           </div>
 
-          {/* ViewToggle and Compare button share one fixed group so they
-              lay out side by side instead of both claiming top:14/right:14
-              independently (which stacked them directly on top of each
-              other). */}
+          {/* Compare launcher. Kept in a fixed group of its own so it stays
+              clear of the URL badge on the opposite corner. */}
           <div
             style={{
               position: "fixed",
@@ -184,8 +176,9 @@ export default function App() {
               gap: 8,
             }}
           >
-            {/* View-mode switching now lives in the 3D world (XR3DViewToggle).
-                Only the parser-comparison launcher remains as an HTML overlay. */}
+            {/* View-mode switching now lives on the Home screen — it is part
+                of the tab's HomeSettings and is fixed for the loaded page.
+                Only the parser-comparison launcher remains here. */}
             <button
               onClick={() => setShowCompare((v) => !v)}
               style={{
@@ -216,8 +209,7 @@ export default function App() {
             theme={activeTab.settings.xrTheme}
             parserConfig={activeTab.settings.parserConfig}
             parserBackend={activeTab.settings.parserBackend}
-            viewMode={viewMode}
-            onViewModeChange={setViewMode}
+            viewMode={activeTab.settings.viewMode}
             onPlanReady={onPlanReady}
             onExternalNavigate={openInNewTab}
             tabs={tabs}

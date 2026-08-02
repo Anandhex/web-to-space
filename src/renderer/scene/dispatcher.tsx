@@ -181,6 +181,10 @@ export function PrimitiveDispatcher({
   );
 
   if (!entry) return null;
+  // Content-only page views suppress nav/TOC landmarks: the entry exists
+  // (no-nodes-dropped invariant) but the subtree is not rendered — the
+  // spatial page set is the navigation.
+  if (entry.suppressed) return null;
 
   // ✅ Define hasVisibleDescendant FIRST before using it
   const hasVisibleDescendant = (node: XRPrimitive): boolean => {

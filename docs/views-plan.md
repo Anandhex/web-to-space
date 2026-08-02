@@ -1,6 +1,8 @@
 # Spatial views — design & implementation plan
 
-Status: living document. Phase 1–3 implemented; Phase 4 interactions partially deferred (see below).
+Status: living document. The shipping views are `standard`, `carousel` and the
+four page views (`elevator`/`wall`/`deck`/`rooms`); the landmark-scattering
+arrangements this plan introduced have since been removed (see "Removed views").
 
 ## Thesis framing
 
@@ -57,38 +59,44 @@ still explorable with the mouse.
 
 - `fan` — primary centred at `-d`, peripherals arced left/right by the comfort
   half-angle. (Reproduces the classic standard/document look.)
-- `focus` — primary full-legibility ahead; every other role collapses to a thin
-  peripheral ribbon, compression ∝ `readingDepth`. Focus+context reading.
-- `stack` — landmarks recede along `-Z` by reading priority. Uses the one axis
-  flat web can't. Pull-to-front = drill.
-- `ring` — landmarks distributed around a body-locked cylinder; turn to navigate.
-- `corridor` — sections as alternating wall panels receding in `z`; reading order
-  is a walking path (room-scale).
-- `palm` — compact stack anchored to a controller grip; peripherals become chips.
+
+`fan` is the only surviving distribution. The landmark-scattering arrangements
+(`cockpit`, `strata`, `dome`, `hud`, `exploded`, `constellation`) were removed
+along with the `theatre` template — see "Removed views" below.
 
 ## Views
 
-| View       | Frame  | Distribution | Best content | Device gate |
-| ---------- | ------ | ------------ | ------------ | ----------- |
-| `standard` | world  | (legacy auto)| any          | all         |
-| `carousel` | world  | (legacy)     | any          | all         |
-| `theatre`  | world  | (legacy)     | landing/doc  | all         |
-| `focus`    | world  | focus        | document     | all         |
-| `stack`    | world  | stack        | dashboard/doc| Quest       |
-| `orbital`  | body   | ring         | dashboard    | Quest       |
-| `palm`     | hand   | palm         | any          | Quest       |
-| `gallery`  | world  | corridor     | document     | Quest (room)|
+| View       | Frame  | Distribution | Page distribution | Device gate |
+| ---------- | ------ | ------------ | ----------------- | ----------- |
+| `standard` | world  | (legacy auto)| flip              | all         |
+| `carousel` | world  | (legacy)     | flip              | all         |
+| `elevator` | world  | fan          | elevator          | all         |
+| `wall`     | world  | fan          | wall              | Quest       |
+| `deck`     | world  | fan          | deck              | Quest       |
+| `rooms`    | world  | fan          | rooms             | Quest       |
 
-`cards` and `door` are retained as legacy bespoke views but are superseded:
-cards is really the `dashboard` template's own look, and door's drill-down is a
-behavior that now belongs on `stack` (pull-to-front).
+`standard` and `carousel` are the legacy bespoke path (hand-tuned `SlotMap` +
+renderer branches). The four page views route through the arrangement path but
+use it only to collapse the roster to `[main]`; their spatial interest is in the
+PAGE set, not the landmark panels — see `docs/page-presentation-plan.md`.
+
+### Removed views
+
+`theatre`, `cockpit`, `strata`, `dome`, `hud`, `exploded`, `constellation` and
+`grid` (labelled "Sections") were deleted. With them went the `theatre` layout
+template and its `SlotMap`, the six landmark distributions, the `grid` page
+distribution, and the `SlotTethers` renderer branch that drew hub-and-spoke
+lines for `exploded`/`constellation`. Earlier still-referenced-but-absent views
+(`focus`, `stack`, `orbital`, `palm`, `gallery`, `cards`, `door`) were removed
+before that.
 
 ## Architecture map (files)
 
 - `src/layout/types.ts` — `ReferenceFrame`, `Distribution`, `Arrangement`,
   `SlotSpec`, `SlotRoster`; `LayoutPlan.referenceFrame`.
-- `src/layout/arrangements.ts` — the arrangement registry + all distribution
-  algorithms + `rosterFor()` + `resolveArrangementSlots()`.
+- `src/layout/placement.ts` — per-template `SlotMap`s (`selectSlots`) + the
+  arrangement registry + the `fan` distribution + `rosterFor()` +
+  `resolveArrangementSlots()`.
 - `src/layout/engine.ts` — `computeLayoutPlan(scene, profile, template?, cfg?,
   metrics?, arrangement?)`: when an arrangement is passed, landmark slots come
   from `resolveArrangementSlots`; otherwise the legacy `selectSlots` path runs.
@@ -100,33 +108,30 @@ behavior that now belongs on `stack` (pull-to-front).
 
 ## Phased roadmap
 
-- **Phase 1 — foundation (done).** Two-axis types, `arrangements.ts`, engine
-  wiring, `ReferenceFrameGroup`, view switching. Legacy views unchanged.
-- **Phase 2 — focus + stack (done).** `focus` and `stack` arrangements. No new
-  interaction primitives (gaze-dwell / grab reuse existing raycast `userData`).
-- **Phase 3 — orbital + palm + device-aware toggle (done).** `body` and `hand`
-  frames; `ViewToggle`/`XR3DChrome` filter by `deviceFit`.
-- **Phase 4 — pinboard + gallery.** `gallery` corridor arrangement (done as
-  layout). **Deferred (needs headset XR session plumbing, unverifiable outside a
-  device):** pinboard world-persistence across tabs, grab-to-detach, gaze-dwell
-  drill-to-front on `stack`, and room-scale locomotion polish. These are layout-
-  complete but interaction-stubbed.
+- **Phase 1 — foundation (done).** Two-axis types, the arrangement registry,
+  engine wiring, `ReferenceFrameGroup`, view switching. Legacy views unchanged.
+- **Phase 2 — device-aware toggle (done).** `ViewToggle`/`XR3DChrome` filter by
+  `deviceFit`.
+- **Phase 3 — landmark distributions (removed).** The scattering distributions
+  built on this path were deleted; see "Removed views". The `body`/`head`/`hand`
+  frames survive in `ReferenceFrameGroup` but no shipping view selects them.
+- **Phase 4 — page views (done).** The interest moved from scattering the
+  landmark panels to spatialising the PAGE set: `elevator`, `wall`, `deck`,
+  `rooms`. Tracked in `docs/page-presentation-plan.md`.
 - **Transitions (done).** `AtPos` now eases every primitive toward its target
   position/rotation with frame-rate-independent exponential smoothing
   (`MORPH_RATE`), so switching views morphs the panels between arrangements.
   First mount initialises straight to target (no fly-in); settled groups
   early-out so idle cost is ~one branch per node.
-- **Palm grip anchoring (done).** The `hand` frame in `ReferenceFrameGroup`
-  reads the off-hand controller's grip pose (`gl.xr.getControllerGrip`, selecting
-  the `left` input source when present) and anchors the whole arrangement to it,
-  falling back to a head-anchored frame when no grip has a live pose. The flat
-  preview parks the hand-local layout at a static anchor so it stays explorable
-  without a headset.
+- **Hand-frame anchoring (retained, unused).** The `hand` frame in
+  `ReferenceFrameGroup` reads the off-hand controller's grip pose
+  (`gl.xr.getControllerGrip`, selecting the `left` input source when present) and
+  anchors the whole arrangement to it, falling back to a head-anchored frame when
+  no grip has a live pose. The flat preview parks the hand-local layout at a
+  static anchor. No current view requests this frame.
 
 ## Follow-ups / known gaps
 
-- **Legacy view migration.** carousel/cards/door/theatre still use bespoke slot
+- **Legacy view migration.** `standard` and `carousel` still use bespoke slot
   functions + renderer branches. They should migrate onto arrangements once the
   new path is battle-tested, at which point the branches in `XRSceneGraph` shrink.
-- **Focus ribbons / stack layers vs. clipping.** `ClipPlanesContext` assumes
-  rectangular panels; ribbon/layer clip volumes may need per-panel updates.

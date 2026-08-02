@@ -285,14 +285,14 @@ export function XR3DTabBar({
 // View-mode toggle
 // ─────────────────────────────────────────────────────────────
 
-type ViewDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
+export type ViewDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
 
 /**
  * View catalogue for the in-world switcher. `fit` lists the device types the
  * view is usable on (arrangement views gate on 6DoF / room-scale; legacy
  * front-facing views work everywhere).
  */
-const VIEW_MODES: {
+export const VIEW_MODES: {
   id: ViewMode;
   label: string;
   fit: ViewDeviceType[];
@@ -307,26 +307,24 @@ const VIEW_MODES: {
     label: "Carousel",
     fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
   },
+  // Page views (content-only)
   {
-    id: "theatre",
-    label: "Theatre",
+    id: "elevator",
+    label: "Elevator",
     fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
   },
-  {
-    id: "cockpit",
-    label: "Cockpit",
-    fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
-  },
-  { id: "strata", label: "Strata", fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "dome", label: "Dome", fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "hud", label: "HUD", fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"] },
-  { id: "exploded", label: "Exploded", fit: ["QUEST_3", "QUEST_PRO"] },
-  {
-    id: "constellation",
-    label: "Constellation",
-    fit: ["QUEST_3", "QUEST_PRO"],
-  },
+  { id: "wall", label: "Wall", fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "deck", label: "Deck", fit: ["QUEST_3", "QUEST_PRO"] },
+  { id: "rooms", label: "Rooms", fit: ["QUEST_3", "QUEST_PRO"] },
 ];
+
+/** True when `mode` is presentable on `deviceType`. */
+export function isViewModeFit(
+  mode: ViewMode,
+  deviceType: ViewDeviceType,
+): boolean {
+  return VIEW_MODES.some((m) => m.id === mode && m.fit.includes(deviceType));
+}
 
 export interface XR3DViewToggleProps {
   mode: ViewMode;

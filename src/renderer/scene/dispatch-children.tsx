@@ -31,6 +31,12 @@ export function hasDescendant(node: XRPrimitive, targetId: string): boolean {
  * outside the panel's <group>, NOT via the normal sibling dispatch chain.
  */
 export function isExtractedComplementary(p: XRPrimitive, plan: LayoutPlan): boolean {
+  // Content-only page views never extract asides — they were folded into the
+  // panel's flow (layout/content-only.ts) and paginate inline, so they carry
+  // a pageIndex WITHOUT having been re-homed to a slot. Routing them through
+  // the extraction path here would double-place them at panel-relative
+  // coordinates in world space.
+  if (plan.contentOnly) return false;
   return (
     p.type === "XRComplementary" && plan.entries[p.id]?.pageIndex !== undefined
   );

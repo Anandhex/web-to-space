@@ -22,8 +22,7 @@ export type LayoutTemplate =
   | "document" // Long-form article / blog / docs
   | "landing" // Hero + feature sections, marketing
   | "generic" // Safe fallback
-  | "carousel" // Arc of panels: TOC, prev-page, main, next-page, aside
-  | "theatre"; // Wide IMAX-style curved panel, peripheral TOC/aside
+  | "carousel"; // Arc of panels: TOC, prev-page, main, next-page, aside
 
 // ─────────────────────────────────────────────────────────────
 // Output types (LayoutEntry, PaginationMeta, LayoutPlan)
@@ -100,6 +99,14 @@ export interface LayoutEntry {
   paginatedByEngine?: boolean;
 
   /**
+   * Set to true when this entry belongs to a landmark the active content-only
+   * page view suppresses (XRNavigationBar / TOC). The entry exists so the
+   * "no nodes dropped" invariant holds, but the renderer skips it — in page
+   * views the spatialised page set itself is the navigation.
+   */
+  suppressed?: boolean;
+
+  /**
    * Set to true when this primitive's children were positioned by
    * stackChildrenSimple (parent-relative coordinates), as opposed to the
    * panel-absolute coordinates paginateContentPanel produces. This happens for
@@ -145,6 +152,43 @@ export interface LayoutPlan {
    * (non-arrangement) path.
    */
   referenceFrame?: ReferenceFrame;
+
+  /**
+   * True when the plan was computed in content-only mode (a page view with a
+   * non-"flip" pageDistribution): the roster is [main], asides paginate
+   * in-flow (never extracted to a slot — the renderer must NOT route them
+   * through the extracted-complementary path), and nav/TOC entries carry
+   * `suppressed`.
+   */
+  contentOnly?: boolean;
+
+  /** The active page presentation, stamped from the arrangement. */
+  pageDistribution?: PageDistribution;
+
+  /**
+   * The document's section outline with the pages each section occupies, in
+   * reading order. Only pagination knows which page a primitive landed on,
+   * so this belongs to the engine — the renderer would otherwise re-walk the
+   * whole subtree and re-derive it, once per page view, on every focus
+   * change. Present whenever the panel paginated.
+   */
+  sections?: SectionSpan[];
+}
+
+/**
+ * One section of the document and the pages it occupies — the unit the page
+ * views group by (an elevator storey, a wall tile, a deck pile, a room).
+ * Ranges are the section's own SUBTREE span, so a parent's range still
+ * covers its children's; turning that into disjoint groups is a
+ * presentation decision and stays with the renderer.
+ */
+export interface SectionSpan {
+  /** Heading text; "" when the section has no heading and so no name. */
+  label: string;
+  /** Nesting depth among sections — 0 is a top-level section of the panel. */
+  depth: number;
+  startPage: number;
+  endPage: number;
 }
 
 export interface LayoutDiagnostics {
@@ -484,14 +528,26 @@ export type SlotMap = Partial<Record<SlotName, LandmarkSlot>>;
 export type ReferenceFrame = "world" | "body" | "head" | "hand";
 
 /** Distribution algorithm that turns a SlotRoster into positioned slots. */
-export type Distribution =
-  | "fan"
-  | "cockpit"
-  | "strata"
-  | "dome"
-  | "hud"
-  | "exploded"
-  | "constellation";
+export type Distribution = "fan";
+
+/**
+ * How a paginated content panel's PAGES are presented spatially. "flip"
+ * (default) is the legacy behaviour: one page visible, prev/next controls.
+ * Every other value renders the full page set as spatial ghosts around the
+ * focused reading panel — the placement math itself is renderer-side
+ * (src/renderer/page-placements.ts); this type is pure data so an
+ * Arrangement can declare which presentation it wants.
+ *
+ * Any non-"flip" value also puts the layout engine in CONTENT-ONLY mode:
+ * the slot roster collapses to [main], asides/banner/footer fold into the
+ * content flow (they paginate inline), and nav/TOC entries are suppressed.
+ */
+export type PageDistribution =
+  | "flip"
+  | "elevator"
+  | "wall"
+  | "deck"
+  | "rooms";
 
 /** Device capability class, used to gate which views a profile may offer. */
 export type DeviceClass = "headset-6dof" | "headset-roomscale" | "glasses";
@@ -523,6 +579,12 @@ export interface Arrangement {
   distribution: Distribution;
   /** Device classes this view is usable on. */
   deviceFit: DeviceClass[];
+  /**
+   * Spatial presentation of the content panel's page set. Absent/"flip" =
+   * legacy single-page behaviour. Non-"flip" collapses the roster to [main]
+   * (content-only mode) — see PageDistribution.
+   */
+  pageDistribution?: PageDistribution;
 }
 
 export interface SimpleStackResult {

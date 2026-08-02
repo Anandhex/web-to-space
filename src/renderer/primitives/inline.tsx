@@ -16,6 +16,7 @@ import { isInlinePrimitive } from "../../layout/utils";
 import { useTheme, type XRTheme } from "../theme";
 import { FontContext } from "../XRSceneRenderer";
 import { useClipPlanes, NavigateContext } from "./contexts";
+import { LinkPreviewContext } from "../scene/link-preview";
 import { usePanelCurve, curveLift, runBackingClearance } from "./curve";
 import {
   Z_LAYER_INLINE_TEXT,
@@ -344,6 +345,8 @@ interface LinkHitRect {
   w: number;
   h: number;
   href: string;
+  /** The link's visible text, for the hover preview card. */
+  label: string;
 }
 
 function rectsEqual(a: LinkHitRect[], b: LinkHitRect[]): boolean {
@@ -396,6 +399,7 @@ function ProseRow({
   clearCurvedBacking,
 }: ProseRowProps) {
   const navigate = useContext(NavigateContext);
+  const linkPreview = useContext(LinkPreviewContext);
   const theme = useTheme();
   const { text, colorRanges } = buildRowMeta(segments, theme, forceColor);
   const [hitRects, setHitRects] = React.useState<LinkHitRect[]>([]);
@@ -404,7 +408,8 @@ function ProseRow({
   // the merged row string. Offsets match the string handed to troika, so they
   // index directly into caretPositions.
   const linkRanges = React.useMemo(() => {
-    const ranges: { start: number; end: number; href: string }[] = [];
+    const ranges: { start: number; end: number; href: string; label: string }[] =
+      [];
     let offset = 0;
     for (const seg of segments) {
       if (seg.kind === "link" && seg.href) {
@@ -412,6 +417,7 @@ function ProseRow({
           start: offset,
           end: offset + seg.text.length,
           href: seg.href,
+          label: seg.text,
         });
       }
       offset += seg.text.length;
@@ -434,7 +440,7 @@ function ProseRow({
       // rect centre in group space is [xInset + midX, rowY + midY].
       const EPS = 1e-4;
       const rects: LinkHitRect[] = [];
-      for (const { start, end, href } of linkRanges) {
+      for (const { start, end, href, label } of linkRanges) {
         let minX = Infinity;
         let maxX = -Infinity;
         let bottom = 0;
@@ -448,6 +454,7 @@ function ProseRow({
             w: Math.max(maxX - minX, 0.01),
             h: Math.max(top - bottom, 0.01),
             href,
+            label,
           });
           minX = Infinity;
           maxX = -Infinity;
@@ -501,8 +508,19 @@ function ProseRow({
             position={[r.cx, r.cy, 0.004]}
             onClick={(e) => {
               e.stopPropagation();
+              linkPreview?.clear();
               navigate(r.href);
             }}
+            onPointerOver={(e) => {
+              // Dwell-gated tethered preview of the link target (see
+              // scene/link-preview.tsx). e.point is the world-space hit.
+              linkPreview?.show(r.href, r.label, [
+                e.point.x,
+                e.point.y,
+                e.point.z,
+              ]);
+            }}
+            onPointerOut={() => linkPreview?.clear()}
           >
             <planeGeometry args={[r.w, r.h]} />
             <meshBasicMaterial transparent opacity={0} depthWrite={false} />

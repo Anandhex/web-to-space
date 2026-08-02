@@ -3,8 +3,14 @@ import { Canvas } from "@react-three/fiber";
 import { Stars, OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { Surface } from "../renderer/primitives";
-import { XR3DTabBar, XR3DSearchBar, XR3DButton } from "./XR3DChrome";
-import type { Tab } from "./viewTypes";
+import {
+  XR3DTabBar,
+  XR3DSearchBar,
+  XR3DButton,
+  XR3DViewToggle,
+  isViewModeFit,
+} from "./XR3DChrome";
+import type { Tab, ViewMode } from "./viewTypes";
 import type { XRDeviceType } from "../renderer/XRSceneRenderer";
 import type { ParserConfig, ParserBackend } from "../ir/types";
 import {
@@ -36,6 +42,12 @@ export interface HomeSettings {
   xrTheme: XRTheme;
   parserConfig: Partial<ParserConfig>;
   parserBackend: ParserBackend;
+  /**
+   * Spatial arrangement the page opens in. Chosen here on the Home screen —
+   * the document viewer has no switcher of its own, so the view is decided
+   * before launch and travels with the tab.
+   */
+  viewMode: ViewMode;
 }
 
 // Meta Horizon OS palette — neutral charcoal surfaces, #0082FB brand accent.
@@ -58,6 +70,7 @@ export const DEFAULT_HOME_SETTINGS: HomeSettings = {
   xrTheme: DARK_THEME,
   parserConfig: {},
   parserBackend: "custom",
+  viewMode: "standard",
 };
 
 const LS_KEY = "fsw-home-settings";
@@ -662,8 +675,17 @@ function SettingsPanel({
     onChange({ ...settings, xrTheme: { ...xrTheme, ...partial } });
   const updateParser = (partial: Partial<ParserConfig>) =>
     onChange({ ...settings, parserConfig: { ...pc, ...partial } });
+  // Not every view survives every device — wall/deck/rooms need room-scale
+  // 6DoF. Drop back to Standard rather than launching into a view the newly
+  // selected device cannot present.
   const updateDevice = (dt: XRDeviceType) =>
-    onChange({ ...settings, deviceType: dt });
+    onChange({
+      ...settings,
+      deviceType: dt,
+      viewMode: isViewModeFit(settings.viewMode, dt)
+        ? settings.viewMode
+        : "standard",
+    });
   const updateBackend = (b: ParserBackend) =>
     onChange({ ...settings, parserBackend: b });
 
@@ -1306,7 +1328,7 @@ export function HomeScreen({
             />
           ))}
 
-          {/* ── In-world chrome: search, settings, tab switcher ──── */}
+          {/* ── In-world chrome: search, settings, tabs, view picker ──── */}
           <XR3DSearchBar
             value={inputValue}
             focused={searchFocused}
@@ -1339,6 +1361,29 @@ export function HomeScreen({
               tiltX={0.34}
             />
           )}
+
+          {/* View selection lives here, not in the document viewer: the
+              arrangement is chosen before launch and rides along in the tab's
+              settings. Bottom of the chrome stack, kept centred so it reads
+              head-on rather than skewed off-axis. */}
+          <group position={[0, 0.46, 0.5]} rotation={[0.48, 0, 0]}>
+            <Text
+              fontSize={0.045}
+              color={theme.textSecondary}
+              anchorX="center"
+              anchorY="middle"
+              letterSpacing={0.08}
+            >
+              VIEW
+            </Text>
+          </group>
+          <XR3DViewToggle
+            mode={settings.viewMode}
+            onChange={(m) => setSettings((s) => ({ ...s, viewMode: m }))}
+            deviceType={settings.deviceType}
+            position={[0, 0.3, 0.5]}
+            tiltX={-0.48}
+          />
         </Suspense>
 
         {/* Rotation disabled — the scene stays fixed so the in-world chrome

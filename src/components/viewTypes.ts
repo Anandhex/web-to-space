@@ -4,23 +4,26 @@ export type ViewMode =
   // Legacy bespoke views (hand-tuned SlotMaps + renderer branches)
   | "standard"
   | "carousel"
-  | "theatre"
-  // Two-axis arrangement views (frame + distribution over the content template)
-  | "cockpit"
-  | "strata"
-  | "dome"
-  | "hud"
-  | "exploded"
-  | "constellation";
+  // Page views (content-only): the page set becomes the spatial structure
+  | "elevator"
+  | "wall"
+  | "deck"
+  | "rooms";
 
 /** ViewModes that route through the arrangement (two-axis) path. */
 export const ARRANGEMENT_VIEW_MODES: ReadonlySet<ViewMode> = new Set<ViewMode>([
-  "cockpit",
-  "strata",
-  "dome",
-  "hud",
-  "exploded",
-  "constellation",
+  "elevator",
+  "wall",
+  "deck",
+  "rooms",
+]);
+
+/** Page views: content-only mode with a spatialised page set. */
+export const PAGE_VIEW_MODES: ReadonlySet<ViewMode> = new Set<ViewMode>([
+  "elevator",
+  "wall",
+  "deck",
+  "rooms",
 ]);
 
 export interface Tab {

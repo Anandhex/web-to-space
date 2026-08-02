@@ -8,8 +8,9 @@
  * R3F's pointer handlers.
  */
 import React from "react";
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { XROrigin } from "@react-three/xr";
+import type * as THREE from "three";
 
 /**
  * Recentres the viewer on `target` (the main content panel's centre) once per
@@ -71,4 +72,29 @@ export function XRViewerAnchor({
   });
 
   return <XROrigin position={origin} />;
+}
+
+/**
+ * Field of view for the flat preview. The default 60° lens sits one reading
+ * distance from a panel as wide as the reading distance itself, so the page
+ * fills the frame by construction — which is right for a view whose whole
+ * subject is that panel, and wrong for `rooms`, where the reader is standing
+ * IN somewhere and the room around the page is the point. A wider lens shows
+ * the walls, the neighbouring pages and the spot underfoot without moving the
+ * reader back off the reading mark.
+ *
+ * Preview only: in an immersive session the field of view belongs to the
+ * headset, and three.js builds those projections itself.
+ */
+export function PreviewFieldOfView({ fov }: { fov: number }) {
+  const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+  React.useEffect(() => {
+    if (gl.xr.isPresenting) return;
+    const cam = camera as THREE.PerspectiveCamera;
+    if (!cam.isPerspectiveCamera || cam.fov === fov) return;
+    cam.fov = fov;
+    cam.updateProjectionMatrix();
+  }, [camera, fov, gl]);
+  return null;
 }

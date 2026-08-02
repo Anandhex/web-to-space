@@ -62,9 +62,7 @@ import {
   RAY_BAN_META_PROFILE,
   QUEST_3_PROFILE,
 } from "../layout/profiles";
-import type {
-  SemanticScene,
-} from "../mapper/types";
+import type { SemanticScene } from "../mapper/types";
 import type {
   LayoutPlan,
   LayoutConfig,
@@ -74,7 +72,7 @@ import type {
 } from "../layout/types";
 import type { ParserConfig, ParserBackend } from "../ir/types";
 import type { ViewMode, Tab } from "../components/viewTypes";
-import { XR3DTabBar, XR3DViewToggle } from "../components/XR3DChrome";
+import { XR3DTabBar } from "../components/XR3DChrome";
 import { ThemeContext, LIGHT_THEME, type XRTheme } from "./theme";
 import { RenderMetricsContext } from "./primitives";
 import { useXRSession } from "./useXRSession";
@@ -86,7 +84,7 @@ import { Web2VRScene } from "./Web2VRScene";
 import { EMPTY_CONFIG } from "./scene/config";
 import { FontContext, type PageState } from "./scene/contexts";
 import { usePipeline } from "./scene/use-pipeline";
-import { XRViewerAnchor } from "./scene/camera";
+import { XRViewerAnchor, PreviewFieldOfView } from "./scene/camera";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
 import { VRButton, styles } from "./scene/chrome";
 import {
@@ -149,6 +147,16 @@ function ghostSeeds(slots: SlotMap): Record<string, TuneState> {
   return { "ghost-prev": toState(prev), "ghost-next": toState(next) };
 }
 
+/**
+ * Flat-preview lens. 60° frames a panel you sit in front of; `rooms` puts the
+ * reader inside a building, where a wider lens is what lets the walls, the
+ * neighbouring pages and the floor spots read at all — the alternative,
+ * standing further back, would take the reader off the reading mark and
+ * shrink the text with it.
+ */
+const DEFAULT_PREVIEW_FOV = 60;
+const ROOMS_PREVIEW_FOV = 82;
+
 export interface XRSceneRendererProps {
   html?: string;
   url?: string;
@@ -165,9 +173,11 @@ export interface XRSceneRendererProps {
    * "flat" skips the pipeline entirely and renders raw HTML in a browser iframe.
    */
   parserBackend?: ParserBackend;
+  /**
+   * Spatial arrangement to present the page in. Selected on the Home screen
+   * (see HomeSettings.viewMode) — the viewer itself offers no switcher.
+   */
   viewMode?: ViewMode;
-  /** Called when the in-world view-mode toggle changes the layout mode. */
-  onViewModeChange?: (m: ViewMode) => void;
   onPlanReady?: (plan: LayoutPlan) => void;
   /** Called when a non-anchor link is clicked; defaults to window.open if omitted. */
   onExternalNavigate?: (href: string) => void;
@@ -194,7 +204,6 @@ export function XRSceneRenderer({
   parserConfig = {},
   parserBackend = "custom",
   viewMode,
-  onViewModeChange,
   onPlanReady,
   onExternalNavigate,
   theme = LIGHT_THEME,
@@ -223,13 +232,10 @@ export function XRSceneRenderer({
     | "landing"
     | "generic"
     | "carousel"
-    | "theatre"
     | undefined => {
     switch (viewMode) {
       case "carousel":
         return "carousel";
-      case "theatre":
-        return "theatre";
       default:
         return undefined; // "standard" / arrangement views → auto content template
     }
@@ -255,9 +261,9 @@ export function XRSceneRenderer({
   // Live panel tuning (DOM HUD). Per-slot overrides feed the layout engine and
   // re-run the pipeline on change; ghost overrides feed the carousel renderer
   // directly (ghosts aren't slots). Empty = nothing overridden.
-  const [slotTune, setSlotTune] = useState<Partial<Record<SlotName, TuneState>>>(
-    {},
-  );
+  const [slotTune, setSlotTune] = useState<
+    Partial<Record<SlotName, TuneState>>
+  >({});
   const [ghostTune, setGhostTune] = useState<Record<string, TuneState>>({});
 
   const {
@@ -357,26 +363,23 @@ export function XRSceneRenderer({
     },
     [plan],
   );
-  const onTuneChange = useCallback(
-    (id: string, next: TuneState | null) => {
-      if (id.startsWith("ghost-")) {
-        setGhostTune((prev) => {
-          const copy = { ...prev };
-          if (next) copy[id] = next;
-          else delete copy[id];
-          return copy;
-        });
-      } else {
-        setSlotTune((prev) => {
-          const copy = { ...prev };
-          if (next) copy[id as SlotName] = next;
-          else delete copy[id as SlotName];
-          return copy;
-        });
-      }
-    },
-    [],
-  );
+  const onTuneChange = useCallback((id: string, next: TuneState | null) => {
+    if (id.startsWith("ghost-")) {
+      setGhostTune((prev) => {
+        const copy = { ...prev };
+        if (next) copy[id] = next;
+        else delete copy[id];
+        return copy;
+      });
+    } else {
+      setSlotTune((prev) => {
+        const copy = { ...prev };
+        if (next) copy[id as SlotName] = next;
+        else delete copy[id as SlotName];
+        return copy;
+      });
+    }
+  }, []);
 
   // Anchor for the in-world chrome stack (layout switcher + tab switcher):
   // horizontally centred on the main content panel and pulled forward of it,
@@ -512,7 +515,12 @@ export function XRSceneRenderer({
         )}
         <Canvas
           style={{ background }}
-          camera={{ position: [0, 1.5, 0], fov: 60, near: 0.01, far: 100 }}
+          camera={{
+            position: [0, 1.5, 0],
+            fov: DEFAULT_PREVIEW_FOV,
+            near: 0.01,
+            far: 100,
+          }}
           gl={{
             antialias: true,
             alpha: false,
@@ -543,6 +551,13 @@ export function XRSceneRenderer({
                   A strong directional + saturated blue point light previously
                   shaded angled panels (e.g. the TOC) noticeably lighter/bluer
                   than the head-on content panel. */}
+              {/* `rooms` is a place you stand in, not a panel you sit at:
+                  give the preview a wider lens there so the room reads. */}
+              <PreviewFieldOfView
+                fov={
+                  viewMode === "rooms" ? ROOMS_PREVIEW_FOV : DEFAULT_PREVIEW_FOV
+                }
+              />
               <ambientLight intensity={0.72} />
               <directionalLight
                 position={[0, 3, 2]}
@@ -557,7 +572,9 @@ export function XRSceneRenderer({
               />
               <Environment preset="city" />
 
-              <RenderMetricsContext.Provider value={deviceProfile.renderMetrics}>
+              <RenderMetricsContext.Provider
+                value={deviceProfile.renderMetrics}
+              >
                 <ThemeContext.Provider value={theme}>
                   <FontContext.Provider value={fontType}>
                     {/* Web2VR backend: CSS layout extracted from hidden iframe → 3D */}
@@ -566,7 +583,9 @@ export function XRSceneRenderer({
                     )}
 
                     {parserBackend !== "web2vr" && scene && plan && (
-                      <ReferenceFrameGroup frame={plan.referenceFrame ?? "world"}>
+                      <ReferenceFrameGroup
+                        frame={plan.referenceFrame ?? "world"}
+                      >
                         <XRSceneGraph
                           scene={scene}
                           plan={plan}
@@ -581,45 +600,44 @@ export function XRSceneRenderer({
                     )}
 
                     {/* ── In-world browser chrome (replaces HTML overlays) ────
-                      Layout switcher (top) and tab switcher (bottom) form a
-                      vertical stack, horizontally centred on the content panel
-                      and pulled forward of it (parallax separation), with a
-                      breathable gap between the two rows. */}
-                    {viewMode && onViewModeChange && (
-                      <XR3DViewToggle
-                        mode={viewMode}
-                        onChange={onViewModeChange}
-                        deviceType={deviceType}
-                        position={[
-                          chromeAnchor.cx,
-                          chromeAnchor.bottomY + 1.1,
-                          chromeAnchor.z,
-                        ]}
-                        tiltX={0.34}
-                      />
-                    )}
-                    {tabs &&
+                      Tab switcher, horizontally centred on the content panel
+                      and pulled forward of it (parallax separation). The view
+                      picker is not here: the arrangement is chosen on the Home
+                      screen and is fixed for the loaded page.
+
+                      `rooms` is suppressed entirely — there the reader walks a
+                      building rather than sitting at a panel, so a bar welded
+                      under the main page would follow them into every room and
+                      float loose in the middle of the space. */}
+                    {viewMode !== "rooms" &&
+                      tabs &&
                       activeTabId &&
                       onSwitchTab &&
                       onCloseTab &&
-                      onNewTab && (
-                        <XR3DTabBar
-                          tabs={tabs}
-                          activeTabId={activeTabId}
-                          onSwitch={onSwitchTab}
-                          onClose={onCloseTab}
-                          onNewTab={onNewTab}
-                          position={[
-                            chromeAnchor.cx,
-                            chromeAnchor.bottomY - 0.3,
-                            chromeAnchor.z,
-                          ]}
-                          tiltX={0.34}
-                        />
-                      )}
+                      onNewTab &&
+                      null
+                      // <XR3DTabBar
+                      //   tabs={tabs}
+                      //   activeTabId={activeTabId}
+                      //   onSwitch={onSwitchTab}
+                      //   onClose={onCloseTab}
+                      //   onNewTab={onNewTab}
+                      //   position={[
+                      //     chromeAnchor.cx,
+                      //     chromeAnchor.bottomY - 0.3,
+                      //     chromeAnchor.z,
+                      //   ]}
+                      //   tiltX={0.34}
+                      // />
+                    }
 
                     {sessionState !== "immersive" && (
                       <OrbitControls
+                        // makeDefault so the scene can find these controls
+                        // (useThree(s => s.controls)) — the rooms view puts
+                        // the camera back on the reading line when the reader
+                        // clicks a spot, which it cannot do without them.
+                        makeDefault
                         target={readingLook}
                         enablePan
                         enableDamping

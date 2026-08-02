@@ -9,6 +9,7 @@ import { parsePageToIR } from "../../ir/parser";
 import { parsePageWithVIPS } from "../../ir/vips";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../../mapper/mapper";
 import { computeLayoutPlan } from "../../layout/engine";
+import { foldSceneContentOnly } from "../../layout/content-only";
 import { DEFAULT_CONFIG } from "../../ir/defaults";
 import { applyParserBackend } from "../../ir/backends";
 import type { ParserConfig, ParserBackend } from "../../ir/types";
@@ -60,10 +61,18 @@ export function usePipeline(
         return;
       }
 
+      // Content-only page views: fold banner/aside/footer landmarks into the
+      // content panel's flow BEFORE layout, so they paginate inline (pure
+      // scene→scene — the input scene is never mutated).
+      const maybeFold = (s: SemanticScene): SemanticScene =>
+        arrangement?.pageDistribution && arrangement.pageDistribution !== "flip"
+          ? foldSceneContentOnly(s)
+          : s;
+
       try {
         let scene: SemanticScene;
         if (sceneIn) {
-          scene = sceneIn;
+          scene = maybeFold(sceneIn);
         } else if (html) {
           let ir;
           let label: string;
@@ -90,7 +99,7 @@ export function usePipeline(
             );
           }
 
-          scene = mapIRToScene(ir, DEFAULT_MAPPER_CONFIG);
+          scene = maybeFold(mapIRToScene(ir, DEFAULT_MAPPER_CONFIG));
           const plan = computeLayoutPlan(
             scene,
             deviceProfile,

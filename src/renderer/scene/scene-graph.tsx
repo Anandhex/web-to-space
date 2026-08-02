@@ -7,13 +7,12 @@
  */
 import React, { useCallback, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Line, Text } from "@react-three/drei";
+import { Text } from "@react-three/drei";
 import { useXRInputSourceState } from "@react-three/xr";
 import * as THREE from "three";
 
 import type { SemanticScene, XRPrimitive } from "../../mapper/types";
 import type {
-  LandmarkSlot,
   LayoutEntry,
   LayoutPlan,
   SlotMap,
@@ -33,6 +32,9 @@ import {
 import { hasDescendant } from "./dispatch-children";
 import { PrimitiveDispatcher } from "./dispatcher";
 import { CarouselGhostPanel } from "./panels";
+import { PageGhostField } from "./page-ghosts";
+import { LinkPreviewProvider } from "./link-preview";
+import { MIN_PAGES_FOR_PAGE_VIEWS } from "../page-placements";
 
 export function buildPrimitiveMap(
   root: XRPrimitive,
@@ -41,60 +43,6 @@ export function buildPrimitiveMap(
   out.set(root.id, root);
   for (const child of root.children) buildPrimitiveMap(child, out);
   return out;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Slot tethers (EXPLODED / CONSTELLATION)
-// ─────────────────────────────────────────────────────────────
-
-/** Panel centre from a top-left-origin slot (y grows downward). */
-function slotCentre(slot: LandmarkSlot): [number, number, number] {
-  return [
-    slot.position.x + slot.size.width / 2,
-    slot.position.y - slot.size.height / 2,
-    slot.position.z,
-  ];
-}
-
-/**
- * Draws relationship lines from the primary (`main`) panel to every other
- * landmark panel. EXPLODED reads them as the connective spine of a disassembled
- * page; CONSTELLATION reads them as the spokes of a node-link mind-map. The
- * endpoints come straight from the resolved SlotMap, so the tethers always track
- * whatever the active distribution placed — no separate geometry to keep in sync.
- */
-function SlotTethers({ slots }: { slots: SlotMap }) {
-  const main = slots.main;
-  if (!main) return null;
-  const hub = slotCentre(main);
-  const roles: (keyof SlotMap)[] = [
-    "navigation",
-    "complementary",
-    "toc",
-    "banner",
-    "footer",
-  ];
-  return (
-    <>
-      {roles.map((role) => {
-        const slot = slots[role];
-        if (!slot) return null;
-        return (
-          <Line
-            key={role}
-            points={[hub, slotCentre(slot)]}
-            color="#58a6ff"
-            lineWidth={1.5}
-            transparent
-            opacity={0.4}
-            dashed
-            dashSize={0.06}
-            gapSize={0.04}
-          />
-        );
-      })}
-    </>
-  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -514,6 +462,7 @@ export function XRSceneGraph({
 
   return (
     <NavigateContext.Provider value={navigate}>
+      <LinkPreviewProvider>
       <PageRangeContext.Provider value={focusedRange}>
       {scene.root.children.map((primitive) => {
         // In carousel mode, the main content panel is rendered via CarouselPanelGroup
@@ -572,6 +521,35 @@ export function XRSceneGraph({
           );
         }
 
+        // Page views (elevator/wall/deck/rooms): the ghost field REPLACES the
+        // panel — every page renders at its spatial placement. In deck/wall
+        // the focused page's ghost morphs forward to the stage (flat, full
+        // size, interactive); in elevator it is emphasised in its ring slot;
+        // in rooms nothing moves but the reader, who is walked to the page.
+        // Falls back to the normal flip panel when there are too few pages
+        // for a spatial field to mean anything.
+        if (
+          plan.pageDistribution &&
+          plan.pageDistribution !== "flip" &&
+          primitive === paginatedPanel
+        ) {
+          const pageCount =
+            plan.entries[primitive.id]?.pagination?.pageCount ?? 1;
+          if (pageCount >= MIN_PAGES_FOR_PAGE_VIEWS) {
+            return (
+              <PageGhostField
+                key={primitive.id}
+                panel={primitive}
+                plan={plan}
+                pageState={pageState}
+                setPage={setPage}
+                primitiveMap={primitiveMap}
+              />
+            );
+          }
+          // fall through to the normal dispatcher below
+        }
+
         // A top-level complementary aside that the engine gated to a page
         // range (pageIndex set) needs the paginated panel's current page in
         // context so entryOnPage can hide it on excluded pages. Without this
@@ -609,10 +587,8 @@ export function XRSceneGraph({
           onClear={() => setFocusedRange(null)}
         />
       )}
-      {(viewMode === "exploded" || viewMode === "constellation") && (
-        <SlotTethers slots={plan.slots} />
-      )}
       </PageRangeContext.Provider>
+      </LinkPreviewProvider>
     </NavigateContext.Provider>
   );
 }
