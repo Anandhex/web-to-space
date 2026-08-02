@@ -37,6 +37,7 @@ import {
   computeFieldLabels,
   computeRoomShell,
   computeRoomSlabs,
+  computeRoomFixtures,
   computeReadingSpots,
   roomAtPose,
   roomReadingPose,
@@ -63,13 +64,12 @@ import { WallField } from "./wall-field";
 import { NavigateContext } from "../primitives/contexts";
 import {
   RoomWalk,
-  RoomShell,
-  RoomSlabs,
   LinkDoors,
   ReadingSpots,
   useReadingView,
   useRoomWalking,
 } from "./room-walk";
+import { RoomShell, RoomSlabs, RoomLights, GALLERY_SIGN } from "./room-decor";
 
 // ── Section ranges (grouping for wall / deck / rooms / elevator) ──
 //
@@ -203,10 +203,12 @@ export function sectionLinksFor(
 }
 
 /**
- * A section plaque. Rooms hang bare text over each doorway; the elevator
- * gives it a `card`, so it renders as a panel filling its ring slot — the
- * same size as the pages either side of it, part of the wall rather than
- * floating in front of it.
+ * A section plaque. The elevator gives it a `card`, so it renders as a panel
+ * filling its ring slot — the same size as the pages either side of it, part
+ * of the wall rather than floating in front of it. Rooms marks it a `sign`:
+ * an illuminated plate over the doorway, because the lintel it hangs on is
+ * the darkest surface in the corridor and a lit sign is how a real building
+ * solves exactly that.
  */
 function FieldLabelText({
   label,
@@ -218,6 +220,18 @@ function FieldLabelText({
   const theme = useTheme();
   const fontType = React.useContext(FontContext);
   const opacity = label.opacity ?? 1;
+  // The sign's plate, sized off the text: roughly half an em per character
+  // for the mixed-case names these are, with a comfortable margin. Only the
+  // renderer knows the font, so the placement side ships a flag, not a size.
+  const plate = React.useMemo(() => {
+    if (!label.sign) return null;
+    const wanted = label.text.length * label.fontSize * 0.56 + 0.34;
+    const width = Math.min(2.4, Math.max(0.9, wanted));
+    // A long heading wraps rather than being cut, so the plate has to grow
+    // with it — a sign the name overflows is worse than no sign.
+    const lines = Math.max(1, Math.ceil(wanted / width));
+    return { width, height: label.fontSize * (1.1 + lines) };
+  }, [label.sign, label.text, label.fontSize]);
   return (
     <group
       position={[
@@ -227,6 +241,21 @@ function FieldLabelText({
       ]}
       rotation={[label.rotation.x, label.rotation.y, label.rotation.z]}
     >
+      {plate && (
+        <>
+          {/* Unlit on purpose — a sign that needed lighting to be read would
+              be no better than the bare letters it replaces — and pale, with
+              the name dark on it, which is how a gallery labels a room. */}
+          <mesh position={[0, 0, -0.006]}>
+            <planeGeometry args={[plate.width, plate.height]} />
+            <meshBasicMaterial color={GALLERY_SIGN.plate} toneMapped={false} />
+          </mesh>
+          <mesh position={[0, 0, -0.008]}>
+            <planeGeometry args={[plate.width + 0.016, plate.height + 0.016]} />
+            <meshBasicMaterial color={GALLERY_SIGN.edge} toneMapped={false} />
+          </mesh>
+        </>
+      )}
       {label.card && (
         <mesh position={[0, 0, -0.004]}>
           <planeGeometry args={[label.card.width, label.card.height]} />
@@ -243,12 +272,17 @@ function FieldLabelText({
         font={fontType}
         anchorX="center"
         anchorY="middle"
+        // A hair proud of its plate: the name must never be a coplanar
+        // decision for the depth buffer to make.
+        position={[0, 0, plate ? 0.004 : 0]}
         fontSize={label.fontSize}
-        color={theme.emphasisCol}
+        color={plate ? GALLERY_SIGN.text : theme.emphasisCol}
         fillOpacity={opacity}
-        outlineWidth={label.card ? 0 : label.fontSize * 0.06}
+        outlineWidth={label.card || plate ? 0 : label.fontSize * 0.06}
         outlineColor={theme.panelBg}
-        maxWidth={label.card ? label.card.width * 0.86 : 2.6}
+        maxWidth={
+          label.card ? label.card.width * 0.86 : plate ? plate.width * 0.9 : 2.6
+        }
       >
         {label.text}
       </Text>
@@ -489,6 +523,17 @@ export function PageGhostField({
     [mode, entry, pageCount, roomOpts],
   );
 
+  // The light fittings: luminaires over every space and a gallery light over
+  // every page. Static, like the walls — the reader's position decides which
+  // of them cast a real light, not which of them exist (see RoomLights).
+  const roomFixtures = React.useMemo(
+    () =>
+      mode && entry
+        ? computeRoomFixtures(mode, pageCount, entry.size, roomOpts)
+        : [],
+    [mode, entry, pageCount, roomOpts],
+  );
+
   const fieldLabels = React.useMemo(
     () =>
       mode && entry
@@ -585,10 +630,21 @@ export function PageGhostField({
   const field = (
     <>
       {roomShell.length > 0 && (
-        <RoomShell walls={roomShell} anchor={entry.position} />
+        <RoomShell
+          walls={roomShell}
+          anchor={entry.position}
+          floorY={-entry.position.y}
+        />
       )}
       {roomSlabs.length > 0 && (
         <RoomSlabs slabs={roomSlabs} anchor={entry.position} />
+      )}
+      {roomFixtures.length > 0 && (
+        <RoomLights
+          fixtures={roomFixtures}
+          anchor={entry.position}
+          reader={readerAt}
+        />
       )}
       {roomShell.some((w) => w.portal) && (
         <LinkDoors walls={roomShell} anchor={entry.position} />

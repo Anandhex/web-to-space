@@ -1,9 +1,13 @@
 /**
  * scene/room-walk.tsx
  *
- * The locomotion half of the `rooms` view: one eased group wrapped around the
- * whole page field that carries the room — rigidly — until the reader is
- * standing square-on to the focused exhibit.
+ * The locomotion half of the `rooms` view — walking, doors and reading spots.
+ * What the building is MADE of (walls, floor, ceiling, light fittings) is the
+ * other half, next door in `room-decor.tsx`.
+ *
+ * Locomotion is one eased group wrapped around the whole page field that
+ * carries the room — rigidly — until the reader is standing square-on to the
+ * focused exhibit.
  *
  * Every other page view morphs the CELLS when focus changes; rooms morphs the
  * ROOM. That difference is the whole effect: because the pages hold still
@@ -36,7 +40,6 @@ import {
   type ReaderPose,
   type ReadingSpot,
   type RoomWall,
-  type RoomSlab,
 } from "../page-placements";
 
 export function RoomWalk({
@@ -392,102 +395,6 @@ export function useRoomWalking({
       }
     }
   });
-}
-
-/**
- * The building's walls: the flat surfaces the pages hang on and the corridor
- * runs between. A section's pages are what makes its room — but pages alone
- * floated in the dark, so every wall is a plane standing on the floor and
- * carrying on a head above the page band, with the DOORWAYS left as gaps in
- * it (see `wallRun` — each opening becomes two flanking pieces and a lintel).
- *
- * Double-sided on purpose: a room has to be a solid box with two doors, or
- * the rooms beyond it show through and the enclosure is gone. `navBg` is the
- * theme's recessed surface, so the walls sit behind the pages in the same way
- * a nav panel sits behind content.
- *
- * Raycast-inert: a wall is scenery, and must never eat a click meant for the
- * page in front of it.
- */
-export function RoomShell({
-  walls,
-  anchor,
-}: {
-  walls: RoomWall[];
-  /** The main panel's top-left anchor in world space — walls are relative to it. */
-  anchor: { x: number; y: number; z: number };
-}) {
-  const theme = useTheme();
-  return (
-    <group raycast={() => null}>
-      {walls.map((w, i) => (
-        <mesh
-          key={`room-wall-${i}`}
-          position={[
-            anchor.x + w.centre.x,
-            anchor.y + w.centre.y,
-            anchor.z + w.centre.z,
-          ]}
-          rotation={[0, w.yaw, 0]}
-        >
-          <planeGeometry args={[w.size.width, w.size.height]} />
-          {/* The lintel over a doorway in the trim colour: an opening you can
-              see from down the corridor beats one you find by bumping into
-              the wall beside it. */}
-          <meshStandardMaterial
-            color={w.lintel ? theme.panelRim : theme.navBg}
-            side={THREE.DoubleSide}
-            roughness={1}
-            metalness={0}
-          />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-/**
- * The floor and the ceiling. A room is not a room without them — four walls
- * in a void give a reader nothing to stand on and no way to tell up from
- * down — and they close the building off so a corridor reads as an interior.
- * Raycast-inert, like the walls: scenery never eats a click.
- */
-export function RoomSlabs({
-  slabs,
-  anchor,
-}: {
-  slabs: RoomSlab[];
-  anchor: { x: number; y: number; z: number };
-}) {
-  const theme = useTheme();
-  return (
-    <group raycast={() => null}>
-      {slabs.map((s, i) => (
-        <mesh
-          key={`room-slab-${i}`}
-          position={[
-            anchor.x + s.centre.x,
-            anchor.y + s.centre.y,
-            anchor.z + s.centre.z,
-          ]}
-          // A plane faces +z; a quarter turn back lays it flat facing up, a
-          // quarter turn forward lays it flat facing down.
-          rotation={[s.facing === "up" ? -Math.PI / 2 : Math.PI / 2, 0, 0]}
-        >
-          <planeGeometry args={[s.size.width, s.size.depth]} />
-          {/* The floor a shade lighter than the walls so it reads as lit and
-              the reader can tell where the ground is; the ceiling the same
-              material as the walls, so it closes the space without drawing
-              the eye up. */}
-          <meshStandardMaterial
-            color={s.facing === "up" ? theme.inputBg : theme.navBg}
-            roughness={1}
-            metalness={0}
-          />
-        </mesh>
-      ))}
-    </group>
-  );
 }
 
 /**

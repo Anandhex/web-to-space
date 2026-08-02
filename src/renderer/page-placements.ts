@@ -882,7 +882,10 @@ function deck(
       const r = ranges[c];
       if (page >= r.start && page <= r.end) {
         const k = page - r.start;
-        return { pile: pileStart[c] + Math.floor(k / MAX_DEPTH), depth: k % MAX_DEPTH };
+        return {
+          pile: pileStart[c] + Math.floor(k / MAX_DEPTH),
+          depth: k % MAX_DEPTH,
+        };
       }
     }
     return { pile: 0, depth: Math.min(page, MAX_DEPTH - 1) };
@@ -903,7 +906,13 @@ function deck(
     };
     if (i === focus) {
       out.push(stagePlacement(i));
-      out.push({ pageIndex: i, ...cell, recession: 0, isFocusCell: true, isStage: false });
+      out.push({
+        pageIndex: i,
+        ...cell,
+        recession: 0,
+        isFocusCell: true,
+        isStage: false,
+      });
     } else {
       out.push({
         pageIndex: i,
@@ -1121,14 +1130,17 @@ function museumPlan(
     // The links of the section just read, hung down the next stretch: half on
     // each wall, so the stretch is as long as one wall's worth of plates.
     const perWall = Math.ceil((linkCounts[k] ?? 0) / 2);
-    const stretch = Math.max(
-      LINK_STRETCH_MIN,
-      perWall * LINK_DOOR_PITCH + 1.4,
-    );
+    const stretch = Math.max(LINK_STRETCH_MIN, perWall * LINK_DOOR_PITCH + 1.4);
     stretches.push({ sectionIndex: k, zNear: zFar, zFar: zFar - stretch });
     z = zFar - stretch;
   }
-  return { spineX, rooms, stretches, zStart: ROOM_Z0 + CORRIDOR_LOBBY, zEnd: z };
+  return {
+    spineX,
+    rooms,
+    stretches,
+    zStart: ROOM_Z0 + CORRIDOR_LOBBY,
+    zEnd: z,
+  };
 }
 
 /**
@@ -1214,7 +1226,8 @@ function rooms(
 ): PagePlacement[] {
   const m = planFor(pageCount, panel, opts);
   const viewingDistance = opts.viewingDistance ?? 1.2;
-  const eye = opts.readerPose ?? poseFacing(roomCellOf(focus, m, panel), viewingDistance);
+  const eye =
+    opts.readerPose ?? poseFacing(roomCellOf(focus, m, panel), viewingDistance);
   const out: PagePlacement[] = [];
   for (let i = 0; i < pageCount; i++) {
     const c = roomCellOf(i, m, panel);
@@ -1320,10 +1333,7 @@ export function roomReadingPose(
 ): ReaderPose | null {
   if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return null;
   const m = planFor(pageCount, panel, opts);
-  return poseFacing(
-    roomCellOf(focus, m, panel),
-    opts.viewingDistance ?? 1.2,
-  );
+  return poseFacing(roomCellOf(focus, m, panel), opts.viewingDistance ?? 1.2);
 }
 
 /**
@@ -1381,7 +1391,8 @@ export function roomWalkStep(
     for (const w of solid) if (wallDistance(w, x, z) < radius) return false;
     return true;
   };
-  if (clear(from.x + dx, from.z + dz)) return { x: from.x + dx, z: from.z + dz };
+  if (clear(from.x + dx, from.z + dz))
+    return { x: from.x + dx, z: from.z + dz };
   // Blocked head-on. If the push is toward a doorway the reader has not lined
   // up with, steer them at it: walking a corridor with the keys does not aim
   // to the centimetre, and a door you cannot get through is worse than no
@@ -1480,6 +1491,13 @@ export interface RoomWall {
    * discover by bumping into the wall either side of it.
    */
   lintel?: boolean;
+  /**
+   * A room's SIDE wall — the one its pages hang on. Only these get a picture
+   * rail: a rail is the line a gallery hangs from, and running one down the
+   * corridor as well put a long horizontal edge at eye height that converged
+   * on the far doorways and struck the section signs over them out.
+   */
+  hangs?: boolean;
 }
 
 /** A horizontal surface — the floor a room stands on, or the ceiling over it. */
@@ -1551,7 +1569,13 @@ export function computeRoomShell(
     to: { x: number; z: number },
     yaw: number,
     doors: { at: number; width: number }[] = [],
-  ) => out.push(...wallRun(from, to, yaw, doors, floorY, topY));
+    hangs = false,
+  ) =>
+    out.push(
+      ...wallRun(from, to, yaw, doors, floorY, topY).map((w) =>
+        hangs && !w.lintel ? { ...w, hangs: true } : w,
+      ),
+    );
 
   for (const room of m.rooms) {
     const left = m.spineX - room.width / 2;
@@ -1567,12 +1591,14 @@ export function computeRoomShell(
       { x: left, z: room.zFar },
       Math.PI / 2,
       [],
+      true,
     );
     run(
       { x: right, z: room.zNear },
       { x: right, z: room.zFar },
       -Math.PI / 2,
       [],
+      true,
     );
   }
 
@@ -1646,6 +1672,126 @@ export function computeRoomSlabs(
   space(m.zStart, ROOM_Z0, CORRIDOR_HALF * 2);
   for (const room of m.rooms) space(room.zNear, room.zFar, room.width);
   for (const s of m.stretches) space(s.zNear, s.zFar, CORRIDOR_HALF * 2);
+  return out;
+}
+
+// ── Light fittings ───────────────────────────────────────────
+
+/**
+ * A light fitting in the building. Rooms lit by one flat global lamp read as
+ * a diagram of a room rather than a room: what makes an interior is LOCAL
+ * light — pools on the floor under the luminaires, a bright page and a
+ * darker corner, a corridor that dims between one doorway and the next. So
+ * the building carries its own fittings, and the renderer hangs a real light
+ * in the ones near the reader (see `RoomLights`).
+ *
+ * Two kinds, for the two jobs light does here:
+ *  - `ceiling` — a flush luminaire in the ceiling, lighting the space you
+ *    walk through. Their spacing is what gives a corridor its rhythm.
+ *  - `picture` — a gallery light over one page, angled at it. This is the
+ *    one that matters for reading: it puts the brightest thing in the room
+ *    on the thing you came to read.
+ */
+export interface RoomFixture {
+  kind: "ceiling" | "picture";
+  /** The fitting itself, panel-anchor-relative. */
+  centre: { x: number; y: number; z: number };
+  /** Footprint of the fitting's own body (a plate, or a small shade). */
+  size: { width: number; depth: number };
+  /** Bearing the fitting faces — the wall's, for a picture light. */
+  yaw: number;
+  /** Where its light lands: the floor below, or the page it is aimed at. */
+  target: { x: number; y: number; z: number };
+  /** Rooms are lit warmer than the corridors between them. */
+  space: "room" | "corridor";
+  /** The page a picture light belongs to. */
+  pageIndex?: number;
+}
+
+/** How far below the ceiling a luminaire's plate sits. */
+const FIXTURE_DROP = 0.03;
+/** A ceiling luminaire's plate. */
+const CEILING_LIGHT_W = 0.46;
+const CEILING_LIGHT_D = 0.46;
+/** Longest gap between luminaires down a corridor. */
+const CORRIDOR_LIGHT_PITCH = 2.6;
+/** A picture light stands this far above its page's top edge… */
+const PICTURE_LIGHT_RISE = 0.26;
+/** …and this far out from the wall, so it looks down the page's face. */
+const PICTURE_LIGHT_PROUD = 0.2;
+/** The shade of a picture light. */
+const PICTURE_LIGHT_W = 0.34;
+const PICTURE_LIGHT_D = 0.1;
+
+/**
+ * Every fitting in the building: the luminaires over each space, and a
+ * picture light over every page. Cheap and static — the reader's position
+ * decides which of them get a real light, not which of them exist.
+ */
+export function computeRoomFixtures(
+  mode: PageDistribution,
+  pageCount: number,
+  panel: { width: number; height: number },
+  opts: PagePlacementOptions = {},
+): RoomFixture[] {
+  if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return [];
+  const m = planFor(pageCount, panel, opts);
+  const floorY = opts.floorY ?? -panel.height * 2;
+  const lampY = ROOM_WALL_HEADROOM - FIXTURE_DROP;
+
+  const out: RoomFixture[] = [];
+  /** A run of luminaires down the middle of a space, evenly spaced. */
+  const run = (
+    zNear: number,
+    zFar: number,
+    space: "room" | "corridor",
+    pitch: number,
+  ) => {
+    const depth = zNear - zFar;
+    const n = Math.max(1, Math.round(depth / pitch));
+    for (let i = 0; i < n; i++) {
+      const z = zNear - (depth * (i + 0.5)) / n;
+      out.push({
+        kind: "ceiling",
+        centre: { x: m.spineX, y: lampY, z },
+        size: { width: CEILING_LIGHT_W, depth: CEILING_LIGHT_D },
+        yaw: 0,
+        target: { x: m.spineX, y: floorY, z },
+        space,
+      });
+    }
+  };
+
+  run(m.zStart, ROOM_Z0, "corridor", CORRIDOR_LIGHT_PITCH);
+  for (const s of m.stretches)
+    run(s.zNear, s.zFar, "corridor", CORRIDOR_LIGHT_PITCH);
+  for (const room of m.rooms) {
+    // A room's own luminaires follow its page rows, so the light down the
+    // middle keeps step with the exhibits either side of it.
+    run(room.zNear, room.zFar, "room", (room.zNear - room.zFar) / room.rows);
+    // …and every page gets its own gallery light.
+    for (let page = room.range.start; page <= room.range.end; page++) {
+      const c = roomCell(m, room, page - room.range.start, panel);
+      // Out from the wall along the page's own normal — the face points at
+      // whoever stands in front of it, which is (sin yaw, cos yaw) — and up
+      // above its top edge.
+      const nx = Math.sin(c.yaw);
+      const nz = Math.cos(c.yaw);
+      out.push({
+        kind: "picture",
+        centre: {
+          x: c.centre.x + nx * PICTURE_LIGHT_PROUD,
+          y: c.centre.y + c.size.height / 2 + PICTURE_LIGHT_RISE,
+          z: c.centre.z + nz * PICTURE_LIGHT_PROUD,
+        },
+        size: { width: PICTURE_LIGHT_W, depth: PICTURE_LIGHT_D },
+        yaw: c.yaw,
+        target: { ...c.centre },
+        space: "room",
+        pageIndex: page,
+      });
+    }
+  }
   return out;
 }
 
@@ -1782,6 +1928,13 @@ export interface FieldLabel {
   card?: { width: number; height: number };
   /** 0…1, matching the recession of the ring the plaque belongs to. */
   opacity?: number;
+  /**
+   * rooms: draw this as an illuminated SIGN over the door — a backing plate
+   * with the name lit on it — rather than as bare text. Its plate is sized
+   * from the text, which only the renderer can measure, so this is a flag
+   * and not a size.
+   */
+  sign?: boolean;
 }
 
 /**
@@ -1866,19 +2019,28 @@ export function computeFieldLabels(
   }
   const m = planFor(pageCount, panel, opts);
   const floorY = opts.floorY ?? -panel.height * 2;
+  const doorTop = floorY + DOOR_HEIGHT;
   return m.rooms.map((room, index) => ({
     text: room.label || `Section ${index + 1}`,
     offset: {
       // Over the door you come in by, on the CORRIDOR face of the room's near
-      // wall — the sign you read walking up to it — and on the lintel, midway
-      // between the opening's head and the top of the wall.
+      // wall — the sign you read walking up to it — set in the upper part of
+      // the lintel. Not midway: everything horizontal in the building (the
+      // skirting, the rail, the pages' own top edges) converges on eye height
+      // in the distance, and a sign parked at eye height is a sign with lines
+      // drawn through it. Up here it has the lintel to itself.
       x: m.spineX,
-      y: (floorY + DOOR_HEIGHT + ROOM_WALL_HEADROOM) / 2,
+      y: doorTop - 0.05,
       z: room.zNear + MOUNT_PROUD,
     },
     // Facing back up the corridor, i.e. at whoever is walking toward the door.
     rotation: { x: 0, y: 0, z: 0 },
-    fontSize: 0.12,
+    fontSize: 0.15,
+    // A lit sign, not bare letters: the lintel it hangs on is the darkest
+    // surface in the corridor (the luminaires point away from it), so the
+    // name has to carry its own light or it is a grey word on a grey band
+    // half a building away.
+    sign: true,
   }));
 }
 

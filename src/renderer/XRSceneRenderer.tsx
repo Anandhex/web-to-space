@@ -558,19 +558,40 @@ export function XRSceneRenderer({
                   viewMode === "rooms" ? ROOMS_PREVIEW_FOV : DEFAULT_PREVIEW_FOV
                 }
               />
-              <ambientLight intensity={0.72} />
-              <directionalLight
-                position={[0, 3, 2]}
-                intensity={0.42}
-                castShadow={false}
-              />
-              <pointLight
-                position={[0, 1.5, -1.2]}
-                intensity={0.28}
-                color="#9ec5ff"
-                distance={4}
-              />
-              <Environment preset="city" />
+              {viewMode === "rooms" ? (
+                /* A gallery is a BRIGHT room. The fittings in the building
+                   (see scene/room-decor.tsx) give it pools and direction;
+                   this is the light bouncing round a white box, and it has
+                   to be generous — cut too far back, the rooms read as a
+                   basement corridor at night rather than somewhere you would
+                   want to stand and read. Warm from above, floor-bounce from
+                   below. No environment map: a city HDR both flattens the
+                   fittings' pools and, offline, never loads at all. */
+                <>
+                  <ambientLight intensity={0.62} color="#F1EEE8" />
+                  <hemisphereLight
+                    intensity={0.55}
+                    color="#FFF3E2"
+                    groundColor="#BFB7A8"
+                  />
+                </>
+              ) : (
+                <>
+                  <ambientLight intensity={0.72} />
+                  <directionalLight
+                    position={[0, 3, 2]}
+                    intensity={0.42}
+                    castShadow={false}
+                  />
+                  <pointLight
+                    position={[0, 1.5, -1.2]}
+                    intensity={0.28}
+                    color="#9ec5ff"
+                    distance={4}
+                  />
+                  <Environment preset="city" />
+                </>
+              )}
 
               <RenderMetricsContext.Provider
                 value={deviceProfile.renderMetrics}
