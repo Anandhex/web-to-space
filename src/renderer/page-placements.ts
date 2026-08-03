@@ -739,15 +739,41 @@ function wallAnchor(
 }
 
 /**
- * The board. Cells are packed into a grid centred on the panel, given the
- * arc's yaw/pushback, then leaned toward whatever the pointer is on.
+ * The board's arc, at a given x in the panel-anchor frame: how far back the
+ * surface is there, and which way it faces. Cells ride this law, and so does
+ * the backing wall behind them (`computeWallBoard`) — one function, so the
+ * board can never drift out of the plane its own cells hang on.
  */
-export function computeWallCells(
+export function wallArcAt(
+  x: number,
+  panelWidth: number,
+): { z: number; yaw: number } {
+  const offX = x - panelWidth / 2;
+  return {
+    z: WALL_BACK - Math.abs(offX) * WALL_DEPTH_PER_M,
+    yaw: -offX * WALL_YAW_PER_M,
+  };
+}
+
+/** The packed grid a board is drawn from — shared by cells and backing. */
+interface WallGrid {
+  items: WallItem[];
+  cols: number;
+  rows: number;
+  cw: number;
+  ch: number;
+  /** Left and top EDGES of the packed grid, panel-anchor-relative. */
+  left: number;
+  top: number;
+  centres: { x: number; y: number }[];
+}
+
+function wallGrid(
   pageCount: number,
   panel: { width: number; height: number },
-  opts: WallOptions & { headingOf?: (page: number) => string } = {},
-): WallCell[] {
-  if (pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return [];
+  opts: WallOptions & { headingOf?: (page: number) => string },
+): WallGrid | null {
+  if (pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return null;
   const ranges =
     opts.sectionRanges && opts.sectionRanges.length > 0
       ? opts.sectionRanges
@@ -775,19 +801,35 @@ export function computeWallCells(
   const left = panel.width / 2 - (cols * cw - WALL_GAP) / 2;
   const top = -panel.height / 2 + (rows * ch - WALL_GAP) / 2;
 
-  // Grid centres first: the lean needs to know where the pointed-at cell is.
   const centres = items.map((it) => ({
     x: left + it.col * cw + (it.span * cw - WALL_GAP) / 2,
     y: top - it.row * ch - (it.span * ch - WALL_GAP) / 2,
   }));
+  return { items, cols, rows, cw, ch, left, top, centres };
+}
+
+/**
+ * The board. Cells are packed into a grid centred on the panel, given the
+ * arc's yaw/pushback, then leaned toward whatever the pointer is on.
+ */
+export function computeWallCells(
+  pageCount: number,
+  panel: { width: number; height: number },
+  opts: WallOptions & { headingOf?: (page: number) => string } = {},
+): WallCell[] {
+  const grid = wallGrid(pageCount, panel, opts);
+  if (!grid) return [];
+  const { items, centres } = grid;
+
+  // Grid centres first: the lean needs to know where the pointed-at cell is.
   const hovered = opts.hoverKey
     ? centres[items.findIndex((it) => it.key === opts.hoverKey)]
     : undefined;
 
   return items.map((it, i) => {
     const c = centres[i];
-    const offX = c.x - panel.width / 2;
-    let yaw = -offX * WALL_YAW_PER_M;
+    const arc = wallArcAt(c.x, panel.width);
+    let yaw = arc.yaw;
     let pitch = 0;
     // Lean toward the pointer. A cell's face is +z, and (φ, θ) turns it to
     // (sin θ, −sin φ cos θ, cos φ cos θ) — so +θ looks right and −φ looks up.
@@ -807,10 +849,7 @@ export function computeWallCells(
       // lifting it too put a thumbnail at reading distance, right in the
       // reader's face, for no reason: its accent bar and chevron already say
       // it is open.
-      z:
-        WALL_BACK -
-        Math.abs(offX) * WALL_DEPTH_PER_M +
-        (full ? WALL_OPEN_LIFT : 0),
+      z: arc.z + (full ? WALL_OPEN_LIFT : 0),
     };
     return {
       key: it.key,
@@ -832,6 +871,113 @@ export function computeWallCells(
       recession: it.open ? 0 : it.kind === "section" ? 0.2 : 0.3,
     };
   });
+}
+
+// ── The board's backing ──────────────────────────────────────
+//
+// Cells alone are cards hanging in a void: nothing says they belong to one
+// another, and unlit text sits on whatever happens to be behind it. So the
+// board carries a SURFACE — a real wall it hangs on, following the same arc,
+// standing off far enough behind that a leaning cell never dips into it —
+// and a sign plate above the grid saying where in the document you are.
+//
+// It is described here, with the cells, because it is the same geometry
+// problem: the wall has to be exactly the surface the arc law implies, and
+// that law lives in this file.
+
+/**
+ * How far the backing sits behind the plane the cells hang on.
+ *
+ * Not a taste value: a cell leaning at full `WALL_TILT_MAX` swings its far
+ * corners back by roughly (w + h)/2 · sin(tilt) ≈ 0.1 m at tile scale, and a
+ * card that dips into the wall it hangs on is worse than no wall at all. The
+ * offline board check (corners of every cell, at several hover positions,
+ * against the interpolated spine) is what this number is set from — keep at
+ * least a centimetre of clearance there if the tilt or tile scale changes.
+ */
+export const WALL_BOARD_STANDOFF = 0.17;
+/** Bare surface left around the packed grid — the board's mount. */
+const WALL_BOARD_MARGIN = 0.16;
+/** Sample spacing along the arc; small enough that the facets don't read. */
+const WALL_BOARD_SEGMENT = 0.22;
+/** The sign plate above the grid: its height, its gap, its stand-off. */
+const WALL_HEADER_H = 0.1;
+const WALL_HEADER_GAP = 0.055;
+const WALL_HEADER_LIFT = 0.06;
+
+export interface WallArcSample {
+  x: number;
+  z: number;
+  yaw: number;
+}
+
+export interface WallBoard {
+  /** Grid extent (no margin), panel-anchor-relative — what the cells fill. */
+  grid: { left: number; right: number; top: number; bottom: number };
+  /** Bottom and top edges of the backing surface, margins included. */
+  bottom: number;
+  top: number;
+  /**
+   * The backing's spine, left → right: the arc lofted vertically between
+   * `bottom` and `top` IS the wall. Includes the stand-off, so a renderer
+   * lofts these points as-is.
+   */
+  spine: WallArcSample[];
+  /** Centre of the sign plate over the board, and its size. */
+  header: {
+    centre: { x: number; y: number; z: number };
+    width: number;
+    height: number;
+  };
+}
+
+/**
+ * The surface the cells hang on, for whatever the board is currently showing.
+ * Pure and derived from the same grid as `computeWallCells`, so it resizes
+ * with the disclosure instead of being a fixed backdrop the board grows out of.
+ */
+export function computeWallBoard(
+  pageCount: number,
+  panel: { width: number; height: number },
+  opts: WallOptions & { headingOf?: (page: number) => string } = {},
+): WallBoard | null {
+  const grid = wallGrid(pageCount, panel, opts);
+  if (!grid) return null;
+  const { cols, rows, cw, ch, left, top } = grid;
+
+  const gridRight = left + cols * cw - WALL_GAP;
+  const gridBottom = top - (rows * ch - WALL_GAP);
+  const x0 = left - WALL_BOARD_MARGIN;
+  const x1 = gridRight + WALL_BOARD_MARGIN;
+
+  const steps = Math.max(2, Math.ceil((x1 - x0) / WALL_BOARD_SEGMENT));
+  const spine: WallArcSample[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const x = x0 + ((x1 - x0) * i) / steps;
+    const arc = wallArcAt(x, panel.width);
+    spine.push({ x, z: arc.z - WALL_BOARD_STANDOFF, yaw: arc.yaw });
+  }
+
+  // The plate is centred, where the arc's yaw is zero and its pushback least,
+  // so it can be one flat quad standing proud of the wall rather than a
+  // second thing that has to be bent.
+  const headerY = top + WALL_HEADER_GAP + WALL_HEADER_H / 2;
+  const centreZ = wallArcAt(panel.width / 2, panel.width).z;
+  return {
+    grid: { left, right: gridRight, top, bottom: gridBottom },
+    bottom: gridBottom - WALL_BOARD_MARGIN,
+    top: headerY + WALL_HEADER_H / 2 + WALL_BOARD_MARGIN * 0.6,
+    spine,
+    header: {
+      centre: {
+        x: panel.width / 2,
+        y: headerY,
+        z: centreZ - WALL_BOARD_STANDOFF + WALL_HEADER_LIFT,
+      },
+      width: Math.min(panel.width * 0.92, (x1 - x0) * 0.62),
+      height: WALL_HEADER_H,
+    },
+  };
 }
 
 /** The section range that owns `page` — the tile a fragment jump should open. */
