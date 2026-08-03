@@ -75,6 +75,58 @@ export function XRViewerAnchor({
 }
 
 /**
+ * How far in front of the eye the flat preview's orbit pivot sits when the
+ * reader is standing INSIDE the scene rather than looking at it. One
+ * centimetre: OrbitControls always keeps the camera on a sphere of the
+ * current radius about its target, so a pivot this close turns an orbit into
+ * a turn of the head, and the eye can never wander more than 2 cm off the
+ * spot it was put on.
+ */
+const LOOK_PIVOT = 0.01;
+
+/**
+ * Stands the flat preview's camera AT `axis` and lets it look around from
+ * there — the elevator's rig.
+ *
+ * The elevator builds a cylinder of pages about the reader, so there is
+ * exactly one right place for the eye: the axis. The default preview rig
+ * orbits the camera around the main panel's centre, which is a point one
+ * reading distance in FRONT of that axis, so the first drag carried the
+ * reader out through the wall of their own building — the section plaque
+ * stopped being dead ahead, the ring stopped being a ring, and the
+ * balustrade started cutting across pages it is nowhere near.
+ *
+ * Rather than replace the controls (they own the drag, the damping, and the
+ * gesture the whole app shares), this parks the pivot a centimetre ahead of
+ * the eye. Rotation still works exactly as before; it just rotates in place.
+ * Panning and dollying are the caller's to disable — there is nowhere to pan
+ * or dolly TO.
+ */
+export function AxisLook({ axis }: { axis: [number, number, number] | null }) {
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls) as {
+    target?: THREE.Vector3;
+    update?: () => void;
+  } | null;
+  const key = axis ? axis.join(",") : null;
+
+  React.useEffect(() => {
+    if (!axis || !controls?.target) return;
+    // Face the plaque, which the ring keeps in the slot dead ahead — i.e.
+    // down −z, the bearing the placement side calls θ = 0.
+    camera.position.set(axis[0], axis[1], axis[2]);
+    controls.target.set(axis[0], axis[1], axis[2] - LOOK_PIVOT);
+    controls.update?.();
+    // `key` stands in for the axis tuple, which is rebuilt on every render of
+    // the parent; re-running on a new *position* is the point, not on a new
+    // array with the same numbers in it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, camera, controls]);
+
+  return null;
+}
+
+/**
  * Field of view for the flat preview. The default 60° lens sits one reading
  * distance from a panel as wide as the reading distance itself, so the page
  * fills the frame by construction — which is right for a view whose whole

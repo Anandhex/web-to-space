@@ -321,12 +321,24 @@ function elevatorFloorRing(
 }
 
 /**
- * Storey height. Any page on the ring can be emphasised up to full size, so
- * floors must clear a FULL-SIZE page, not just a ring-scale one — hence half
- * a full page plus half a ring page, plus the gap.
+ * Storey height. Any page on the ring can be emphasised up to FULL size — the
+ * pointer does it, and it happens in place, on the ring — so the storey has
+ * to be a bay a full-size page fits in, deck to soffit, not merely a shelf
+ * the ring-scale ones sit on. Hence a whole page between the centres, plus
+ * the trim at each end and the void between one storey's floor and the next
+ * one's ceiling.
+ *
+ * Sized off the emphasised page rather than the ring page because the bay has
+ * to hold the biggest thing that can happen in it: at ring height it held the
+ * pages at rest and pointing at one drove it straight through the walkway.
  */
 function elevatorFloorStep(panel: { height: number }): number {
-  return (panel.height + panel.height * ELEVATOR_S) / 2 + ELEVATOR_FLOOR_GAP;
+  const trim = atriumTrim(panel);
+  return (
+    panel.height +
+    (ATRIUM_PAGE_CLEAR * 2 + ATRIUM_RAIL_HEIGHT) * trim +
+    ELEVATOR_FLOOR_GAP
+  );
 }
 
 /**
@@ -350,15 +362,30 @@ export function elevatorFloorTarget(
 }
 
 /**
+ * How far in front of its own ring the emphasised page keeps its corners.
+ * Small — it only has to stop the page touching the wall it came off.
+ */
+const ELEVATOR_EMPHASIS_CLEAR = 0.06;
+
+/**
  * Emphasis for the page the reader is pointing at. It does NOT fly to the
  * reading position — it stays on its own bearing and simply grows to full
- * size and closes in to reading distance, so the room keeps its shape and
+ * size and closes in toward reading distance, so the room keeps its shape and
  * the page never loses its place in the section.
  *
  * Works off the placement alone: the page's inward normal is
  * (sin yaw, 0, cos yaw) because every ring page faces the axis, and the
  * axis is where the reader stands. The renderer eases the result — AtPos the
  * position, EasedScale the size — so this is a plain target transform.
+ *
+ * How far in it comes is NOT simply reading distance. The page is flat and it
+ * has just grown to full width, so its corners stand further from the axis
+ * than its centre does — by hypot(d, width/2) — while every page still on the
+ * ring lies at or beyond the ring radius. On a Quest that put the corners at
+ * 1.389 against a ring at 1.400: eleven millimetres, i.e. the magnified page
+ * and its neighbours coplanar, interpenetrating and z-fighting. So it stops
+ * at whichever is nearer: reading distance, or the distance that keeps its
+ * CORNERS clear of the ring.
  */
 export function elevatorEmphasis(
   p: PagePlacement,
@@ -373,9 +400,20 @@ export function elevatorEmphasis(
   const cy = p.offset.y - (panel.height * p.scale) / 2;
   const cz = p.offset.z - ((panel.width * p.scale) / 2) * sinY;
 
-  // Close in along the inward normal until the page is at reading distance.
+  // Close in along the inward normal, but no further out than the ring will
+  // let a full-width page sit without cutting into the pages either side.
   const r = Math.hypot(cx - panel.width / 2, cz - viewingDistance);
-  const approach = Math.max(0, r - viewingDistance);
+  const corners = Math.sqrt(
+    Math.max(
+      0,
+      (r - ELEVATOR_EMPHASIS_CLEAR) * (r - ELEVATOR_EMPHASIS_CLEAR) -
+        (panel.width / 2) * (panel.width / 2),
+    ),
+  );
+  // …and never closer than arm's reach, however tight the ring: a page on the
+  // reader's nose would be a worse answer than a page that overlaps one.
+  const target = Math.min(viewingDistance, Math.max(corners, 0.35));
+  const approach = Math.max(0, r - target);
   const ecx = cx + sinY * approach;
   const ecz = cz + cosY * approach;
 
@@ -465,6 +503,234 @@ function elevator(
     }
   }
   return out;
+}
+
+// ── Elevator shell (the atrium the rings hang in) ────────────
+//
+// Rings of pages floating in an empty void read as a debug view of a
+// cylinder, not as a place: there is nothing to tell the eye how far away a
+// page is, where one storey stops and the next begins, or which way is up.
+// So the shaft is BUILT — each storey gets the two horizontal lines a real
+// gallery floor has (a deck under its pages, a lit soffit over them), a
+// balustrade at the edge of the well, and a wall behind the pages closing the
+// void off. The reader stands in the well at the axis, which is what makes
+// this an atrium seen from the lift rather than a room.
+//
+// Sizes only. What the surfaces are MADE of — and the light on them — is the
+// renderer's business (scene/elevator-decor.tsx), exactly as with the rooms
+// shell above.
+
+// Every clearance below is quoted for a Quest-sized page and then scaled by
+// `trim` (see ATRIUM_TRIM_REF). The storeys are only ELEVATOR_FLOOR_GAP apart
+// on top of the pages themselves, so on a small-panel profile — a Ray-Ban
+// page is barely half a Quest's — absolute trim eats the entire gap between
+// one storey's deck and the next one's ceiling and the building closes up.
+
+/** The page height these clearances were drawn against (Quest 3 at ring scale). */
+const ATRIUM_TRIM_REF = 0.54;
+/** How far in from the ring the walkway's inner edge (the well) sits. */
+const ATRIUM_DECK_INNER = 0.55;
+/** …and how far past the ring its outer edge runs, up to the shaft wall. */
+const ATRIUM_DECK_OUTER = 0.26;
+/**
+ * Headroom around a page at FULL size — which is what the pointer grows one
+ * to, in place on the ring. Measured off the emphasised page, not the
+ * ring-scale one: a bay sized to the pages at rest is a bay the page you are
+ * pointing at sticks out of at both ends, and the deck is a solid annulus for
+ * it to stick out THROUGH.
+ */
+const ATRIUM_PAGE_CLEAR = 0.06;
+/**
+ * The balustrade round the well, which hangs BELOW that headroom rather than
+ * standing in it. The rail runs at the well's radius, half a metre nearer the
+ * reader than the ring, so it draws a line across everything on the ring that
+ * is lower than it is: with its top under the emphasised page's bottom edge
+ * it crosses nothing, whatever the pointer is doing.
+ */
+const ATRIUM_RAIL_HEIGHT = 0.16;
+/** Gap left between the storey plaque and the surfaces it stands between. */
+const ATRIUM_PLAQUE_REVEAL = 0.012;
+
+/**
+ * How thick the atrium's trim may be on this build — see ElevatorShell.trim.
+ * Both the storey pitch and the shell itself are sized through it, so it has
+ * to be one function and not a number computed in two places.
+ */
+function atriumTrim(panel: { height: number }): number {
+  return Math.min(
+    1,
+    Math.max(0.4, (panel.height * ELEVATOR_S) / ATRIUM_TRIM_REF),
+  );
+}
+/** The shaft wall stands this far behind the pages. */
+const ATRIUM_WALL_STANDOFF = 0.34;
+/** How far past the top and bottom storeys the shaft runs on before it fades.
+ *  A shaft that stopped level with the last floor would be a tube, not a
+ *  building you are riding through the middle of. */
+const ATRIUM_SHAFT_OVERRUN = 1.1;
+
+/** One storey of the atrium: its ring, the surfaces around it, its plaque. */
+export interface ElevatorFloorShell {
+  /** Storey offset from the reader's own: −1 is above (earlier), +1 below. */
+  delta: number;
+  /** Which section this is, and how many the document has. */
+  index: number;
+  floorCount: number;
+  label: string;
+  /** Pages the section holds, and how many of them fit on the ring. */
+  pageCount: number;
+  shownCount: number;
+  /** Ring axis centre, panel-anchor-relative (the axis is the reader). */
+  centre: { x: number; y: number; z: number };
+  radius: number;
+  /** The pages' own vertical extent — the band the storey's surfaces frame. */
+  bandTopY: number;
+  bandBottomY: number;
+  /** The walkway under the pages, and the lit ceiling over them. */
+  deckY: number;
+  soffitY: number;
+  /** The reserved slot dead ahead, where the storey's plaque hangs. */
+  plaque: {
+    /** Centre of the plate (not a top-left anchor — the plaque is a sign). */
+    offset: { x: number; y: number; z: number };
+    rotation: { x: number; y: number; z: number };
+    size: { width: number; height: number };
+  };
+}
+
+export interface ElevatorShell {
+  floors: ElevatorFloorShell[];
+  /** The shaft wall: one cylinder around every visible storey. */
+  shaft: { centreX: number; centreZ: number; radius: number; topY: number; bottomY: number };
+  /** Deck/soffit ring radii, as offsets from a storey's own ring radius —
+   *  which varies per storey, so they cannot be radii themselves. */
+  deckInner: number;
+  deckOuter: number;
+  /**
+   * How thick the renderer may draw the trim (fascias, rails, cove strips):
+   * 1 on a Quest-sized page, less on a smaller one. The gap left between two
+   * storeys scales with the page, so anything the renderer hangs off a deck
+   * has to scale with it too or the floors merge.
+   */
+  trim: number;
+  /**
+   * The balustrade standing on the deck's inner edge. It tops out below the
+   * bottom edge of a full-size page, so it never draws itself across anything
+   * on the ring — see ATRIUM_RAIL_HEIGHT.
+   */
+  railHeight: number;
+  /** Names of the storeys just off the top and bottom of the shaft, for the
+   *  directory's ▲/▼ lines — the whole point of a lift's floor indicator is
+   *  telling you what is on the floors you cannot see. */
+  above: string | null;
+  below: string | null;
+}
+
+/**
+ * The atrium around the rings: one storey per visible floor, plus the shaft
+ * wall enclosing all of them. Returns an empty shell for every other view.
+ */
+export function computeElevatorShell(
+  mode: PageDistribution,
+  pageCount: number,
+  panel: { width: number; height: number },
+  focus: number,
+  opts: PagePlacementOptions = {},
+): ElevatorShell | null {
+  if (mode !== "elevator" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return null;
+  const viewingDistance = opts.viewingDistance ?? 1.2;
+  const ranges = elevatorFloors(
+    resolveRanges(opts.sectionRanges, pageCount),
+    pageCount,
+  );
+  const { index: focusFloor } = rangeOf(focus, ranges, pageCount);
+  const ph = panel.height * ELEVATOR_S;
+  const trim = atriumTrim(panel);
+
+  const floors: ElevatorFloorShell[] = [];
+  let maxRadius = 0;
+  for (let s = 0; s < ranges.length; s++) {
+    const delta = s - focusFloor;
+    if (Math.abs(delta) > ELEVATOR_FLOOR_WINDOW) continue;
+    const isFocusFloor = delta === 0;
+    const { count, radius } = elevatorFloorRing(
+      ranges[s],
+      isFocusFloor,
+      focus,
+      panel,
+      viewingDistance,
+    );
+    const centre = elevatorFloorCentre(delta, panel, viewingDistance);
+    maxRadius = Math.max(maxRadius, radius);
+    // The plaque fills its bay — from the top of the balustrade to the
+    // soffit, less a reveal at each end — rather than stopping level with the
+    // pages. It is the one slot on the ring that is architecture rather than
+    // content, and a floor indicator that fills the bay reads as built into
+    // the wall; at page height it read as a page with no page on it, and its
+    // rows of signage had nowhere to go. It stops AT the rail rather than
+    // running past it to the deck, because a plate whose last two rows sit
+    // behind the balustrade is a plate with its controls hidden.
+    // The bay holds whatever the pointer does to a page in it: a FULL-SIZE
+    // page, plus headroom at the ceiling, plus the balustrade's whole height
+    // below the page's bottom edge — the rail has to finish under the biggest
+    // page there can be, or it draws itself across the one being read. The
+    // ring pages, at 0.6 of full size, therefore hang in a tall bay with wall
+    // to spare above and below them.
+    const soffitY = centre.y + panel.height / 2 + ATRIUM_PAGE_CLEAR * trim;
+    const railTopY = centre.y - panel.height / 2 - ATRIUM_PAGE_CLEAR * trim;
+    const deckY = railTopY - ATRIUM_RAIL_HEIGHT * trim;
+    const plaqueBottom = centre.y - ph / 2 + ATRIUM_PLAQUE_REVEAL * trim;
+    const plaqueTop = soffitY - ATRIUM_PLAQUE_REVEAL * trim;
+    floors.push({
+      delta,
+      index: s,
+      floorCount: ranges.length,
+      label: ranges[s].label,
+      pageCount: ranges[s].end - ranges[s].start + 1,
+      shownCount: count,
+      centre,
+      radius,
+      bandTopY: centre.y + ph / 2,
+      bandBottomY: centre.y - ph / 2,
+      deckY,
+      soffitY,
+      plaque: {
+        // Slot 0 is dead ahead of the reader (see elevatorAngle), and a slot
+        // is one page wide — so the plaque is exactly as wide as the pages
+        // flanking it, part of the wall rather than floating in front of it.
+        offset: {
+          x: centre.x,
+          y: (plaqueBottom + plaqueTop) / 2,
+          z: centre.z - radius,
+        },
+        rotation: rot0, // θ = 0: facing the axis is facing the reader
+        size: {
+          width: panel.width * ELEVATOR_S,
+          height: plaqueTop - plaqueBottom,
+        },
+      },
+    });
+  }
+  if (floors.length === 0) return null;
+
+  const top = floors[0]; // ranges run top (earliest) to bottom
+  const bottom = floors[floors.length - 1];
+  return {
+    floors,
+    shaft: {
+      centreX: floors[0].centre.x,
+      centreZ: floors[0].centre.z,
+      radius: maxRadius + ATRIUM_WALL_STANDOFF * trim,
+      topY: top.soffitY + ATRIUM_SHAFT_OVERRUN,
+      bottomY: bottom.deckY - ATRIUM_SHAFT_OVERRUN,
+    },
+    deckInner: -ATRIUM_DECK_INNER * trim,
+    deckOuter: ATRIUM_DECK_OUTER * trim,
+    trim,
+    railHeight: ATRIUM_RAIL_HEIGHT * trim,
+    above: ranges[top.index - 1]?.label ?? null,
+    below: ranges[bottom.index + 1]?.label ?? null,
+  };
 }
 
 // ── Wall ─────────────────────────────────────────────────────
@@ -2066,12 +2332,6 @@ export interface FieldLabel {
   offset: { x: number; y: number; z: number };
   rotation: { x: number; y: number; z: number };
   fontSize: number;
-  /**
-   * elevator: the plaque is a CARD occupying its ring slot, the same size as
-   * the pages either side of it, so the name reads as part of the wall. Bare
-   * text (rooms) leaves this undefined.
-   */
-  card?: { width: number; height: number };
   /** 0…1, matching the recession of the ring the plaque belongs to. */
   opacity?: number;
   /**
@@ -2084,58 +2344,6 @@ export interface FieldLabel {
 }
 
 /**
- * Elevator: one plaque per floor naming its section, occupying that ring's
- * reserved centre slot — same radius, same band height as the pages either
- * side of it, on every floor, so the name reads as part of the wall rather
- * than as something floating in front of it. The floor you're on gets a
- * larger face; nothing else about it differs.
- */
-function elevatorFieldLabels(
-  pageCount: number,
-  panel: { width: number; height: number },
-  focus: number,
-  sectionRanges: SectionPageRange[],
-  viewingDistance: number,
-): FieldLabel[] {
-  const ranges = elevatorFloors(sectionRanges, pageCount);
-  const { index: focusFloor } = rangeOf(focus, ranges, pageCount);
-  const out: FieldLabel[] = [];
-
-  for (let s = 0; s < ranges.length; s++) {
-    const floorDelta = s - focusFloor;
-    if (Math.abs(floorDelta) > ELEVATOR_FLOOR_WINDOW) continue;
-    const text = ranges[s].label;
-    if (!text) continue; // a headingless floor gets no sign, not a fake one
-    const isFocusFloor = floorDelta === 0;
-    const { radius } = elevatorFloorRing(
-      ranges[s],
-      isFocusFloor,
-      focus,
-      panel,
-      viewingDistance,
-    );
-    const centre = elevatorFloorCentre(floorDelta, panel, viewingDistance);
-    out.push({
-      text,
-      offset: {
-        x: panel.width / 2,
-        y: centre.y, // on the wall, at the band height of its own pages
-        z: centre.z - radius, // the ring's centre slot, dead ahead
-      },
-      rotation: rot0, // θ = 0, so facing the axis means facing the reader
-      fontSize: isFocusFloor ? 0.1 : 0.085,
-      // A card filling the slot, same size as the pages flanking it.
-      card: {
-        width: panel.width * ELEVATOR_S,
-        height: panel.height * ELEVATOR_S,
-      },
-      opacity: isFocusFloor ? 1 : 0.45,
-    });
-  }
-  return out;
-}
-
-/**
  * Rooms: one plaque per section, hung over that room's mouth and facing the
  * aisle — the sign above a gallery door, readable from the corridor before
  * you walk in as well as from inside the room across from it.
@@ -2144,25 +2352,12 @@ export function computeFieldLabels(
   mode: PageDistribution,
   pageCount: number,
   panel: { width: number; height: number },
-  focus: number,
+  _focus: number,
   opts: PagePlacementOptions = {},
 ): FieldLabel[] {
-  if (
-    (mode !== "rooms" && mode !== "elevator") ||
-    pageCount < MIN_PAGES_FOR_PAGE_VIEWS
-  )
-    return [];
-  const ranges = resolveRanges(opts.sectionRanges, pageCount);
-  const viewingDistance = opts.viewingDistance ?? 1.2;
-  if (mode === "elevator") {
-    return elevatorFieldLabels(
-      pageCount,
-      panel,
-      focus,
-      ranges,
-      viewingDistance,
-    );
-  }
+  // The elevator's plaques are part of its shell — a lift's floor indicator
+  // says more than a name (see ElevatorDirectory) — so it builds its own.
+  if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return [];
   const m = planFor(pageCount, panel, opts);
   const floorY = opts.floorY ?? -panel.height * 2;
   const doorTop = floorY + DOOR_HEIGHT;

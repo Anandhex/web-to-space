@@ -84,7 +84,7 @@ import { Web2VRScene } from "./Web2VRScene";
 import { EMPTY_CONFIG } from "./scene/config";
 import { FontContext, type PageState } from "./scene/contexts";
 import { usePipeline } from "./scene/use-pipeline";
-import { XRViewerAnchor, PreviewFieldOfView } from "./scene/camera";
+import { XRViewerAnchor, PreviewFieldOfView, AxisLook } from "./scene/camera";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
 import { VRButton, styles } from "./scene/chrome";
 import {
@@ -420,6 +420,27 @@ export function XRSceneRenderer({
     ];
   }, [deviceProfile, mainPanelId, plan]);
 
+  /**
+   * The elevator's ring AXIS in world space — where the reader stands.
+   *
+   * The view builds a cylinder of pages around this point (see
+   * renderer/page-placements.ts: the ring centre is the panel slot pushed one
+   * viewing distance forward, so the axis runs through the reader), and every
+   * bearing on the ring is measured from it. Standing anywhere else is
+   * standing outside your own building, so this — not the panel's centre — is
+   * what both the headset and the flat preview are put on.
+   */
+  const elevatorAxis = useMemo((): [number, number, number] | null => {
+    if (viewMode !== "elevator") return null;
+    const e = mainPanelId ? plan?.entries[mainPanelId] : null;
+    if (!e || !plan) return null;
+    return [
+      e.position.x + e.size.width / 2,
+      e.position.y - e.size.height / 2,
+      e.position.z + plan.config.viewingDistance,
+    ];
+  }, [viewMode, mainPanelId, plan]);
+
   useEffect(() => {
     if (plan && onPlanReady) onPlanReady(plan);
   }, [plan, onPlanReady]);
@@ -542,7 +563,7 @@ export function XRSceneRenderer({
               <XRViewerAnchor
                 target={
                   (plan?.referenceFrame ?? "world") === "world"
-                    ? panelCentre
+                    ? (elevatorAxis ?? panelCentre)
                     : null
                 }
               />
@@ -558,7 +579,24 @@ export function XRSceneRenderer({
                   viewMode === "rooms" ? ROOMS_PREVIEW_FOV : DEFAULT_PREVIEW_FOV
                 }
               />
-              {viewMode === "rooms" ? (
+              {viewMode === "elevator" ? (
+                /* The atrium lights itself: a cove over every storey (see
+                   scene/elevator-decor.tsx) throwing a warm wash down that
+                   floor's ring, and a dimmer one over the floors above and
+                   below. So the global light here is only the bounce off the
+                   shaft — enough to keep the architecture readable, low
+                   enough that the coves still do the modelling. As in rooms,
+                   no environment map: a city HDR flattens the coves, and
+                   offline it never loads at all. */
+                <>
+                  <ambientLight intensity={0.34} color="#EDE9E2" />
+                  <hemisphereLight
+                    intensity={0.3}
+                    color="#FFEBD2"
+                    groundColor="#4A4C55"
+                  />
+                </>
+              ) : viewMode === "rooms" ? (
                 /* A gallery is a BRIGHT room. The fittings in the building
                    (see scene/room-decor.tsx) give it pools and direction;
                    this is the light bouncing round a white box, and it has
@@ -653,17 +691,34 @@ export function XRSceneRenderer({
                     }
 
                     {sessionState !== "immersive" && (
-                      <OrbitControls
-                        // makeDefault so the scene can find these controls
-                        // (useThree(s => s.controls)) — the rooms view puts
-                        // the camera back on the reading line when the reader
-                        // clicks a spot, which it cannot do without them.
-                        makeDefault
-                        target={readingLook}
-                        enablePan
-                        enableDamping
-                        dampingFactor={0.08}
-                      />
+                      <>
+                        <OrbitControls
+                          // makeDefault so the scene can find these controls
+                          // (useThree(s => s.controls)) — the rooms view puts
+                          // the camera back on the reading line when the reader
+                          // clicks a spot, and the elevator stands the reader
+                          // on the ring axis, neither of which it can do
+                          // without them.
+                          makeDefault
+                          // In the elevator AxisLook owns the pivot — it sits
+                          // a centimetre ahead of the eye, not on the axis
+                          // itself, and two effects writing the same target
+                          // would race.
+                          target={elevatorAxis ? undefined : readingLook}
+                          // In the elevator the reader is INSIDE the scene:
+                          // dragging turns the head (AxisLook parks the pivot
+                          // a centimetre ahead of the eye) and there is
+                          // nowhere to pan or dolly to — the whole view is
+                          // built around one standing point.
+                          enablePan={!elevatorAxis}
+                          enableZoom={!elevatorAxis}
+                          minDistance={elevatorAxis ? 0.01 : 0}
+                          maxDistance={elevatorAxis ? 0.01 : Infinity}
+                          enableDamping
+                          dampingFactor={0.08}
+                        />
+                        <AxisLook axis={elevatorAxis} />
+                      </>
                     )}
 
                     {/* Debug helpers */}

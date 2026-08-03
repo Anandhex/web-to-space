@@ -39,6 +39,7 @@ import {
   computeRoomSlabs,
   computeRoomFixtures,
   computeReadingSpots,
+  computeElevatorShell,
   roomAtPose,
   roomReadingPose,
   elevatorEmphasis,
@@ -70,6 +71,11 @@ import {
   useRoomWalking,
 } from "./room-walk";
 import { RoomShell, RoomSlabs, RoomLights, GALLERY_SIGN } from "./room-decor";
+import {
+  ElevatorShaft,
+  ElevatorDirectory,
+  ElevatorSlotMark,
+} from "./elevator-decor";
 
 // ── Section ranges (grouping for wall / deck / rooms / elevator) ──
 //
@@ -203,12 +209,11 @@ export function sectionLinksFor(
 }
 
 /**
- * A section plaque. The elevator gives it a `card`, so it renders as a panel
- * filling its ring slot — the same size as the pages either side of it, part
- * of the wall rather than floating in front of it. Rooms marks it a `sign`:
- * an illuminated plate over the doorway, because the lintel it hangs on is
- * the darkest surface in the corridor and a lit sign is how a real building
- * solves exactly that.
+ * A section plaque. Rooms marks it a `sign`: an illuminated plate over the
+ * doorway, because the lintel it hangs on is the darkest surface in the
+ * corridor and a lit sign is how a real building solves exactly that. (The
+ * elevator's plaques are a floor directory rather than a name — they are part
+ * of its shell, see ElevatorDirectory.)
  */
 function FieldLabelText({
   label,
@@ -256,18 +261,6 @@ function FieldLabelText({
           </mesh>
         </>
       )}
-      {label.card && (
-        <mesh position={[0, 0, -0.004]}>
-          <planeGeometry args={[label.card.width, label.card.height]} />
-          <meshStandardMaterial
-            color={theme.panelBg}
-            transparent
-            opacity={opacity}
-            roughness={0.85}
-            metalness={0}
-          />
-        </mesh>
-      )}
       <Text
         font={fontType}
         anchorX="center"
@@ -278,11 +271,9 @@ function FieldLabelText({
         fontSize={label.fontSize}
         color={plate ? GALLERY_SIGN.text : theme.emphasisCol}
         fillOpacity={opacity}
-        outlineWidth={label.card || plate ? 0 : label.fontSize * 0.06}
+        outlineWidth={plate ? 0 : label.fontSize * 0.06}
         outlineColor={theme.panelBg}
-        maxWidth={
-          label.card ? label.card.width * 0.86 : plate ? plate.width * 0.9 : 2.6
-        }
+        maxWidth={plate ? plate.width * 0.9 : 2.6}
       >
         {label.text}
       </Text>
@@ -542,6 +533,17 @@ export function PageGhostField({
     [mode, entry, pageCount, focus, roomOpts],
   );
 
+  // elevator: the atrium the rings hang in — a deck and a lit soffit per
+  // storey, a balustrade round the well the reader stands in, and the shaft
+  // wall behind the pages. Scenery only; the rings themselves are unchanged.
+  const elevatorShell = React.useMemo(
+    () =>
+      mode && entry
+        ? computeElevatorShell(mode, pageCount, entry.size, focus, roomOpts)
+        : null,
+    [mode, entry, pageCount, focus, roomOpts],
+  );
+
   // elevator: the page under the pointer/ray grows and closes in on its own
   // bearing (see elevatorEmphasis) instead of anything flying to the reader.
   const [pointedAt, setPointedAt] = React.useState<number | null>(null);
@@ -629,6 +631,12 @@ export function PageGhostField({
 
   const field = (
     <>
+      {elevatorShell && (
+        <>
+          <ElevatorShaft shell={elevatorShell} anchor={entry.position} />
+          <ElevatorDirectory shell={elevatorShell} anchor={entry.position} />
+        </>
+      )}
       {roomShell.length > 0 && (
         <RoomShell
           walls={roomShell}
@@ -683,7 +691,14 @@ export function PageGhostField({
         const p =
           elevator && pointedAt === raw.pageIndex
             ? elevatorEmphasis(raw, entry.size, viewingDistance)
-            : raw;
+            : elevator && pointedAt !== null
+              ? // A magnified page is full width where a slot is one ring-page
+                // wide, so it necessarily stands in front of the pages either
+                // side of it. Stepping those back while it is up makes that
+                // read as one page in front of the others rather than as two
+                // pages fighting over the same piece of wall.
+                { ...raw, recession: Math.min(1, raw.recession + 0.3) }
+              : raw;
         const ghostEntry = ghostEntryFor(p);
         const w = entry.size.width;
         const h = entry.size.height;
@@ -743,6 +758,21 @@ export function PageGhostField({
                     pageIndex={p.pageIndex}
                     heading={headings.get(p.pageIndex)}
                     recession={p.recession}
+                  />
+                )}
+                {/* The elevator numbers every slot, and marks the one being
+                    read: nothing moves when the focus changes here, so a mark
+                    under the card is the only thing that can say where in the
+                    section the reader is. */}
+                {elevator && elevatorShell && (
+                  <ElevatorSlotMark
+                    width={cellW}
+                    height={cellH}
+                    trim={elevatorShell.trim}
+                    pageIndex={p.pageIndex}
+                    current={p.isStage}
+                    pointed={pointedAt === p.pageIndex}
+                    dim={!!p.offFloor}
                   />
                 )}
                 {/* In the elevator the current page sits in the wall like
