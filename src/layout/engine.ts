@@ -1036,6 +1036,11 @@ export function computeLayoutPlan(
     template: resolvedTemplate,
     config,
     slots,
+    // Which of those slots actually received a landmark. `slots` is the
+    // template's full roster and says nothing about whether the document has
+    // anything to put in each one — the renderer needs the difference so it
+    // does not draw furniture around an empty rail.
+    occupiedSlots: [...usedSlots],
     diagnostics: diag,
     referenceFrame: arrangement?.frame ?? "world",
     contentOnly: contentOnly || undefined,

@@ -145,6 +145,14 @@ export interface LayoutPlan {
    * tuning HUD reads this to enumerate tunable slots and seed its sliders.
    */
   slots: SlotMap;
+  /**
+   * The slots a landmark was actually placed into, in the order they were
+   * claimed. `slots` is the roster the template offers; this is the subset the
+   * document filled. A page with no `<nav>` still gets a navigation slot, and
+   * anything drawn from the roster alone (a mount, a backing) would appear as
+   * an empty panel hanging in the workspace.
+   */
+  occupiedSlots?: SlotName[];
   diagnostics: LayoutDiagnostics;
   /**
    * Reference frame the landmark positions are authored in. The renderer wraps

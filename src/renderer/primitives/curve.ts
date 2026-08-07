@@ -35,15 +35,6 @@ import * as THREE from "three";
 export const PANEL_CURVE_STRENGTH = 1;
 
 /**
- * Carousel ghost (prev/next page preview) panels curve on their OWN, flatter
- * cylinder — their authored radius is multiplied by this. Seen off-axis at the
- * sides, a ghost bent as tightly as the head-on main panel reads as oddly
- * over-curved, so a value > 1 relaxes it. Tune to taste (1 = identical to the
- * main panel).
- */
-export const CAROUSEL_GHOST_CURVE_SCALE = 1.8;
-
-/**
  * Resolve a panel's authored curve radius into the effective render radius,
  * folding in the global strength knob. Returns null when the panel should stay
  * flat (no authored radius, or strength dialled to 0) — callers then skip

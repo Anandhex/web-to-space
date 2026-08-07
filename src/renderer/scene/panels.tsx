@@ -16,13 +16,14 @@ import { PanelGradientOverlay } from "../PanelGradient";
 import {
   Surface,
   ClipPlanesContext,
+  CardSelfClipContext,
   PanelOriginYContext,
   PanelCurveContext,
   usePanelCurve,
   resolveCurveRadius,
   curvePoint,
   makeBentPlane,
-  CAROUSEL_GHOST_CURVE_SCALE,
+  Z_LAYER_ACCENT,
   type PanelCurve,
 } from "../primitives";
 import {
@@ -173,6 +174,9 @@ export function CarouselGhostPanel({
   targetPage,
   primitiveMap,
   opacity,
+  edgeSide,
+  edgeColor,
+  scale = 1,
 }: {
   primitive: XRPrimitive;
   plan: LayoutPlan;
@@ -180,6 +184,23 @@ export function CarouselGhostPanel({
   targetPage: number;
   primitiveMap: Map<string, XRPrimitive>;
   opacity: number;
+  /**
+   * The edge of the ghost that faces the page being read: the LEFT edge of
+   * the next page, the RIGHT edge of the previous one. Banding it in the
+   * section's own colour is what says "the next page, and it is still in this
+   * section" — the same hue the wall and the deck give that section — and it
+   * marks the seam between two pages standing side by side on the arc.
+   */
+  edgeSide?: "left" | "right";
+  edgeColor?: string;
+  /**
+   * How much smaller than the page being read this neighbour is drawn
+   * (`carouselGhostPlacement().scale`). A neighbour is the same panel at a
+   * reduced size, and its children carry the MAIN panel's panel-absolute
+   * layout, so the shrink is one group scale about the top-left anchor — not
+   * a re-layout. `entry.size` therefore stays the full size throughout.
+   */
+  scale?: number;
 }) {
   const depth = React.useContext(StackDepthContext);
   const ex = entry.position.x;
@@ -191,19 +212,23 @@ export function CarouselGhostPanel({
     entry.rotation.z,
   ];
 
-  // Ghost previews curve on their own, flatter cylinder so the off-axis side
-  // panels don't read as oddly over-curved next to the head-on main panel.
+  // A neighbour sits on the same user-centred cylinder as the page being read
+  // (see carouselGhostPlacement), so it bends on the same radius — that is
+  // what makes the three of them read as one continuous surround rather than
+  // three separately-curved cards. The bend is built in the group's own
+  // coordinates, which the group scale then shrinks along with everything
+  // else, so the local radius is divided by that scale to leave the curvature
+  // the reader actually sees equal to the cylinder's.
   const ghostRadius = resolveCurveRadius(entry.curveRadius);
   const panelCurve: PanelCurve | null = ghostRadius
-    ? {
-        radius: ghostRadius * CAROUSEL_GHOST_CURVE_SCALE,
-        centerX: entry.size.width / 2,
-      }
+    ? { radius: ghostRadius / scale, centerX: entry.size.width / 2 }
     : null;
 
+  // The panel's world-space top/bottom edges — the scaled ones, since that is
+  // where the drawn page actually ends.
   const panelClipPlanes = React.useMemo(
-    () => buildPanelClipPlanes(ey, entry.size.height),
-    [ey, entry.size.height],
+    () => buildPanelClipPlanes(ey, entry.size.height * scale),
+    [ey, entry.size.height, scale],
   );
 
   // Ghost pageState: only this panel's page is overridden
@@ -239,29 +264,59 @@ export function CarouselGhostPanel({
           </group>
         );
       })}
-      <group position={[ex, ey, ez]} rotation={rot} raycast={() => null}>
+      <group
+        position={[ex, ey, ez]}
+        rotation={rot}
+        scale={scale}
+        raycast={() => null}
+      >
         <PanelCurveContext.Provider value={panelCurve}>
           <PanelBacking
             entry={zeroedEntry(entry)}
             ghostOpacity={opacity}
             curve={panelCurve}
           />
+          {edgeSide && edgeColor && (
+            <Surface
+              width={Math.max(0.009, entry.size.width * 0.016)}
+              height={entry.size.height}
+              radius={0.004}
+              color={edgeColor}
+              flat
+              opacity={Math.min(1, opacity + 0.4)}
+              origin={[
+                edgeSide === "left"
+                  ? entry.size.width * 0.008
+                  : entry.size.width * 0.992,
+                -entry.size.height / 2,
+              ]}
+              z={Z_LAYER_ACCENT}
+            />
+          )}
           <ClipPlanesContext.Provider value={panelClipPlanes}>
             <PanelOriginYContext.Provider value={ey}>
-              <StackDepthContext.Provider value={depth + 1}>
-                {primitive.children
-                  .filter((child) => !isExtractedComplementary(child, plan))
-                  .map((child) => (
-                    <PrimitiveDispatcher
-                      key={child.id}
-                      primitive={child}
-                      plan={plan}
-                      pageState={ghostPageState}
-                      setPage={_noop}
-                      primitiveMap={primitiveMap}
-                    />
-                  ))}
-              </StackDepthContext.Provider>
+              {/* A card's self-clip planes are world-space, reconstructed
+                  from panelOriginY + its own panel-absolute y — which the
+                  group scale has moved. Rather than thread the scale through
+                  every mesh, a shrunken ghost falls back to the panel's own
+                  clip bounds, the same escape hatch parent-relative landmark
+                  panels use (see CardSelfClipContext). */}
+              <CardSelfClipContext.Provider value={scale === 1}>
+                <StackDepthContext.Provider value={depth + 1}>
+                  {primitive.children
+                    .filter((child) => !isExtractedComplementary(child, plan))
+                    .map((child) => (
+                      <PrimitiveDispatcher
+                        key={child.id}
+                        primitive={child}
+                        plan={plan}
+                        pageState={ghostPageState}
+                        setPage={_noop}
+                        primitiveMap={primitiveMap}
+                      />
+                    ))}
+                </StackDepthContext.Provider>
+              </CardSelfClipContext.Provider>
             </PanelOriginYContext.Provider>
           </ClipPlanesContext.Provider>
         </PanelCurveContext.Provider>

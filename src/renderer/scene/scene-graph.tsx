@@ -32,6 +32,9 @@ import {
 import { hasDescendant } from "./dispatch-children";
 import { PrimitiveDispatcher } from "./dispatcher";
 import { CarouselGhostPanel } from "./panels";
+import { sectionRangesFor } from "./page-ghosts";
+import { isDarkTheme, sectionTint } from "./section-tint";
+import { useTheme } from "../theme";
 import { PageGhostField } from "./page-ghosts";
 import { LinkPreviewProvider } from "./link-preview";
 import { MIN_PAGES_FOR_PAGE_VIEWS } from "../page-placements";
@@ -391,6 +394,17 @@ export function XRSceneGraph({
     );
   }, [viewMode, scene.root.children, plan.entries]);
 
+  const carouselTheme = useTheme();
+  const carouselDark = React.useMemo(
+    () => isDarkTheme(carouselTheme),
+    [carouselTheme],
+  );
+  const carouselRanges = React.useMemo(() => {
+    if (viewMode !== "carousel" || !mainContentPanel) return [];
+    const pc = plan.entries[mainContentPanel.id]?.pagination?.pageCount ?? 1;
+    return sectionRangesFor(plan, pc);
+  }, [viewMode, mainContentPanel, plan]);
+
   const navigate = useCallback(
     (href: string) => {
       if (href.startsWith("#")) {
@@ -471,7 +485,15 @@ export function XRSceneGraph({
           if (!entry) return null;
           // Ghost panels: default placement from the shared helper (so the
           // tuning HUD seeds from the same values), overridable live per ghost.
-          const ghost = carouselGhostPlacement(entry.position, entry.size);
+          // The arc is derived from the reading distance, not from the panel's
+          // own z: `main` is placed head-on at −d so the two agree today, but
+          // passing it explicitly keeps the neighbours on the arc if a slot
+          // override ever moves the panel.
+          const ghost = carouselGhostPlacement(
+            entry.position,
+            entry.size,
+            plan.config.viewingDistance,
+          );
           const poseEntry = (
             base: { position: { x: number; y: number; z: number }; rotation: LayoutEntry["rotation"] },
             ov: GhostPose | undefined,
@@ -487,6 +509,15 @@ export function XRSceneGraph({
           const pageCount = entry.pagination?.pageCount ?? 1;
           const prevPage = Math.max(0, currentPage - 1);
           const nextPage = Math.min(pageCount - 1, currentPage + 1);
+          // The hue each neighbour's edge band wears: the section that page
+          // belongs to, so the sliver says which page is over there AND
+          // whether it is still in the section being read.
+          const edgeHue = (p: number): string | undefined => {
+            const i = carouselRanges.findIndex(
+              (r) => p >= r.start && p <= r.end,
+            );
+            return i >= 0 ? sectionTint(i, carouselDark).accent : undefined;
+          };
 
           return (
             <React.Fragment key={primitive.id}>
@@ -498,6 +529,9 @@ export function XRSceneGraph({
                   targetPage={prevPage}
                   primitiveMap={primitiveMap}
                   opacity={0.45}
+                  scale={ghost.scale}
+                  edgeSide="right"
+                  edgeColor={edgeHue(prevPage)}
                 />
               )}
               <PrimitiveDispatcher
@@ -515,6 +549,9 @@ export function XRSceneGraph({
                   targetPage={nextPage}
                   primitiveMap={primitiveMap}
                   opacity={0.45}
+                  scale={ghost.scale}
+                  edgeSide="left"
+                  edgeColor={edgeHue(nextPage)}
                 />
               )}
             </React.Fragment>

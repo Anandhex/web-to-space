@@ -72,7 +72,7 @@ import type {
 } from "../layout/types";
 import type { ParserConfig, ParserBackend } from "../ir/types";
 import type { ViewMode, Tab } from "../components/viewTypes";
-import { XR3DTabBar } from "../components/XR3DChrome";
+import { deckLookAt, DECK_STAGE_LIFT } from "./page-placements";
 import { ThemeContext, LIGHT_THEME, type XRTheme } from "./theme";
 import { RenderMetricsContext } from "./primitives";
 import { useXRSession } from "./useXRSession";
@@ -86,6 +86,9 @@ import { FontContext, type PageState } from "./scene/contexts";
 import { usePipeline } from "./scene/use-pipeline";
 import { XRViewerAnchor, PreviewFieldOfView, AxisLook } from "./scene/camera";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
+import { DeskDecor } from "./scene/desk-decor";
+import { sectionRangesFor } from "./scene/page-ghosts";
+import { SR_ONLY } from "../components/a11y";
 import { VRButton, styles } from "./scene/chrome";
 import {
   PanelTuner,
@@ -156,6 +159,13 @@ function ghostSeeds(slots: SlotMap): Record<string, TuneState> {
  */
 const DEFAULT_PREVIEW_FOV = 60;
 const ROOMS_PREVIEW_FOV = 82;
+/**
+ * `deck` is two surfaces at once — the page being read, and the table of
+ * cards below and in front of it. They span some 70° of vertical angle
+ * together, so a 60° lens aimed between them cuts the near rows of the table
+ * off the bottom of the frame.
+ */
+const DECK_PREVIEW_FOV = 76;
 
 export interface XRSceneRendererProps {
   html?: string;
@@ -246,18 +256,6 @@ export function XRSceneRenderer({
   // content template the scene auto-selects. Legacy views → undefined.
   const arrangement = useMemo(() => getArrangement(viewMode), [viewMode]);
 
-  // Camera look target for the flat (non-immersive) preview. Panels are
-  // top-left anchored, so a panel whose top sits at eyeY hangs *below* the eye
-  // line — aiming at eyeY frames the panel in the bottom of the viewport. Aim
-  // at the panel's vertical centre instead so content reads head-on. Derived
-  // from the active profile so it adapts across devices (Quest vs Ray-Ban).
-  const readingLook = useMemo((): [number, number, number] => {
-    const cfg = deviceProfile.layoutConfig;
-    const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-    const centerY = eyeY - cfg.maxPanelViewportHeight / 2;
-    return [0, centerY, -cfg.viewingDistance];
-  }, [deviceProfile]);
-
   // Live panel tuning (DOM HUD). Per-slot overrides feed the layout engine and
   // re-run the pipeline on change; ghost overrides feed the carousel renderer
   // directly (ghosts aren't slots). Empty = nothing overridden.
@@ -295,6 +293,28 @@ export function XRSceneRenderer({
     exitVR,
     error: xrError,
   } = useXRSession();
+
+  // Camera look target for the flat (non-immersive) preview. Panels are
+  // top-left anchored, so a panel whose top sits at eyeY hangs *below* the eye
+  // line — aiming at eyeY frames the panel in the bottom of the viewport. Aim
+  // at the panel's vertical centre instead so content reads head-on. Derived
+  // from the active profile so it adapts across devices (Quest vs Ray-Ban).
+  const readingLook = useMemo((): [number, number, number] => {
+    const cfg = deviceProfile.layoutConfig;
+    // Read the placed slot rather than re-deriving it: `deskSlots` centres the
+    // reading band on the resting gaze instead of hanging it from eye level,
+    // so `eyeY - height/2` is no longer where the panel is.
+    const m = plan?.slots?.main;
+    if (m) {
+      return [
+        m.position.x + m.size.width / 2,
+        m.position.y - m.size.height / 2,
+        m.position.z,
+      ];
+    }
+    const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
+    return [0, eyeY - cfg.maxPanelViewportHeight / 2, -cfg.viewingDistance];
+  }, [deviceProfile, plan]);
 
   const [pageState, setPageStateMap] = useState<PageState>({});
 
@@ -381,33 +401,49 @@ export function XRSceneRenderer({
     }
   }, []);
 
-  // Anchor for the in-world chrome stack (layout switcher + tab switcher):
-  // horizontally centred on the main content panel and pulled forward of it,
-  // so the two controls sit centred under the panel as a vertical stack rather
-  // than pinned to the world origin. Falls back to the world centre when there
-  // is no content panel (e.g. landing/form layouts).
-  const chromeAnchor = useMemo(() => {
-    const cfg = deviceProfile.layoutConfig;
-    const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-    const fallback = {
-      cx: 0,
-      z: -cfg.viewingDistance,
-      bottomY: eyeY - cfg.maxPanelViewportHeight,
-    };
-    const e = mainPanelId ? plan?.entries[mainPanelId] : null;
-    if (!e) return fallback;
-    const viewportH = Math.min(e.size.height, cfg.maxPanelViewportHeight);
-    return {
-      cx: e.position.x + e.size.width / 2,
-      z: e.position.z,
-      bottomY: e.position.y - viewportH,
-    };
-  }, [deviceProfile, mainPanelId, plan]);
-
   // Centre of the main content panel, in world space. This is what the headset
   // should be levelled with in XR — the immersive counterpart of `readingLook`,
   // which aims the flat preview's OrbitControls at the same point. Panels are
   // top-left anchored, so the centre is half a viewport below the panel's top.
+  /**
+   * What the desk's sign plate reports. `standard` and `carousel` both read a
+   * paginated panel, and neither told the reader which page of how many they
+   * were on or which section it belonged to — see scene/desk-decor.tsx.
+   */
+  const deskReading = useMemo(() => {
+    if (viewMode !== undefined && viewMode !== "standard" && viewMode !== "carousel")
+      return null;
+    if (!plan || !mainPanelId) return null;
+    const e = plan.entries[mainPanelId];
+    if (!e) return null;
+    const pageCount = e.pagination?.pageCount ?? 1;
+    return {
+      pageCount,
+      page: Math.min(pageState[mainPanelId] ?? 0, Math.max(0, pageCount - 1)),
+      sectionRanges: sectionRangesFor(plan, pageCount),
+      occupied: new Set(plan.occupiedSlots ?? []),
+    };
+  }, [viewMode, plan, mainPanelId, pageState]);
+
+  /** Accessible name for the scene region, and its live description. */
+  const sceneLabel = useMemo(() => {
+    const where = url ? ` of ${url}` : "";
+    return `3D spatial view${where}, ${viewMode ?? "standard"} arrangement`;
+  }, [url, viewMode]);
+
+  const sceneDescription = useMemo(() => {
+    if (!deskReading) return "";
+    const { pageCount, page, sectionRanges } = deskReading;
+    const i = sectionRanges.findIndex((r) => page >= r.start && page <= r.end);
+    const section = i >= 0 ? sectionRanges[i].label : null;
+    return [
+      section ? `Section: ${section}.` : null,
+      pageCount > 1 ? `Page ${page + 1} of ${pageCount}.` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }, [deskReading]);
+
   const panelCentre = useMemo((): [number, number, number] | null => {
     const cfg = deviceProfile.layoutConfig;
     const e = mainPanelId ? plan?.entries[mainPanelId] : null;
@@ -440,6 +476,28 @@ export function XRSceneRenderer({
       e.position.z + plan.config.viewingDistance,
     ];
   }, [viewMode, mainPanelId, plan]);
+
+  /**
+   * `deck` composes a reading page with a card table under it, and the page
+   * itself is lifted clear of that table (DECK_STAGE_LIFT) — so neither the
+   * flat preview's pivot nor the headset recentre can use the panel's usual
+   * slot. The pivot sits between the two surfaces; the recentre levels the
+   * eye with the page where this view actually puts it.
+   */
+  const deckLook = useMemo((): [number, number, number] | null => {
+    if (viewMode !== "deck") return null;
+    const e = mainPanelId ? plan?.entries[mainPanelId] : null;
+    if (!e) return null;
+    const p = deckLookAt(e.size);
+    return [e.position.x + p.x, e.position.y + p.y, e.position.z + p.z];
+  }, [viewMode, mainPanelId, plan]);
+
+  const xrLevel = useMemo((): [number, number, number] | null => {
+    if (!panelCentre) return null;
+    return viewMode === "deck"
+      ? [panelCentre[0], panelCentre[1] + DECK_STAGE_LIFT, panelCentre[2]]
+      : panelCentre;
+  }, [panelCentre, viewMode]);
 
   useEffect(() => {
     if (plan && onPlanReady) onPlanReady(plan);
@@ -495,7 +553,30 @@ export function XRSceneRenderer({
         )}
       </div>
 
-      <div style={{ width, height, position: "relative" }}>
+      {/* ── Text alternative for the scene ──────────────────────
+          The document is drawn on a WebGL canvas, which carries no name, no
+          role and no keyboard focus — to assistive technology the whole
+          reader was a blank element. This is the same "where am I" the sign
+          plate gives a sighted reader (scene/desk-decor.tsx), in the
+          accessibility tree, and it is announced politely as the page turns
+          rather than interrupting. It is a description of the view, not a
+          replacement for it: the links and controls inside the scene are
+          still canvas-drawn and remain out of reach, which is a larger piece
+          of work than a label. */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        style={SR_ONLY}
+      >
+        {sceneDescription}
+      </div>
+
+      <div
+        style={{ width, height, position: "relative" }}
+        role="region"
+        aria-label={sceneLabel}
+      >
         {/* ── Live panel tuning HUD (flat preview only) ───────────── */}
         {sessionState !== "immersive" &&
           parserBackend !== "flat" &&
@@ -563,7 +644,7 @@ export function XRSceneRenderer({
               <XRViewerAnchor
                 target={
                   (plan?.referenceFrame ?? "world") === "world"
-                    ? (elevatorAxis ?? panelCentre)
+                    ? (elevatorAxis ?? xrLevel)
                     : null
                 }
               />
@@ -576,7 +657,11 @@ export function XRSceneRenderer({
                   give the preview a wider lens there so the room reads. */}
               <PreviewFieldOfView
                 fov={
-                  viewMode === "rooms" ? ROOMS_PREVIEW_FOV : DEFAULT_PREVIEW_FOV
+                  viewMode === "rooms"
+                    ? ROOMS_PREVIEW_FOV
+                    : viewMode === "deck"
+                      ? DECK_PREVIEW_FOV
+                      : DEFAULT_PREVIEW_FOV
                 }
               />
               {viewMode === "elevator" ? (
@@ -645,6 +730,18 @@ export function XRSceneRenderer({
                       <ReferenceFrameGroup
                         frame={plan.referenceFrame ?? "world"}
                       >
+                        {/* The desk the front-facing views stand in. Derived
+                            wholly from the plan's slots, so it follows
+                            whatever `deskSlots` decided for this profile. */}
+                        {deskReading && plan.slots && (
+                          <DeskDecor
+                            slots={plan.slots}
+                            occupied={deskReading.occupied}
+                            pageCount={deskReading.pageCount}
+                            page={deskReading.page}
+                            sectionRanges={deskReading.sectionRanges}
+                          />
+                        )}
                         <XRSceneGraph
                           scene={scene}
                           plan={plan}
@@ -704,7 +801,9 @@ export function XRSceneRenderer({
                           // a centimetre ahead of the eye, not on the axis
                           // itself, and two effects writing the same target
                           // would race.
-                          target={elevatorAxis ? undefined : readingLook}
+                          target={
+                            elevatorAxis ? undefined : (deckLook ?? readingLook)
+                          }
                           // In the elevator the reader is INSIDE the scene:
                           // dragging turns the head (AxisLook parks the pivot
                           // a centimetre ahead of the eye) and there is

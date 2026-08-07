@@ -66,11 +66,18 @@ import {
 import { AtPos } from "./AtPos";
 import { FontContext, type PageState } from "./contexts";
 import {
+  CellShadow,
   EasedScale,
   LivePageGhost,
   PageHitPlane,
   usePageHeadings,
 } from "./page-cells";
+import {
+  isDarkTheme,
+  sectionTint,
+  shade,
+  type SectionTint,
+} from "./section-tint";
 
 /** Pages this far from the open one render as real (mini) content, not cards. */
 const WALL_LIVE_PREVIEWS = 3;
@@ -88,124 +95,10 @@ const Z_SHADOW = -(WALL_BOARD_STANDOFF - 0.014);
 
 // ── Section colour ───────────────────────────────────────────
 //
-// Six hues, walked in order and wrapped. Six because that is about as many as
-// stay tellable apart at a glance across a board (and a document with more
-// top-level sections than that has bigger problems than colour); walked in
-// order rather than hashed from the label so neighbouring sections are always
-// adjacent hues — a board that reads left to right in the spectrum, not a
-// bag of confetti.
-
-const WALL_HUES = [212, 168, 268, 36, 344, 104];
-
-// Every colour on this board is mixed in sRGB, explicitly.
-//
-// three's default working space is LINEAR sRGB, so `setHSL(h, s, 0.19)` and
-// `offsetHSL(0, 0, -0.07)` operate on linear values — and a lightness step
-// that reads as a nudge on paper is enormous down there. Left implicit, the
-// board's backing came out PURE BLACK in the dark theme (panelBg #323232 is
-// linear-lightness 0.033; subtracting 0.07 clamps at zero) and every section
-// tint landed a good two stops brighter than asked for. Both were caught by
-// the offline palette audit, not by looking, which is the only way this kind
-// of bug gets caught at all — so the colour space is spelled out at every
-// call, and the numbers below mean what they say.
-
-/** Set a colour's saturation and lightness outright, keeping only its hue. */
-function atLightness(hue: number, s: number, l: number): string {
-  const c = new THREE.Color();
-  c.setHSL(hue / 360, s, l, THREE.SRGBColorSpace);
-  return `#${c.getHexString()}`;
-}
-
-/** Move a colour up or down in sRGB lightness, keeping hue and saturation. */
-function shade(hex: string, delta: number): string {
-  const c = new THREE.Color(hex);
-  const hsl = { h: 0, s: 0, l: 0 };
-  c.getHSL(hsl, THREE.SRGBColorSpace);
-  c.setHSL(
-    hsl.h,
-    hsl.s,
-    Math.max(0, Math.min(1, hsl.l + delta)),
-    THREE.SRGBColorSpace,
-  );
-  return `#${c.getHexString()}`;
-}
-
-function isDarkTheme(theme: XRTheme): boolean {
-  const hsl = { h: 0, s: 0, l: 0 };
-  new THREE.Color(theme.panelBg).getHSL(hsl, THREE.SRGBColorSpace);
-  return hsl.l < 0.5;
-}
-
-/**
- * A section's palette: the saturated accent that carries its identity (spine,
- * badge, rail), and the two quiet surface tints its tile and its pages' mounts
- * are made of. Lightnesses are set outright rather than nudged from the hue,
- * so all six sections sit at exactly the same value and only the hue varies —
- * anything else and one section reads as "highlighted".
- */
-interface SectionTint {
-  accent: string;
-  /** Fill for the section's own tile, closed and open. */
-  tile: string;
-  tileOpen: string;
-  /** Mount around each of the section's page cells. */
-  mount: string;
-  /** Ink that reads on `accent` — a badge's number. */
-  onAccent: string;
-}
-
-/** WCAG relative luminance of an sRGB hex. */
-function luminance(hex: string): number {
-  const n = parseInt(hex.slice(1), 16);
-  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => {
-    const u = v / 255;
-    return u <= 0.03928 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4;
-  });
-  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
-}
-
-const INK_DARK = "#141414";
-const INK_LIGHT = "#F7F7F7";
-
-/** WCAG contrast ratio between two sRGB hexes. */
-function contrast(a: string, b: string): number {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((p, q) => q - p);
-  return (hi + 0.05) / (lo + 0.05);
-}
-
-/**
- * Whichever ink reads better on a given fill. Fixed per THEME instead, the
- * badge numbers on the teal and green sections came out at 3:1 — those hues
- * are far more luminous than blue at the same nominal lightness, so hue by
- * hue there is no one ink that works. The accent lightnesses above are then
- * chosen to keep the WORST hue clear of 4.5:1 with the ink it picks (the
- * break-even between the two inks is the low point, so a lightness that sits
- * on it is the one thing to avoid).
- */
-function inkOn(fill: string): string {
-  return contrast(INK_LIGHT, fill) >= contrast(INK_DARK, fill)
-    ? INK_LIGHT
-    : INK_DARK;
-}
-
-function sectionTint(index: number, dark: boolean): SectionTint {
-  const hue = WALL_HUES[index % WALL_HUES.length];
-  // Accent lightness is picked so the WORST of the six hues still clears
-  // 4.5:1 against whichever ink `inkOn` gives it — see there.
-  const accent = dark
-    ? atLightness(hue, 0.62, 0.64)
-    : atLightness(hue, 0.58, 0.3);
-  return {
-    accent,
-    tile: dark ? atLightness(hue, 0.14, 0.19) : atLightness(hue, 0.16, 0.8),
-    tileOpen: dark ? atLightness(hue, 0.22, 0.27) : atLightness(hue, 0.26, 0.72),
-    // The light mount sits at the tile's own level rather than nearer the
-    // wall: held any lower it separated from the backing by hue alone, at
-    // 1.06:1, and a mount you cannot see is not a mount.
-    mount: dark ? atLightness(hue, 0.2, 0.23) : atLightness(hue, 0.18, 0.79),
-    onAccent: inkOn(accent),
-  };
-}
+// A section's hue, and the sRGB mixing helpers, are shared with the deck's
+// table (scene/section-tint.ts) so the same section is the same colour in
+// both views — a board and a table that disagreed about which section was
+// blue would each be undoing the other's spatial memory.
 
 /** The board's own neutrals, derived from the theme so it follows the product. */
 function boardTones(theme: XRTheme, dark: boolean) {
@@ -223,74 +116,6 @@ function boardTones(theme: XRTheme, dark: boolean) {
     // tile's small print steps up to body ink there.
     caption: dark ? theme.mutedTextCol : theme.bodyCol,
   };
-}
-
-// ── Shadow ───────────────────────────────────────────────────
-
-/**
- * The soft drop every cell casts on the board behind it. One texture for the
- * whole wall — a rounded-rect falloff written per pixel rather than through
- * canvas `filter`, so it is deterministic and needs no blur support.
- */
-let SHADOW_TEX: THREE.Texture | null = null;
-
-function shadowTexture(): THREE.Texture {
-  if (SHADOW_TEX) return SHADOW_TEX;
-  const N = 96;
-  const c = document.createElement("canvas");
-  c.width = N;
-  c.height = N;
-  const g = c.getContext("2d")!;
-  const img = g.createImageData(N, N);
-  const half = N / 2 - 0.5;
-  const box = N * 0.28; // half-extent of the solid core
-  const feather = N * 0.2;
-  for (let y = 0; y < N; y++) {
-    for (let x = 0; x < N; x++) {
-      const dx = Math.max(Math.abs(x - half) - box, 0);
-      const dy = Math.max(Math.abs(y - half) - box, 0);
-      const t = Math.max(0, 1 - Math.hypot(dx, dy) / feather);
-      const i = (y * N + x) * 4;
-      img.data[i] = 0;
-      img.data[i + 1] = 0;
-      img.data[i + 2] = 0;
-      img.data[i + 3] = Math.round(255 * t * t);
-    }
-  }
-  g.putImageData(img, 0, 0);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  SHADOW_TEX = t;
-  return t;
-}
-
-function CellShadow({
-  width,
-  height,
-  opacity = 0.45,
-}: {
-  width: number;
-  height: number;
-  opacity?: number;
-}) {
-  const map = React.useMemo(() => shadowTexture(), []);
-  const grow = 1.34;
-  return (
-    <mesh
-      position={[width / 2, -height / 2, Z_SHADOW]}
-      raycast={() => null}
-      renderOrder={-1}
-    >
-      <planeGeometry args={[width * grow, height * grow]} />
-      <meshBasicMaterial
-        map={map}
-        transparent
-        opacity={opacity}
-        depthWrite={false}
-        toneMapped={false}
-      />
-    </mesh>
-  );
 }
 
 // ── The backing surface ──────────────────────────────────────
@@ -1120,7 +945,7 @@ export function WallField({
                   hanging in the air behind it is a smudge, not a shadow. */}
               {!isOpenPage && (
                 <group position={[outerX, -outerX, 0]}>
-                  <CellShadow width={outerW} height={outerH} />
+                  <CellShadow width={outerW} height={outerH} z={Z_SHADOW} />
                 </group>
               )}
               {/* Pointing at a cell steps it off the board as well as leaning

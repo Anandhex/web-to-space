@@ -62,6 +62,7 @@ import {
   usePageHeadings,
 } from "./page-cells";
 import { WallField } from "./wall-field";
+import { DeckField } from "./deck-field";
 import { NavigateContext } from "../primitives/contexts";
 import {
   RoomWalk,
@@ -85,17 +86,51 @@ import {
 // sections a given view treats as groups, and how the gaps between them are
 // filled so every page belongs to exactly one.
 
-/** Turn a reading-ordered list of section starts into disjoint page ranges. */
+/**
+ * Turn a list of section starts into a gap-free, ordered partition of
+ * [0, pageCount − 1] — every page belongs to exactly one range.
+ *
+ * The normalisation is the point. This used to take reading order on faith and
+ * just walk the list setting `out[i].end = out[i+1].start − 1`, which silently
+ * produces ranges with `end < start` on any input that isn't already sorted and
+ * unique. Two shapes do that on real pages, and both occur:
+ *
+ *  • Two sections starting on the SAME page — unavoidable, since a page can
+ *    hold several headings and a section's start is wherever its first
+ *    primitive landed. Each earlier twin got `end = start − 1`.
+ *  • Starts arriving out of order, which pagination can produce when content
+ *    is extracted or re-homed between passes.
+ *
+ * A degenerate range is not a harmless empty: the desk's outline rail drew it
+ * as a 9 mm nub (the <Surface> minimum) at a position computed from a negative
+ * width, and the pages it should have covered got no segment at all — a rail
+ * of scattered blocks with the bare track showing between them. The page views
+ * group by these ranges too, so the same input stranded pages in no lane, no
+ * floor and no room.
+ *
+ * Sorting is the right normalisation here even though it can reorder labels: a
+ * page belongs to whichever section starts at or before it, which is a
+ * statement about page numbers, not about the DOM. Where several sections share
+ * a start page they cannot be told apart by page at all, so they collapse to
+ * one range under the first one's name.
+ */
 function fillRanges(
   starts: { start: number; label: string }[],
   pageCount: number,
 ): SectionPageRange[] {
-  if (starts.length === 0) return [];
-  const out: SectionPageRange[] = starts.map((s) => ({
-    start: s.start,
-    end: pageCount - 1,
-    label: s.label,
-  }));
+  if (starts.length === 0 || pageCount <= 0) return [];
+
+  // Clamp into the document, then keep one entry per start page (first wins).
+  const byStart = new Map<number, string>();
+  for (const s of starts) {
+    const at = Math.max(0, Math.min(pageCount - 1, Math.floor(s.start)));
+    if (!byStart.has(at)) byStart.set(at, s.label);
+  }
+
+  const out: SectionPageRange[] = [...byStart.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([start, label]) => ({ start, end: pageCount - 1, label }));
+
   // Pages before the first section are the document's opening.
   if (out[0].start > 0)
     out.unshift({ start: 0, end: pageCount - 1, label: "Intro" });
@@ -608,6 +643,21 @@ export function PageGhostField({
   if (mode === "wall")
     return (
       <WallField
+        panel={panel}
+        plan={plan}
+        pageState={pageState}
+        setPage={setPage}
+        primitiveMap={primitiveMap}
+        sectionRanges={sectionRanges}
+      />
+    );
+
+  // The deck is a card table the reader rearranges by hand: its lanes hold
+  // whatever the reader put in them, so the page order it draws is not the
+  // document's and cannot come from a placement list — see deck-field.tsx.
+  if (mode === "deck")
+    return (
+      <DeckField
         panel={panel}
         plan={plan}
         pageState={pageState}

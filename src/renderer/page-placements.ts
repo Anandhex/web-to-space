@@ -1256,85 +1256,846 @@ export function wallSectionOf(
 }
 
 // ── Deck ─────────────────────────────────────────────────────
-// Data-Mountain-style desk: one pile per section on an inclined surface
-// below the reading panel. Pages fan down/right within their pile with a
-// small z-lift per depth so edges read as a stack; the whole surface is
-// pitched back so the piles face the (standing) viewer. Reading always
-// happens by focusing a page onto the real panel — the desk is for triage.
-function deck(
+//
+// A CARD TABLE (2026-08-03, Anand: "a table of cards organized as section,
+// and the user can re-organise to their liking"). The document is dealt onto
+// an inclined table in front of the reader as one LANE per section — a
+// solitaire tableau — and the reader may then deal it again by hand:
+//
+//   • Every lane is a run of overlapping cards, later pages nearer the reader
+//     and on top, so each card keeps a visible top strip (its number and its
+//     heading) however deep the pile gets. The last card of a lane is whole.
+//   • DRAGGING a card puts it wherever the reader wants it — another lane,
+//     another position in its own lane, or the empty SHELF lane at the end —
+//     and the table keeps that arrangement. This is the whole point of the
+//     view: the wall shows the document's structure, the deck shows YOURS.
+//   • Pointing at a card lifts it off the table and parts the cards in front
+//     of it, so a covered page can be read without disturbing the pile.
+//   • Clicking one focuses it, and it reads at full size on the STAGE — the
+//     panel's own slot, lifted just clear of the table's far edge, so the
+//     table never has to be a reading surface. Nothing flies: the card stays
+//     exactly where the reader put it, marked as the one being read.
+//
+// Geometry is done entirely in TABLE COORDINATES — u across (0 at the table's
+// centre line), v up-slope from the near edge, and `proud` along the surface
+// normal — and the renderer hangs one pitched group at `frame.origin`. So
+// nothing here composes the pitch by hand, the drag inverts it with a single
+// worldToLocal, and the whole layout is a 2D packing problem.
+//
+// The pitch is the one number that had to be solved rather than chosen: at
+// 30° from horizontal, a table centred ~0.85 m in front of a standing reader
+// and ~1 m below their eye presents its cards within ~10° of face-on. Flatter
+// and the cards foreshorten to slivers; steeper and it stops being a table
+// and starts being the wall.
+
+/** Table pitch about x. Negative = the face tips up toward the reader. */
+const DECK_TILT = -1.05;
+/**
+ * How far the reading page rises above its usual slot in this view. The table
+ * has to start below the page it serves, and the page's bottom edge is
+ * already low; without the lift the table would be laid out at knee height.
+ *
+ * Exported because both the flat preview's pivot and the headset recentre
+ * have to be levelled with the page where it ACTUALLY is in this view, not
+ * with the slot it would occupy in the others.
+ */
+export const DECK_STAGE_LIFT = 0.22;
+/** Table's far edge, below the lifted page's bottom edge and in front of it. */
+const DECK_FAR_DROP = 0.06;
+const DECK_FAR_FORWARD = 0.14;
+/** Depth of the table along its own slope. */
+const DECK_DEPTH = 0.62;
+/** Bare surface around the lanes. */
+const DECK_MARGIN = 0.05;
+/** The near strip: what the table says about itself, and the reset chip. */
+const DECK_RAIL = 0.052;
+/** Lane header plate — the section's name, count and reorder chips. */
+const DECK_HEADER_H = 0.066;
+const DECK_HEADER_GAP = 0.014;
+/** Between two lane wells. */
+const DECK_LANE_GAP = 0.02;
+/** Bare well around the card it holds. */
+const DECK_WELL_PAD = 0.012;
+const DECK_MAX_SCALE = 0.2;
+/** Past this the far lanes are outside a comfortable head turn. */
+const DECK_MAX_WIDTH = 2.6;
+/**
+ * Section lanes the table will deal, before consecutive sections start
+ * sharing one (the shelf is extra). A 2.6 m table at arm's length already
+ * spans some ±55°, so more columns than this cannot be made wider — only
+ * thinner, and a document whose structural inference finds twenty-two
+ * top-level sections (the test page does) would deal itself into a row of
+ * slivers nothing could be dragged into.
+ */
+const DECK_MAX_LANES = 8;
+/**
+ * …and the most the table will hold once the reader starts making lanes of
+ * their own, shelf included. Past this another column can only be paid for
+ * out of the width of the others, and cards too thin to pick up are worse
+ * than a refused drop.
+ */
+const DECK_MAX_TABLE_LANES = 11;
+/** Each card in a lane sits this much proud of the one behind it. */
+const DECK_PROUD_STEP = 0.004;
+/** …and the pointed-at card this much proud of everything. */
+const DECK_HOVER_PROUD = 0.05;
+/** How far the cards in front of a pointed-at one slide to uncover it. */
+const DECK_HOVER_PART = 0.06;
+/** The card being read stands a little off the table, marked. */
+const DECK_READING_PROUD = 0.012;
+/** A card's visible top strip, as a fraction of its height: number + heading. */
+const DECK_MIN_STEP_FRACTION = 0.17;
+/** …and the most of itself a card shows when the lane has room to spread. */
+const DECK_MAX_STEP_FRACTION = 0.46;
+
+/** The shelf: a lane that stands for no section, for the reader to fill. */
+export const DECK_SHELF_ID = "lane-shelf";
+/** Lanes the reader made by carrying a card off the end of the row. */
+export const DECK_NEW_LANE_PREFIX = "lane-new-";
+
+/** True for a lane the reader made, as opposed to a section's or the shelf. */
+export function deckIsMadeLane(lane: { id: string }): boolean {
+  return lane.id.startsWith(DECK_NEW_LANE_PREFIX);
+}
+
+/** The pitched plane the table's contents are laid out on. */
+export interface DeckFrame {
+  /**
+   * Near-edge centre of the table, relative to the panel's top-left anchor.
+   * The renderer puts one group here, rotated by `tilt`, and everything below
+   * is expressed in that group's space.
+   */
+  origin: { x: number; y: number; z: number };
+  tilt: number;
+  width: number;
+  depth: number;
+}
+
+/** One column of the table: a section's pages, or a lane the reader made. */
+export interface DeckLane {
+  /** Stable across reorders, so <AtPos> morphs a lane instead of cutting. */
+  id: string;
+  label: string;
+  /** Index into the section ranges, or null for the shelf. */
+  sectionIndex: number | null;
+  /** Page indices, in the order the READER has them — not document order. */
+  pages: number[];
+}
+
+/**
+ * Where a carried card would land if it were dropped now.
+ *
+ * `new` is the answer for a card carried off the END of the row of lanes: it
+ * starts a section of its own there (Anand, 2026-08-03 — a page pulled out of
+ * every section has plainly been pulled out FOR something, and snapping it
+ * back was the deck refusing to do the one thing the gesture asked for).
+ * `null` is the only genuine no-op left: the card is off the table entirely,
+ * or the table is already as many columns wide as it can go.
+ */
+export type DeckDrop =
+  | { kind: "lane"; lane: number; slot: number }
+  | { kind: "new"; at: number }
+  | null;
+
+/** The card being dragged, and where it would land if dropped now. */
+export interface DeckDrag {
+  pageIndex: number;
+  to: DeckDrop;
+}
+
+export interface DeckOptions {
+  sectionRanges?: SectionPageRange[];
+  /** The reader's arrangement. Omitted → document order (deckDefaultLanes). */
+  lanes?: DeckLane[];
+  /** `key` of the card under the pointer. */
+  hoverKey?: string | null;
+  drag?: DeckDrag | null;
+  /** First card shown, per lane id — for lanes longer than the table is deep. */
+  laneWindows?: Record<string, number>;
+  /** The page being read: its card is marked and stands proud. */
+  focus?: number;
+}
+
+export interface DeckCardCell {
+  key: string;
+  pageIndex: number;
+  lane: number;
+  /** Position within the lane's visible window. */
+  slot: number;
+  sectionIndex: number | null;
+  /** Top-left of the card, in table coordinates. */
+  u: number;
+  v: number;
+  proud: number;
+  width: number;
+  height: number;
+  scale: number;
+  /**
+   * Metres of the card's own top edge the next card leaves uncovered — the
+   * strip its number and heading have to fit in. Equals its full height when
+   * nothing is in front of it.
+   */
+  exposed: number;
+  hovered: boolean;
+  reading: boolean;
+  recession: number;
+}
+
+export interface DeckLaneCell {
+  index: number;
+  id: string;
+  label: string;
+  sectionIndex: number | null;
+  /** Pages the lane holds, and how many of them the table has room for. */
+  total: number;
+  shown: number;
+  windowStart: number;
+  /** Left edge and width of the well, in table coordinates. */
+  u: number;
+  width: number;
+  /** The well: bottom edge and depth up-slope. */
+  wellV: number;
+  wellDepth: number;
+  /** The header plate above it: bottom edge and height. */
+  headerV: number;
+  headerHeight: number;
+  /** Gap between successive card tops in this lane. */
+  step: number;
+  /** A drop here is what the drag would do. */
+  dropActive: boolean;
+  /** A lane the reader made by carrying a card off the end of the row. */
+  made: boolean;
+}
+
+/**
+ * The place a carried card would start a new section: one just past each end
+ * of the row of lanes, drawn only while something is in the air. Empty when
+ * nothing is being carried, or when the table has no room for another column.
+ */
+export interface DeckNewLaneZone {
+  /** Lane index the new lane would take. */
+  at: number;
+  u: number;
+  width: number;
+  wellV: number;
+  wellDepth: number;
+  /** This is the end the card is actually over. */
+  active: boolean;
+}
+
+export interface DeckLayout {
+  frame: DeckFrame;
+  lanes: DeckLaneCell[];
+  cards: DeckCardCell[];
+  /** Where a carried card could start a section of its own. */
+  newLaneZones: DeckNewLaneZone[];
+  /** Where the focused page reads: the panel's slot, lifted clear. */
+  stage: PagePlacement;
+  scale: number;
+  cardWidth: number;
+  cardHeight: number;
+  /** The near strip below the wells. */
+  rail: { v: number; height: number };
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+/**
+ * Table coordinates → an offset from the panel's top-left anchor. The
+ * renderer never needs this (it hangs one pitched group and lets three
+ * compose the transform); it is here so the offline placement checks can put
+ * a card in the same space as everything else in this file.
+ */
+export function deckPoint(
+  frame: DeckFrame,
+  u: number,
+  v: number,
+  proud = 0,
+): { x: number; y: number; z: number } {
+  const c = Math.cos(frame.tilt);
+  const s = Math.sin(frame.tilt);
+  return {
+    x: frame.origin.x + u,
+    // Up-slope is (0, cos, sin) and the surface normal (0, −sin, cos) — the
+    // columns of Rx(tilt) the renderer's group applies.
+    y: frame.origin.y + v * c - proud * s,
+    z: frame.origin.z + v * s + proud * c,
+  };
+}
+
+/**
+ * Document order: one lane per section, plus the reader's empty shelf.
+ *
+ * Past DECK_MAX_LANES, CONSECUTIVE sections share a lane — in order, so the
+ * table still reads left to right, top to bottom, in the document's own
+ * order, and a shared lane is named after the first section in it. Grouping
+ * consecutive sections is the only merge that keeps that property; anything
+ * cleverer (by length, by depth) would interleave them.
+ */
+export function deckDefaultLanes(
+  ranges: SectionPageRange[] | undefined,
+  pageCount: number,
+): DeckLane[] {
+  const rs = resolveRanges(ranges, pageCount);
+  // As many lanes as the table will take, with the sections spread evenly
+  // over them — nine sections make eight lanes, one of which holds two, not
+  // five lanes of two apiece.
+  const laneCount = Math.min(rs.length, DECK_MAX_LANES);
+  const base = Math.floor(rs.length / laneCount);
+  const extra = rs.length % laneCount;
+  const lanes: DeckLane[] = [];
+  for (let i = 0, lane = 0; i < rs.length; lane++) {
+    const take = base + (lane < extra ? 1 : 0);
+    const group = rs.slice(i, i + take);
+    const pages: number[] = [];
+    for (const r of group)
+      for (let p = Math.max(0, r.start); p <= Math.min(r.end, pageCount - 1); p++)
+        pages.push(p);
+    const head = group[0].label || `Section ${i + 1}`;
+    lanes.push({
+      id: `lane-s${i}`,
+      label: group.length > 1 ? `${head} +${group.length - 1}` : head,
+      // The FIRST section's index, so a lane's hue is the one the wall gives
+      // the same section (they can only agree exactly when nothing is
+      // grouped, but the leading section is the one the lane is named for).
+      sectionIndex: i,
+      pages,
+    });
+    i += take;
+  }
+  lanes.push({
+    id: DECK_SHELF_ID,
+    label: "Shelf",
+    sectionIndex: null,
+    pages: [],
+  });
+  return lanes;
+}
+
+/** True once the reader has moved anything — i.e. the reset chip has a job. */
+export function deckIsRearranged(
+  lanes: DeckLane[],
+  ranges: SectionPageRange[] | undefined,
+  pageCount: number,
+): boolean {
+  const base = deckDefaultLanes(ranges, pageCount);
+  if (base.length !== lanes.length) return true;
+  for (let i = 0; i < base.length; i++) {
+    if (base[i].id !== lanes[i].id) return true;
+    if (base[i].pages.length !== lanes[i].pages.length) return true;
+    for (let k = 0; k < base[i].pages.length; k++)
+      if (base[i].pages[k] !== lanes[i].pages[k]) return true;
+  }
+  return false;
+}
+
+/** Stable card key — the same card wherever the reader moves it. */
+export function deckCardKey(pageIndex: number): string {
+  return `deck-card-${pageIndex}`;
+}
+
+/**
+ * Card size and lane pitch for a given number of lanes. The table widens with
+ * the lane count until it hits the width a head can sweep, and only then do
+ * the cards shrink — a six-section document should not get five-centimetre
+ * cards because a twenty-section one would need them.
+ */
+function deckMetrics(
+  panel: { width: number; height: number },
+  laneCount: number,
+): { scale: number; laneWidth: number; stride: number; width: number } {
+  const n = Math.max(1, laneCount);
+  // The widest a lane is ever worth making: one card at full size, matted.
+  const roomy = panel.width * DECK_MAX_SCALE + 2 * DECK_WELL_PAD;
+  const available = DECK_MAX_WIDTH - 2 * DECK_MARGIN - (n - 1) * DECK_LANE_GAP;
+  const laneWidth = Math.max(0.04, Math.min(roomy, available / n));
+  // The card is derived FROM the lane it has to sit in, never the other way
+  // round — so a card can no more overflow its well than the wells can
+  // overflow the table.
+  const scale = Math.max(0.04, (laneWidth - 2 * DECK_WELL_PAD) / panel.width);
+  const width = Math.max(
+    panel.width * 1.05,
+    n * laneWidth + (n - 1) * DECK_LANE_GAP + 2 * DECK_MARGIN,
+  );
+  return { scale, laneWidth, stride: laneWidth + DECK_LANE_GAP, width };
+}
+
+/** Where the table hangs, for a given number of lanes. */
+export function deckFrame(
+  panel: { width: number; height: number },
+  laneCount: number,
+): DeckFrame {
+  const { width } = deckMetrics(panel, laneCount);
+  const c = Math.cos(DECK_TILT);
+  const s = Math.sin(DECK_TILT);
+  // Solve the origin from the FAR edge: that is the edge with a constraint on
+  // it (it must clear the lifted page and stand in front of its plane), and
+  // the near edge is wherever the depth then lands.
+  const farY = -panel.height + DECK_STAGE_LIFT - DECK_FAR_DROP;
+  const farZ = DECK_FAR_FORWARD;
+  return {
+    origin: {
+      x: panel.width / 2,
+      y: farY - DECK_DEPTH * c,
+      z: farZ - DECK_DEPTH * s,
+    },
+    tilt: DECK_TILT,
+    width,
+    depth: DECK_DEPTH,
+  };
+}
+
+/**
+ * The lane plate's internal furniture: a spine, the section's name, its page
+ * count, and the three chips (window, ‹, ›). Rectangles, centre-anchored, in
+ * the plate's own frame — origin at its top-left corner, +x right, −y down.
+ *
+ * It is here, with the rest of the geometry, rather than laid out inline in
+ * the renderer, for one reason: a plate is at most 21 cm wide on a
+ * nine-section document, five things have to fit on it, and whether they do
+ * is arithmetic — so it can be CHECKED offline (`deckPlateOverlaps`) instead
+ * of being something you notice colliding in a headset.
+ */
+export interface DeckRect {
+  /** Centre. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DeckPlateSlots {
+  spine: DeckRect;
+  label: DeckRect;
+  count: DeckRect;
+  window: DeckRect;
+  left: DeckRect;
+  right: DeckRect;
+}
+
+const DECK_CHIP = 0.022;
+const DECK_WINDOW_CHIP_W = 0.042;
+
+export function deckPlateSlots(width: number, height: number): DeckPlateSlots {
+  const w = width;
+  const h = height;
+  const pad = DECK_WELL_PAD;
+  const textLeft = pad + w * 0.05;
+  const chipY = -h * 0.7;
+  const right = { x: w - 0.018, y: chipY, width: DECK_CHIP, height: DECK_CHIP };
+  const left = { x: w - 0.045, y: chipY, width: DECK_CHIP, height: DECK_CHIP };
+  const windowChip = {
+    x: w - 0.082,
+    y: chipY,
+    width: DECK_WINDOW_CHIP_W,
+    height: DECK_CHIP + 0.002,
+  };
+  const labelW = Math.max(0.02, w - textLeft - 0.008);
+  const labelH = h * 0.4;
+  const countW = Math.max(
+    0.02,
+    windowChip.x - windowChip.width / 2 - 0.006 - textLeft,
+  );
+  return {
+    spine: { x: pad + w * 0.01, y: -h / 2, width: w * 0.02, height: h * 0.62 },
+    label: {
+      x: textLeft + labelW / 2,
+      y: -h * 0.1 - labelH / 2,
+      width: labelW,
+      height: labelH,
+    },
+    count: { x: textLeft + countW / 2, y: chipY, width: countW, height: h * 0.3 },
+    window: windowChip,
+    left,
+    right,
+  };
+}
+
+/** Pairs of plate furniture that overlap — empty is the only passing answer. */
+export function deckPlateOverlaps(slots: DeckPlateSlots): string[] {
+  const named = Object.entries(slots) as [string, DeckRect][];
+  const hit: string[] = [];
+  const laps = (a: DeckRect, b: DeckRect) =>
+    Math.abs(a.x - b.x) < (a.width + b.width) / 2 - 1e-9 &&
+    Math.abs(a.y - b.y) < (a.height + b.height) / 2 - 1e-9;
+  for (let i = 0; i < named.length; i++)
+    for (let j = i + 1; j < named.length; j++) {
+      // The spine runs the full height of the plate down its left margin; the
+      // label starts to the right of it, and nothing else goes near it.
+      if (named[i][0] === "spine" || named[j][0] === "spine") continue;
+      if (laps(named[i][1], named[j][1]))
+        hit.push(`${named[i][0]}×${named[j][0]}`);
+    }
+  return hit;
+}
+
+/**
+ * What the deck wants looked at: between the page being read and the middle
+ * of the table, biased toward the page, as an offset from the panel's
+ * top-left anchor. The view is a composition of two surfaces at very
+ * different heights — aiming at either one alone puts the other off the
+ * bottom (or the top) of a flat preview's frame.
+ */
+export function deckLookAt(panel: {
+  width: number;
+  height: number;
+}): { x: number; y: number; z: number } {
+  const frame = deckFrame(panel, 1);
+  const table = deckPoint(frame, 0, frame.depth / 2);
+  const stage = {
+    x: panel.width / 2,
+    y: -panel.height / 2 + DECK_STAGE_LIFT,
+    z: 0,
+  };
+  const t = 0.42; // …toward the table
+  return {
+    x: stage.x + (table.x - stage.x) * t,
+    y: stage.y + (table.y - stage.y) * t,
+    z: stage.z + (table.z - stage.z) * t,
+  };
+}
+
+/** The focused page's reading placement: the panel slot, lifted clear. */
+function deckStage(pageIndex: number): PagePlacement {
+  return {
+    ...stagePlacement(pageIndex),
+    offset: { x: 0, y: DECK_STAGE_LIFT, z: 0 },
+  };
+}
+
+/** Rows of the table, in table coordinates: the wells, headers and rail. */
+function deckRows(depth: number): {
+  headerV: number;
+  wellTop: number;
+  wellBottom: number;
+} {
+  const headerV = depth - DECK_MARGIN - DECK_HEADER_H;
+  return {
+    headerV,
+    wellTop: headerV - DECK_HEADER_GAP,
+    wellBottom: DECK_RAIL + 0.012,
+  };
+}
+
+/**
+ * The gap between successive cards in a lane holding `n` of them, and how
+ * many of them fit at all.
+ *
+ * A lane spreads its cards as far as the run allows, up to showing nearly
+ * half of each; past that it closes them up, down to a strip just tall enough
+ * for a number and a heading. A lane with more pages than even that leaves
+ * room for shows a window of them (see `laneWindows`) rather than a stack of
+ * slivers nobody could hit with a ray.
+ */
+function deckLaneStep(
+  n: number,
+  run: number,
+  cardHeight: number,
+): { step: number; capacity: number } {
+  const min = Math.max(0.02, cardHeight * DECK_MIN_STEP_FRACTION);
+  const max = cardHeight * DECK_MAX_STEP_FRACTION;
+  const capacity = Math.max(1, 1 + Math.floor(run / min));
+  const shown = Math.min(Math.max(1, n), capacity);
+  const step = shown > 1 ? clamp(run / (shown - 1), min, max) : max;
+  return { step, capacity };
+}
+
+/**
+ * The whole table: where every lane, card and plate sits, for the reader's
+ * current arrangement and whatever the pointer is doing.
+ *
+ * Pure, like the rest of this file — the drag preview is expressed as a
+ * `drag` input (the card taken out of the flow, a gap opened where it would
+ * land) rather than as mutation, so the same function draws the table at rest
+ * and mid-drag, and the offline check can exercise both.
+ */
+export function computeDeckLayout(
   pageCount: number,
   panel: { width: number; height: number },
-  focus: number,
-  ranges: SectionPageRange[],
-): PagePlacement[] {
-  const S = 0.26;
-  const TILT = -0.9; // ~52° pitched back — lying on an inclined desk
-  const FAN_Y = -0.025; // within-pile fan (down the desk)
-  const LIFT = 0.006; // per-depth lift so stacked edges are visible
-  const pw = panel.width * S;
-  const cw = pw + 0.08;
-  const piles = Math.max(1, ranges.length);
-  const deskY = -panel.height - 0.02; // band just below the reading panel
-  const BACK = -0.15;
+  opts: DeckOptions = {},
+): DeckLayout {
+  const lanes =
+    opts.lanes && opts.lanes.length > 0
+      ? opts.lanes
+      : deckDefaultLanes(opts.sectionRanges, pageCount);
+  const frame = deckFrame(panel, lanes.length);
+  const { scale, laneWidth, stride } = deckMetrics(panel, lanes.length);
+  const cardWidth = panel.width * scale;
+  const cardHeight = panel.height * scale;
+  const rows = deckRows(frame.depth);
+  const wellDepth = rows.wellTop - rows.wellBottom;
+  const run = Math.max(0, wellDepth - 2 * DECK_WELL_PAD - cardHeight);
+  const focus = opts.focus ?? -1;
+  const dragging = opts.drag?.pageIndex ?? null;
+  const drop = opts.drag?.to ?? null;
 
-  // A pile deeper than MAX_DEPTH wraps into an adjacent sub-pile, so a
-  // section with dozens of pages (or a sectionless 98-page article) fans
-  // across the desk instead of descending through the floor.
-  const MAX_DEPTH = 6;
-  const pileStart: number[] = [];
-  let totalPiles = 0;
-  for (const r of ranges) {
-    pileStart.push(totalPiles);
-    totalPiles += Math.max(1, Math.ceil((r.end - r.start + 1) / MAX_DEPTH));
-  }
-  totalPiles = Math.max(1, totalPiles, piles);
+  const left = -((lanes.length - 1) * stride) / 2 - laneWidth / 2;
+  const laneCells: DeckLaneCell[] = [];
+  const cards: DeckCardCell[] = [];
 
-  const pileOf = (page: number): { pile: number; depth: number } => {
-    for (let c = 0; c < ranges.length; c++) {
-      const r = ranges[c];
-      if (page >= r.start && page <= r.end) {
-        const k = page - r.start;
-        return {
-          pile: pileStart[c] + Math.floor(k / MAX_DEPTH),
-          depth: k % MAX_DEPTH,
-        };
-      }
+  for (let i = 0; i < lanes.length; i++) {
+    const lane = lanes[i];
+    // The dragged card is out of the flow wherever it came from, so the lane
+    // it left closes up under it rather than holding its place.
+    const held = lane.pages.filter((p) => p !== dragging);
+    const gapAt =
+      drop?.kind === "lane" && drop.lane === i
+        ? clamp(drop.slot, 0, held.length)
+        : -1;
+    const occupancy = held.length + (gapAt >= 0 ? 1 : 0);
+    const { step, capacity } = deckLaneStep(occupancy, run, cardHeight);
+
+    const start = clamp(
+      opts.laneWindows?.[lane.id] ?? 0,
+      0,
+      Math.max(0, held.length - 1),
+    );
+    const shown = Math.min(held.length - start, Math.max(1, capacity));
+    const u = left + i * stride;
+    laneCells.push({
+      index: i,
+      id: lane.id,
+      label: lane.label,
+      sectionIndex: lane.sectionIndex,
+      total: lane.pages.length,
+      shown: Math.max(0, shown),
+      windowStart: start,
+      u,
+      width: laneWidth,
+      wellV: rows.wellBottom,
+      wellDepth,
+      headerV: rows.headerV,
+      headerHeight: DECK_HEADER_H,
+      step,
+      dropActive: gapAt >= 0,
+      made: deckIsMadeLane(lane),
+    });
+
+    const top = rows.wellTop - DECK_WELL_PAD;
+    const hoverIndex = held.findIndex(
+      (p) => deckCardKey(p) === opts.hoverKey,
+    );
+    // How far the cards in front of a pointed-at one may slide before the
+    // last of them runs off the near edge of its well.
+    const slack = Math.max(
+      0,
+      run - Math.max(0, occupancy - 1) * step,
+    );
+    const part = hoverIndex >= 0 ? Math.min(DECK_HOVER_PART, slack) : 0;
+
+    for (let k = 0; k < shown; k++) {
+      const pageIndex = held[start + k];
+      if (pageIndex === undefined) break;
+      // A gap opened for the drop pushes everything at or after it down one
+      // step, so the lane visibly makes room for the card being carried.
+      const offsetSlots = gapAt >= 0 && start + k >= gapAt ? 1 : 0;
+      const hovered = start + k === hoverIndex;
+      const parted = part > 0 && start + k > hoverIndex ? part : 0;
+      const reading = pageIndex === focus;
+      const v = top - (k + offsetSlots) * step - parted;
+      const next = k + 1 < shown ? top - (k + 1 + offsetSlots) * step -
+        (part > 0 && start + k + 1 > hoverIndex ? part : 0) : null;
+      const exposed = next === null ? cardHeight : Math.min(cardHeight, v - next);
+      cards.push({
+        key: deckCardKey(pageIndex),
+        pageIndex,
+        lane: i,
+        slot: start + k,
+        sectionIndex: lane.sectionIndex,
+        u: u + DECK_WELL_PAD,
+        v,
+        proud:
+          (k + offsetSlots) * DECK_PROUD_STEP +
+          (hovered ? DECK_HOVER_PROUD : 0) +
+          (reading && !hovered ? DECK_READING_PROUD : 0),
+        width: cardWidth,
+        height: cardHeight,
+        scale,
+        exposed,
+        hovered,
+        reading,
+        // Covered cards recede; the whole card, and the one being read, come
+        // forward. Never past 0.6: a card nobody can read is not triage.
+        recession: reading ? 0 : hovered ? 0.05 : exposed >= cardHeight ? 0.18 : 0.34,
+      });
     }
-    return { pile: 0, depth: Math.min(page, MAX_DEPTH - 1) };
+  }
+
+  // While a card is in the air, both ends of the row offer it a section of
+  // its own. Both are drawn, not just the one under the pointer: a drop
+  // target nobody can see before they reach it is a drop target nobody finds.
+  const newLaneZones: DeckNewLaneZone[] = [];
+  if (opts.drag && lanes.length < DECK_MAX_TABLE_LANES) {
+    for (const at of [0, lanes.length]) {
+      newLaneZones.push({
+        at,
+        u: at === 0 ? left - stride : left + lanes.length * stride,
+        width: laneWidth,
+        wellV: rows.wellBottom,
+        wellDepth: wellDepth,
+        active: drop?.kind === "new" && drop.at === at,
+      });
+    }
+  }
+
+  return {
+    frame,
+    lanes: laneCells,
+    cards,
+    newLaneZones,
+    stage: deckStage(focus >= 0 ? focus : 0),
+    scale,
+    cardWidth,
+    cardHeight,
+    rail: { v: 0, height: DECK_RAIL },
   };
+}
 
-  const out: PagePlacement[] = [];
-  for (let i = 0; i < pageCount; i++) {
-    const { pile, depth } = pileOf(i);
-    const centreOffX = (pile - (totalPiles - 1) / 2) * cw;
-    const cell = {
-      offset: {
-        x: panel.width / 2 + centreOffX - pw / 2,
-        y: deskY + depth * FAN_Y,
-        z: BACK + depth * LIFT,
-      },
-      rotation: { x: TILT, y: 0, z: 0 },
-      scale: S,
-    };
-    if (i === focus) {
-      out.push(stagePlacement(i));
-      out.push({
-        pageIndex: i,
-        ...cell,
-        recession: 0,
-        isFocusCell: true,
-        isStage: false,
-      });
-    } else {
-      out.push({
-        pageIndex: i,
-        ...cell,
-        recession: Math.min(1, 0.4 + depth * 0.06),
-        isFocusCell: false,
-        isStage: false,
-      });
+/**
+ * Where a pointer at table coordinates (u, v) would drop the card it is
+ * carrying: the lane under it and the slot the card's own CENTRE falls in,
+ * or — for a card carried off either end of the row — a section of its own.
+ *
+ * null is left for the two cases where there is genuinely nothing to do:
+ * the card is off the table's depth altogether, or the table is already as
+ * many columns wide as it can be.
+ */
+export function deckDropTarget(
+  layout: DeckLayout,
+  u: number,
+  v: number,
+): DeckDrop {
+  const { lanes, cardHeight, frame } = layout;
+  if (lanes.length === 0) return null;
+  if (v < -0.12 || v > frame.depth + 0.12) return null;
+  let lane = -1;
+  for (let i = 0; i < lanes.length; i++) {
+    const c = lanes[i];
+    if (u >= c.u - DECK_LANE_GAP / 2 && u <= c.u + c.width + DECK_LANE_GAP / 2) {
+      lane = i;
+      break;
     }
   }
+  if (lane < 0) {
+    // Off the row: a section of its own, at whichever end the card is over.
+    //
+    // The end lanes used to claim a generous margin beyond themselves, so a
+    // card carried toward the shelf did not have to be centred on it. That
+    // margin cannot survive this: it covered the very ground the new-lane
+    // zone is DRAWN on, so aiming at the zone dropped the card in the shelf
+    // instead — caught by the offline check, and invisible in a headset.
+    // Every lane now claims exactly its own well plus half a gap, the zones
+    // sit one full lane pitch past the ends, and what is drawn is what
+    // answers.
+    if (lanes.length >= DECK_MAX_TABLE_LANES) return null;
+    return { kind: "new", at: u < 0 ? 0 : lanes.length };
+  }
+  const c = lanes[lane];
+  const rows = deckRows(frame.depth);
+  const top = rows.wellTop - DECK_WELL_PAD;
+  const slot = Math.round((top - cardHeight / 2 - v) / Math.max(0.001, c.step));
+  return { kind: "lane", lane, slot: clamp(slot, 0, c.total) };
+}
+
+/** Two drops are the same target — so a drag only re-renders when it moves. */
+export function deckSameDrop(a: DeckDrop, b: DeckDrop): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.kind !== b.kind) return false;
+  return a.kind === "lane" && b.kind === "lane"
+    ? a.lane === b.lane && a.slot === b.slot
+    : (a as { at: number }).at === (b as { at: number }).at;
+}
+
+/** Move a page to `slot` of lane `to`, taking it out of wherever it was. */
+export function deckMoveCard(
+  lanes: DeckLane[],
+  pageIndex: number,
+  to: number,
+  slot: number,
+): DeckLane[] {
+  const next = lanes.map((l) => ({ ...l, pages: l.pages.slice() }));
+  for (const l of next) {
+    const at = l.pages.indexOf(pageIndex);
+    if (at >= 0) l.pages.splice(at, 1);
+  }
+  const target = next[clamp(to, 0, next.length - 1)];
+  target.pages.splice(clamp(slot, 0, target.pages.length), 0, pageIndex);
+  return next;
+}
+
+/**
+ * A page carried off the row becomes a section of its own, at `at`.
+ *
+ * The new lane takes the next hue in the walk (`sectionIndex` one past the
+ * highest in use) so it is as distinct from its neighbours as two document
+ * sections would be — the reader made a section, so it looks like one — and
+ * an id derived from the ones already there, which keeps this deterministic
+ * and lets the renderer key on it across the reflow.
+ */
+export function deckAddLane(
+  lanes: DeckLane[],
+  pageIndex: number,
+  at: number,
+): DeckLane[] {
+  const stripped = lanes.map((l) => ({
+    ...l,
+    pages: l.pages.filter((p) => p !== pageIndex),
+  }));
+  let ordinal = 1;
+  while (stripped.some((l) => l.id === `${DECK_NEW_LANE_PREFIX}${ordinal}`))
+    ordinal++;
+  const hue = stripped.reduce((m, l) => Math.max(m, l.sectionIndex ?? -1), -1);
+  stripped.splice(clamp(at, 0, stripped.length), 0, {
+    id: `${DECK_NEW_LANE_PREFIX}${ordinal}`,
+    label: `New section ${ordinal}`,
+    sectionIndex: hue + 1,
+    pages: [pageIndex],
+  });
+  return stripped;
+}
+
+/**
+ * Lanes the reader MADE disappear once they are emptied again — an empty
+ * column that stands for nothing is just a hole in the table. A section's own
+ * lane stays whatever happens to it: emptying one is a statement about the
+ * document, and you have to be able to put pages back into it. The shelf
+ * stays for the same reason.
+ */
+export function deckPruneLanes(lanes: DeckLane[]): DeckLane[] {
+  return lanes.filter((l) => !deckIsMadeLane(l) || l.pages.length > 0);
+}
+
+/** Carry out a drop, whichever kind it turned out to be. */
+export function deckApplyDrop(
+  lanes: DeckLane[],
+  pageIndex: number,
+  drop: DeckDrop,
+): DeckLane[] {
+  if (!drop) return lanes;
+  return deckPruneLanes(
+    drop.kind === "lane"
+      ? deckMoveCard(lanes, pageIndex, drop.lane, drop.slot)
+      : deckAddLane(lanes, pageIndex, drop.at),
+  );
+}
+
+/** Swap a lane with its neighbour — what the header's ‹ › chips do. */
+export function deckMoveLane(lanes: DeckLane[], index: number, dir: -1 | 1): DeckLane[] {
+  const to = index + dir;
+  if (index < 0 || index >= lanes.length || to < 0 || to >= lanes.length)
+    return lanes;
+  const next = lanes.slice();
+  const [moved] = next.splice(index, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
+
+/** The reader's reading order: every lane's pages, lane by lane. */
+export function deckReadingOrder(lanes: DeckLane[]): number[] {
+  const out: number[] = [];
+  for (const l of lanes) out.push(...l.pages);
   return out;
 }
 
@@ -2414,7 +3175,10 @@ export function computePagePlacements(
       // its own model — see computeWallCells.
       return [];
     case "deck":
-      return deck(pageCount, panel, focus, ranges);
+      // The deck is a card table the reader rearranges by hand, not a page
+      // field: its cells are lanes and cards whose order is the READER's, so
+      // it has its own model — see computeDeckLayout.
+      return [];
     case "rooms":
       return rooms(pageCount, panel, focus, opts);
     default:

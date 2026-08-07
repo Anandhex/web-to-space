@@ -138,6 +138,81 @@ export function EasedScale({
   );
 }
 
+// ── Drop shadow ──────────────────────────────────────────────
+
+/**
+ * The soft drop a cell casts on the surface behind it. One texture for every
+ * view that uses it — a rounded-rect falloff written per pixel rather than
+ * through canvas `filter`, so it is deterministic and needs no blur support.
+ */
+let SHADOW_TEX: THREE.Texture | null = null;
+
+function shadowTexture(): THREE.Texture {
+  if (SHADOW_TEX) return SHADOW_TEX;
+  const N = 96;
+  const c = document.createElement("canvas");
+  c.width = N;
+  c.height = N;
+  const g = c.getContext("2d")!;
+  const img = g.createImageData(N, N);
+  const half = N / 2 - 0.5;
+  const box = N * 0.28; // half-extent of the solid core
+  const feather = N * 0.2;
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const dx = Math.max(Math.abs(x - half) - box, 0);
+      const dy = Math.max(Math.abs(y - half) - box, 0);
+      const t = Math.max(0, 1 - Math.hypot(dx, dy) / feather);
+      const i = (y * N + x) * 4;
+      img.data[i] = 0;
+      img.data[i + 1] = 0;
+      img.data[i + 2] = 0;
+      img.data[i + 3] = Math.round(255 * t * t);
+    }
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  SHADOW_TEX = t;
+  return t;
+}
+
+/**
+ * A cell's shadow, drawn `z` behind it (the caller owns how far, since that
+ * is a property of the surface the cell hangs on, not of the cell).
+ */
+export function CellShadow({
+  width,
+  height,
+  z,
+  opacity = 0.45,
+  grow = 1.34,
+}: {
+  width: number;
+  height: number;
+  z: number;
+  opacity?: number;
+  grow?: number;
+}) {
+  const map = React.useMemo(() => shadowTexture(), []);
+  return (
+    <mesh
+      position={[width / 2, -height / 2, z]}
+      raycast={() => null}
+      renderOrder={-1}
+    >
+      <planeGeometry args={[width * grow, height * grow]} />
+      <meshBasicMaterial
+        map={map}
+        transparent
+        opacity={opacity}
+        depthWrite={false}
+        toneMapped={false}
+      />
+    </mesh>
+  );
+}
+
 /** "You are here" frame at the focused page's board/pile cell. */
 export function FocusCellFrame({
   width,

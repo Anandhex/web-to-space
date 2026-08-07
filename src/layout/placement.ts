@@ -22,9 +22,17 @@ import type {
   LandmarkSlot,
 } from "./types";
 import type { Rotation3, Size2 } from "../mapper/types";
-import { zeroRotation, angularPosition, angularRotation } from "./utils";
+import { deg2rad, zeroRotation, angularPosition, angularRotation } from "./utils";
 
 const RAD2DEG = 180 / Math.PI;
+
+/**
+ * Peripheral rails are width-capped so a scattered arrangement never places a
+ * full main-width (≈1.4 m) panel beside another — the cause of overlap. Both
+ * the desk templates below and the arrangement path's `railSize` read it, so a
+ * side rail is the same slab of the workspace whichever path placed it.
+ */
+const RAIL_MAX_W = 0.5;
 
 /**
  * "One cylinder around the viewer" wrap geometry.
@@ -63,16 +71,39 @@ function outsideMainDeg(
   return side * deg;
 }
 
-/** A landmark slot placed tangent on the shared radius-`d` cylinder at `deg`. */
+/**
+ * A landmark slot whose CENTRE sits on the shared radius-`d` cylinder at
+ * `deg`, tangent to it, hanging from `topY`.
+ *
+ * Slots are TOP-LEFT anchored and rotate about that anchor, so placing the
+ * anchor itself at `deg` — what this helper used to do — actually centres the
+ * panel at `deg + halfArc(width)`. That is the arc equivalent of the same
+ * off-by-half-a-width the flat templates correct with `centreStackedPanels`,
+ * and it is signed: a left-hand rail drifted inward toward the main panel
+ * while its right-hand partner drifted outward, so a pair authored at equal
+ * and opposite angles never actually looked symmetric. `outsideMainDeg`
+ * returns a centre angle, which made every caller here wrong by that amount.
+ *
+ * Stepping the anchor back along the panel's own +x axis (which yaw −`deg`
+ * puts at `(cos deg, 0, sin deg)`) puts the centre exactly on the cylinder:
+ * `deg` means what it says, and every rail is at exactly distance `d` from
+ * the reader — one accommodation for the whole desk.
+ */
 function wrapLandmark(
   d: number,
   deg: number,
-  y: number,
+  topY: number,
   width: number,
   height: number,
 ): LandmarkSlot {
+  const rad = deg2rad(deg);
+  const half = width / 2;
   return {
-    position: angularPosition(d, deg, y),
+    position: {
+      x: d * Math.sin(rad) - half * Math.cos(rad),
+      y: topY,
+      z: -d * Math.cos(rad) - half * Math.sin(rad),
+    },
     rotation: angularRotation(deg),
     size: { width, height },
     curveRadius: d,
@@ -80,338 +111,409 @@ function wrapLandmark(
   };
 }
 
+// ═════════════════════════════════════════════════════════════
+// The desk — shared geometry for the front-facing templates
+//
+// `document`, `landing` and `generic` are all the same piece of furniture
+// with a different main width and a different set of side rails, so they are
+// built by one function instead of three hand-tuned tables of magic numbers.
+// Three things it fixes, all of which the offline audit measured:
+//
+//  1. THE READING BAND SITS WHERE THE EYE RESTS. Panels used to hang from
+//     `eyeLevel + eyeLevelOffset`, i.e. their TOP edge was just under the
+//     horizon — so a 0.9 m panel at 1.2 m ran from −5° to −40° of elevation
+//     and you read the bottom third with your chin down. The band is centred
+//     on the resting gaze instead and the panel spans roughly +8°…−30°.
+//  2. PAGE CHROME IS OUTSIDE THE BAND. `footer.y = eyeY − height * 0.6` put
+//     the footer's top edge 60 % of the way DOWN the main panel: the audit
+//     reported a 1.40 × 0.12 m overlap on every profile, in every template.
+//     Banner and footer now attach above and below the band with a fixed
+//     clearance and cannot reach into it.
+//  3. THE RAILS ARE ONE FAMILY. TOC and complementary were separately
+//     drag-tuned to 1.00 m / +71.5° and 1.05 m / −64.3° against a main panel
+//     at 1.20 m — three different accommodations, no symmetry, and (in the
+//     document template) a navigation rail at −14° azimuth, i.e. hidden
+//     behind the main panel. Every rail now sits on the one user-centred
+//     cylinder, laid outward from the main panel's edges in priority order,
+//     alternating sides.
+//
+// What it does NOT pretend to fix: a 1.4 m panel at 1.2 m subtends ±33°, so
+// it fills the ±30° comfort cone by itself and anything beside it is a head
+// turn by construction. The rails are peripheral because the geometry says
+// so — the goal is that turning to one puts it flat-on and legible, not that
+// it be readable out of the corner of your eye.
+// ═════════════════════════════════════════════════════════════
+
 /**
- * DOCUMENT template
+ * Resting-gaze depression, degrees below the horizon, where the reading
+ * band's centre is placed. Comfortable seated/standing gaze sits ~10–20°
+ * down; 13° keeps a full-height panel's bottom edge inside −30° on all three
+ * device profiles while leaving its top edge only just above the horizon.
+ */
+const READING_GAZE_DEG = 13;
+
+/** Angular clearance between neighbouring panels on the shared cylinder. */
+const WRAP_GAP_DEG = 2.5;
+
+/** Vertical clearance between the reading band and anything above it. */
+const BAND_GAP = 0.035;
+
+/** The vertical span the main panel and its side rails share. */
+interface ReadingBand {
+  /** World y of the band's top edge — every panel in it hangs from here. */
+  topY: number;
+  bottomY: number;
+  height: number;
+}
+
+function readingBand(cfg: LayoutConfig): ReadingBand {
+  const height = cfg.maxPanelViewportHeight;
+  const centreY =
+    cfg.eyeLevel - cfg.viewingDistance * Math.tan(deg2rad(READING_GAZE_DEG));
+  return { topY: centreY + height / 2, bottomY: centreY - height / 2, height };
+}
+
+/**
+ * Width of the main reading panel: a multiple of the comfort cone's own width
+ * at the reading distance.
+ *
+ * It used to be a literal 1.4 / 1.6 / 1.8 per template on every device. That
+ * number is the Quest 3's comfort cone (2 · 1.2 m · tan 30° = 1.386 m), which
+ * is why it looked right there and nowhere else — on the Ray-Ban profile the
+ * same 1.4 m panel sits at 0.6 m and subtends ±67°, roughly three times the
+ * glasses' entire 40° field, and it pushed the first side rail out past 90°.
+ * Derived, the Quest 3 barely moves (1.386 vs 1.400, so its pagination is
+ * unchanged to within a percent) and the narrow profiles get a panel they can
+ * actually see.
+ */
+function mainWidth(cfg: LayoutConfig, fill: number): number {
+  return 2 * cfg.viewingDistance * Math.tan(deg2rad(cfg.comfortHalfAngleDeg)) * fill;
+}
+
+/**
+ * Width of a side rail. Proportional to the main panel so the desk keeps its
+ * proportions, floored at a fixed fraction of the reading distance so a rail
+ * subtends a readable angle on the narrow profiles (where a proportional
+ * width would come out at ~10 cm), and capped at the shared RAIL_MAX_W so a
+ * wide profile doesn't push the outer rail past a head turn.
+ */
+function railWidth(cfg: LayoutConfig, mainW: number): number {
+  return Math.min(RAIL_MAX_W, Math.max(0.26 * cfg.viewingDistance, mainW * 0.32));
+}
+
+/**
+ * Centre angles for the side rails, laid outward from the main panel's edges
+ * and alternating left/right in the order given. The order is the caller's
+ * reading priority, so the landmark a reader reaches for most often is the
+ * one needing the smallest head turn — and it alternates rather than filling
+ * one side first so the desk stays balanced.
+ */
+function railAngles(
+  roles: SlotName[],
+  mainW: number,
+  railW: number,
+  d: number,
+): Map<SlotName, number> {
+  const out = new Map<SlotName, number>();
+  const inner: Record<"L" | "R", number[]> = { L: [], R: [] };
+  roles.forEach((role, i) => {
+    const side: "L" | "R" = i % 2 === 0 ? "L" : "R";
+    out.set(
+      role,
+      outsideMainDeg(
+        side === "L" ? -1 : 1,
+        mainW,
+        railW,
+        d,
+        inner[side],
+        WRAP_GAP_DEG,
+      ),
+    );
+    inner[side].push(railW);
+  });
+  return out;
+}
+
+interface DeskSpec {
+  /** Width of the main reading panel, from `mainWidth`. */
+  mainW: number;
+  /** Side rails, nearest-first; laid alternately left then right. */
+  rails: SlotName[];
+  /** Curve radius for the head-on stacked column. Defaults to the cylinder. */
+  mainCurve?: number;
+}
+
+/**
+ * Build the desk: a main reading panel head-on in the band, page chrome
+ * attached above and below it, side rails arced outward on the shared
+ * cylinder, and the two modal overlays pulled forward of the whole thing.
+ */
+function deskSlots(
+  cfg: LayoutConfig,
+  metrics: RenderMetrics,
+  spec: DeskSpec,
+): SlotMap {
+  const d = cfg.viewingDistance;
+  const band = readingBand(cfg);
+  const { mainW, rails } = spec;
+  const curve = spec.mainCurve ?? d;
+  const railW = railWidth(cfg, mainW);
+  const leftX = -mainW / 2;
+  const bandMidY = (band.topY + band.bottomY) / 2;
+  // Overlay sizing, all relative to the desk it interrupts.
+  const alertW = mainW * 0.36;
+  const dialogW = mainW * 0.58;
+  const dialogH = band.height * 0.66;
+  /** How far in front of the desk an overlay floats — enough to separate. */
+  const overlayLift = Math.min(0.25, d * 0.2);
+
+  const map: SlotMap = {
+    main: {
+      position: { x: leftX, y: band.topY, z: -d },
+      rotation: zeroRotation(),
+      size: { width: mainW, height: band.height },
+      curveRadius: curve,
+      worldLocked: true,
+    },
+    // NO banner / footer slot.
+    //
+    // Site headers and footers are page furniture, not reading matter: given
+    // their own panels they bracketed the reading band with two full-width
+    // bars that were empty on most documents, and the desk's board had to
+    // reserve room for both — a mount half again as tall as the page inside
+    // it. Leaving the slots out means the engine's extraction passes never
+    // fire and any banner/footer content simply paginates in flow, which is
+    // the same call the content-only page views already make (see
+    // layout/content-only.ts). Nothing is dropped; it just reads in order.
+
+    // Overlays interrupt: head-on, pulled forward of the desk so they read in
+    // front of it, and sized against the desk rather than at a fixed 0.5 /
+    // 0.8 m — on the Ray-Ban profile those literals made a dialog two and a
+    // half times the width of the panel it was interrupting, hanging from
+    // +25° to −51° of elevation.
+    alert: {
+      position: {
+        x: -alertW / 2,
+        y: band.topY + BAND_GAP + metrics.alert.minHeight,
+        z: -(d - overlayLift),
+      },
+      rotation: zeroRotation(),
+      size: { width: alertW, height: metrics.alert.minHeight },
+      curveRadius: 0,
+      worldLocked: false,
+    },
+    dialog: {
+      position: {
+        x: -dialogW / 2,
+        y: bandMidY + dialogH / 2,
+        z: -(d - overlayLift),
+      },
+      rotation: zeroRotation(),
+      size: { width: dialogW, height: dialogH },
+      curveRadius: 0,
+      worldLocked: false,
+    },
+  };
+
+  const angles = railAngles(rails, mainW, railW, d);
+  for (const role of rails) {
+    map[role] = wrapLandmark(d, angles.get(role)!, band.topY, railW, band.height);
+  }
+  return map;
+}
+
+/**
+ * DOCUMENT template — an article with reading aids either side.
+ *
  * ```
- *  ←TOC arc   ←Nav   [ Main content panel (1.4 m wide) ]
+ *        ↖nav   ↖toc   [ main 1.4 m ]   aside↗
  * ```
- * Main left edge at x=0 (world origin). TOC and nav arc to the left at
- * -ha and -(ha-8) degrees — comfortably separated from main's left edge.
+ * Rails in priority order: the table of contents is what a reader reaches for
+ * first, the aside next, site navigation last.
  */
 function documentSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = cfg.viewingDistance;
-  const ha = cfg.comfortHalfAngleDeg;
-  return {
-    banner: {
-      position: { x: 0, y: eyeY + 0.52, z: -d },
-      rotation: zeroRotation(),
-      size: { width: 1.4, height: metrics.banner.height },
-      curveRadius: d * 0.8,
-      worldLocked: true,
-    },
-    toc: {
-      position: { x: -0.81, y: 1.41, z: -0.49 },
-      rotation: { x: 0, y: 1.248, z: 0 },
-      size: { width: 0.36, height: 0.9 },
-      curveRadius: 0.62,
-      worldLocked: true,
-    },
-    navigation: {
-      position: angularPosition(d, -(ha - 8), eyeY - 0.05),
-      rotation: angularRotation(-(ha - 8)),
-      size: { width: 0.32, height: metrics.navigationBar.height },
-      curveRadius: d,
-      worldLocked: true,
-    },
-    main: {
-      position: { x: 0, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: { width: 1.4, height: cfg.maxPanelViewportHeight },
-      curveRadius: d * 0.8,
-      worldLocked: true,
-    },
-    complementary: {
-      position: { x: 0.7, y: 1.4, z: -0.9 },
-      rotation: { x: 0, y: -1.122, z: 0 },
-      size: { width: 0.5, height: 0.9 },
-      curveRadius: 1.2,
-      worldLocked: true,
-    },
-    footer: {
-      position: { x: 0, y: eyeY - cfg.maxPanelViewportHeight * 0.6, z: -d },
-      rotation: zeroRotation(),
-      size: { width: 1.4, height: metrics.footer.height },
-      curveRadius: d * 0.8,
-      worldLocked: true,
-    },
-    alert: {
-      position: { x: 0.4, y: eyeY + 0.35, z: -(d - 0.15) },
-      rotation: { x: 0, y: -0.15, z: 0 },
-      size: { width: 0.5, height: metrics.alert.minHeight },
-      curveRadius: 0,
-      worldLocked: false,
-    },
-    dialog: {
-      position: { x: 0, y: eyeY, z: -(d - 0.2) },
-      rotation: zeroRotation(),
-      size: { width: 0.8, height: 0.6 },
-      curveRadius: 0,
-      worldLocked: false,
-    },
-  };
+  return deskSlots(cfg, metrics, {
+    // Exactly the comfort cone: an article panel you read without turning.
+    mainW: mainWidth(cfg, 1),
+    rails: ["toc", "complementary", "navigation"],
+  });
 }
 
 /**
- * LANDING template
- * ```
- * [       Hero / Main (1.8 m wide, panoramic)       ]
- *         ←Nav (bottom arc)
- * ```
+ * LANDING template — a wider, panoramic hero panel. Only one rail: a landing
+ * page's nav is its content, so the desk stays uncluttered and the extra
+ * width goes to the hero instead.
  */
 function landingSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = cfg.viewingDistance;
-  const ha = cfg.comfortHalfAngleDeg;
-  return {
-    banner: {
-      position: { x: 0, y: eyeY + 0.54, z: -d },
-      rotation: zeroRotation(),
-      size: { width: 1.8, height: metrics.banner.height },
-      curveRadius: d * 1.4,
-      worldLocked: true,
-    },
-    toc: {
-      position: angularPosition(d * 0.95, -ha, eyeY - 0.05),
-      rotation: angularRotation(-ha),
-      size: { width: 0.36, height: metrics.navigationBar.height },
-      curveRadius: d,
-      worldLocked: true,
-    },
-    navigation: {
-      position: { x: 0, y: eyeY - 0.62, z: -(d - 0.1) },
-      rotation: { x: 0.15, y: 0, z: 0 },
-      size: { width: 1.6, height: 0.1 },
-      curveRadius: d * 1.4,
-      worldLocked: true,
-    },
-    main: {
-      position: { x: 0, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: { width: 1.8, height: cfg.maxPanelViewportHeight },
-      curveRadius: d * 1.4,
-      worldLocked: true,
-    },
-    complementary: {
-      position: angularPosition(d, ha, eyeY),
-      rotation: angularRotation(ha),
-      size: { width: 0.42, height: cfg.maxPanelViewportHeight },
-      curveRadius: d,
-      worldLocked: true,
-    },
-    footer: {
-      position: { x: 0, y: eyeY - cfg.maxPanelViewportHeight * 0.6, z: -d },
-      rotation: zeroRotation(),
-      size: { width: 1.8, height: metrics.footer.height },
-      curveRadius: d * 1.4,
-      worldLocked: true,
-    },
-    alert: {
-      position: { x: 0, y: eyeY + 0.45, z: -(d - 0.15) },
-      rotation: zeroRotation(),
-      size: { width: 0.6, height: metrics.alert.minHeight },
-      curveRadius: 0,
-      worldLocked: false,
-    },
-    dialog: {
-      position: { x: 0, y: eyeY, z: -(d - 0.2) },
-      rotation: zeroRotation(),
-      size: { width: 0.85, height: 0.65 },
-      curveRadius: 0,
-      worldLocked: false,
-    },
-  };
+  return deskSlots(cfg, metrics, {
+    mainW: mainWidth(cfg, 1.3),
+    rails: ["toc", "complementary", "navigation"],
+    // A panoramic panel wants a flatter bend than the reading cylinder, or
+    // its far edges rake away from the reader.
+    mainCurve: cfg.viewingDistance * 1.4,
+  });
 }
 
-/**
- * GENERIC template — safe fallback.
- */
+/** GENERIC template — safe fallback, between the two in width. */
 function genericSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = cfg.viewingDistance;
-  const mainW = 1.6;
-  const tocW = 0.36;
-  const navW = 0.32;
-  const compW = 0.42;
-  return {
-    banner: {
-      position: { x: 0, y: eyeY + 0.52, z: -d },
-      rotation: zeroRotation(),
-      size: { width: mainW, height: metrics.banner.height },
-      curveRadius: d,
-      worldLocked: true,
-    },
-    toc: wrapLandmark(
-      d,
-      outsideMainDeg(-1, mainW, tocW, d),
-      eyeY - 0.05,
-      tocW,
-      metrics.navigationBar.height,
-    ),
-    navigation: wrapLandmark(
-      d,
-      outsideMainDeg(-1, mainW, navW, d, [tocW]),
-      eyeY - 0.05,
-      navW,
-      metrics.navigationBar.height,
-    ),
-    main: {
-      position: { x: 0, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: { width: mainW, height: cfg.maxPanelViewportHeight },
-      curveRadius: d,
-      worldLocked: true,
-    },
-    complementary: wrapLandmark(
-      d,
-      outsideMainDeg(1, mainW, compW, d),
-      eyeY,
-      compW,
-      cfg.maxPanelViewportHeight,
-    ),
-    footer: {
-      position: { x: 0, y: eyeY - cfg.maxPanelViewportHeight * 0.6, z: -d },
-      rotation: zeroRotation(),
-      size: { width: 1.6, height: metrics.footer.height },
-      curveRadius: d,
-      worldLocked: true,
-    },
-    alert: {
-      position: { x: 0.4, y: eyeY + 0.35, z: -(d - 0.15) },
-      rotation: { x: 0, y: -0.15, z: 0 },
-      size: { width: 0.5, height: metrics.alert.minHeight },
-      curveRadius: 0,
-      worldLocked: false,
-    },
-    dialog: {
-      position: { x: 0, y: eyeY, z: -(d - 0.2) },
-      rotation: zeroRotation(),
-      size: { width: 0.8, height: 0.6 },
-      curveRadius: 0,
-      worldLocked: false,
-    },
-  };
+  return deskSlots(cfg, metrics, {
+    mainW: mainWidth(cfg, 1.15),
+    rails: ["complementary", "toc", "navigation"],
+  });
 }
 
 /**
- * CAROUSEL template — five panels in a flat row, each rotated to face the
- * viewer and pushed back in z proportional to the rotation angle.
+ * CAROUSEL template — the reading arc.
  *
- * Algorithm:
- *  1. Lay out all panels in a flat row: x positions from widths + constant gap.
- *  2. Rotate each panel by its facing angle (0° main, ±30° ghosts, ±60° toc/aside).
- *  3. Push z back via the cylindrical formula z = -d / cos(angle) so panels
- *     recede naturally as they rotate — the panel facing the viewer is always
- *     at effective depth d.
+ * The page you are on reads head-on in the band; the pages either side of it
+ * stand BESIDE it, clear of its edges, on the SAME user-centred cylinder as
+ * the main panel and the side rails. Three pages in an unbroken row: you can
+ * see what you have just read and what comes next, not merely that they
+ * exist, and every one of them is the same reach and the same focal distance
+ * away — one accommodation for the whole view, which is the invariant the
+ * wrap geometry at the top of this file exists to keep.
  *
- * Ghost panel angles and the gap constant are exported for the renderer.
+ * Nothing here steps back in depth and nothing gets an extra yaw of its own:
+ * a panel placed tangent on the radius-`d` circle already faces the reader,
+ * and a neighbour pushed onto its own arc — or turned further in than the
+ * tangent — is the thing that made the earlier version read as a page hiding
+ * behind the one being read.
+ *
+ * The room has to come from somewhere, since a panel the width of the comfort
+ * cone fills ±33° by itself. Two concessions pay for it:
+ *
+ *  • the carousel's main panel is a little narrower than the front-facing
+ *    templates' (CAROUSEL_MAIN_FILL) — this view trades reading width for
+ *    context, which is the whole reason to be in it;
+ *  • the neighbours are drawn at CAROUSEL_NEIGHBOUR_SCALE, as reduced
+ *    previews rather than full pages. Standing them further back would shrink
+ *    them the same amount and take them off the cylinder to do it.
+ *
+ * The result puts each neighbour's inner edge one WRAP_GAP_DEG past the main
+ * panel's edge on every device profile, and the side rails one gap past the
+ * neighbour's outer edge. `CarouselPageRail` in the renderer still says where
+ * in the document you are; the arc says what is on either side of you.
  */
-export const CAROUSEL_GHOST_PREV_ANGLE_DEG = -30;
-export const CAROUSEL_GHOST_NEXT_ANGLE_DEG = 30;
-/** World-space x-gap between adjacent carousel panels (metres). */
-export const CAROUSEL_GHOST_GAP = 0.06;
-/**
- * Z pull-forward step per tier (metres, toward the viewer).
- * Main = -d (tier 0), ghosts = -d + Z_STEP (tier 1), toc/aside = -d + 2*Z_STEP (tier 2).
- */
-export const CAROUSEL_Z_STEP = 0.2;
 
 /**
- * Placement of the two carousel "ghost" panels (prev/next page previews),
- * derived from the main content panel's position and size. Shared by the
- * renderer (which draws the ghosts) and the tuning HUD (which seeds its sliders
- * from these defaults), so both agree on where a ghost sits before tuning.
+ * Size of a neighbour page relative to the one being read. A preview, not a
+ * second reading surface — and, with everything on one cylinder, the only
+ * lever left over how far round the arc the side rails end up.
+ */
+export const CAROUSEL_NEIGHBOUR_SCALE = 0.5;
+
+/**
+ * How much of the comfort cone the carousel's reading panel takes. Less than
+ * the front-facing templates' full cone: what it gives up in width it buys
+ * back as room for a whole page either side of it.
+ */
+const CAROUSEL_MAIN_FILL = 0.85;
+
+/** Width of a neighbour page — the reading panel's, reduced. */
+function carouselNeighbourWidth(mainW: number): number {
+  return mainW * CAROUSEL_NEIGHBOUR_SCALE;
+}
+
+/**
+ * Centre angle (degrees, unsigned) of a neighbouring page on the cylinder.
+ *
+ * Solved, not picked: the neighbour's INNER edge lands exactly one
+ * `WRAP_GAP_DEG` past the main panel's edge, so the three pages sit side by
+ * side with the same hairline between them whatever the device profile's
+ * panel size and reading distance are. It is `outsideMainDeg` — the same rule
+ * that lays out the rails — because a neighbour is now placed by the same
+ * geometry as everything else on the cylinder.
+ */
+export function carouselNeighbourDeg(mainW: number, d: number): number {
+  return outsideMainDeg(
+    1,
+    mainW,
+    carouselNeighbourWidth(mainW),
+    d,
+    [],
+    WRAP_GAP_DEG,
+  );
+}
+
+/**
+ * Angle of a neighbour's OUTER edge — the first bearing past the arc that is
+ * free for anything else, which is what the side rails are laid out from.
+ */
+export function carouselArcOuterDeg(mainW: number, d: number): number {
+  return (
+    carouselNeighbourDeg(mainW, d) + halfArcDeg(carouselNeighbourWidth(mainW), d)
+  );
+}
+
+/**
+ * Placement of the two carousel neighbour panels, derived from the main
+ * content panel's own slot. Shared by the renderer (which draws them) and the
+ * tuning HUD (which seeds its sliders here), so both agree before tuning.
+ *
+ * `pos` is the main slot's TOP-LEFT anchor, which the carousel always places
+ * head-on at `z = −d`; that is where the reading distance comes from when the
+ * caller does not pass one.
+ *
+ * `scale` comes back with the poses because a neighbour is the SAME panel
+ * drawn smaller: its children keep the main panel's panel-absolute layout, so
+ * the renderer shrinks the whole group about its top-left anchor rather than
+ * re-laying anything out.
  */
 export function carouselGhostPlacement(
   pos: { x: number; y: number; z: number },
-  _size: { width: number; height: number },
+  size: { width: number; height: number },
+  viewingDistance?: number,
 ): {
   prev: { position: { x: number; y: number; z: number }; rotation: Rotation3 };
   next: { position: { x: number; y: number; z: number }; rotation: Rotation3 };
+  scale: number;
 } {
-  return {
-    prev: {
-      // QUEST_3 · carousel ghost · prev — offsets from main in scene-graph.tsx
-      position: {
-        x: pos.x - 1.02,
-        y: pos.y - 0.01,
-        z: pos.z + 1.17,
-      },
-      rotation: angularRotation(-46.868),
-    },
+  const d = viewingDistance ?? Math.abs(pos.z);
+  const deg = carouselNeighbourDeg(size.width, d);
+  const scale = CAROUSEL_NEIGHBOUR_SCALE;
+  // A shorter page hung from the main panel's top edge would float above a
+  // band it no longer fills, so the neighbour is centred on the band instead:
+  // its anchor drops by half the height the scaling took off.
+  const topY = pos.y - (size.height * (1 - scale)) / 2;
 
-    next: {
-      // QUEST_3 · carousel ghost · next — offsets from main in scene-graph.tsx
-      position: {
-        x: pos.x + 1.45,
-        y: pos.y - 0.01,
-        z: pos.z + 0.14,
-      },
-      rotation: angularRotation(52.803),
-    },
+  // `wrapLandmark` is the cylinder placement every other panel gets: centre on
+  // the radius-`d` circle at ±deg, tangent, top-left anchor stepped back half
+  // the panel's own width. Passing the SCALED width is what keeps the drawn
+  // page — not the layout box it inherits from main — centred on that bearing.
+  const place = (side: 1 | -1) => {
+    const slot = wrapLandmark(
+      d,
+      side * deg,
+      topY,
+      carouselNeighbourWidth(size.width),
+      size.height * scale,
+    );
+    return { position: slot.position, rotation: slot.rotation };
   };
+
+  return { prev: place(-1), next: place(1), scale };
 }
 
+/**
+ * The carousel's own slots. Same desk as the front-facing templates — one
+ * reading band, chrome attached above and below it — but with a narrower
+ * reading panel and the side rails pushed outside the two neighbouring pages,
+ * so the arc has room to stand beside it rather than behind it.
+ */
 function carouselSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
   const d = cfg.viewingDistance;
-  const MAIN_W = 1.4;
-  // Main sits centred; toc / complementary / ghosts are hand-placed below
-  // (ghosts via carouselGhostPlacement in the renderer).
-  const mainX = -(MAIN_W / 2);
+  const mainW = mainWidth(cfg, CAROUSEL_MAIN_FILL);
+  const map = deskSlots(cfg, metrics, { mainW, rails: [] });
+  const band = readingBand(cfg);
+  const railW = railWidth(cfg, mainW);
 
-  return {
-    toc: {
-      position: { x: -1.81, y: 1.37, z: 0.41 },
-      rotation: { x: 0, y: 1.047, z: 0 },
-      // Same height as the content panel (main); width kept slim.
-      size: { width: 0.36, height: cfg.maxPanelViewportHeight },
-      curveRadius: 0,
-      worldLocked: true,
-    },
-    main: {
-      position: { x: mainX, y: eyeY, z: -d },
-      rotation: zeroRotation(),
-      size: { width: MAIN_W, height: cfg.maxPanelViewportHeight },
-      curveRadius: d * 0.8,
-      worldLocked: true,
-    },
-    complementary: {
-      position: { x: 1.45, y: 1.4, z: 0.18 },
-      rotation: { x: 0, y: -1.437, z: 0 },
-      size: { width: 0.5, height: 0.9 },
-      curveRadius: 0,
-      worldLocked: true,
-    },
-    banner: {
-      position: { x: mainX, y: eyeY + 0.52, z: -d },
-      rotation: zeroRotation(),
-      size: { width: MAIN_W, height: metrics.banner.height },
-      curveRadius: d * 0.8,
-      worldLocked: true,
-    },
-    footer: {
-      position: { x: mainX, y: eyeY - cfg.maxPanelViewportHeight * 0.6, z: -d },
-      rotation: zeroRotation(),
-      size: { width: MAIN_W, height: metrics.footer.height },
-      curveRadius: d * 0.8,
-      worldLocked: true,
-    },
-    alert: {
-      position: { x: 0.4, y: eyeY + 0.35, z: -(d - 0.15) },
-      rotation: { x: 0, y: -0.15, z: 0 },
-      size: { width: 0.5, height: metrics.alert.minHeight },
-      curveRadius: 0,
-      worldLocked: false,
-    },
-    dialog: {
-      position: { x: 0, y: eyeY, z: -(d - 0.2) },
-      rotation: zeroRotation(),
-      size: { width: 0.8, height: 0.6 },
-      curveRadius: 0,
-      worldLocked: false,
-    },
-  };
+  // Clear the whole arc, not just the main panel: a rail laid out from main's
+  // edge would be drawn over by the page standing next to it.
+  const clearDeg =
+    carouselArcOuterDeg(mainW, d) + WRAP_GAP_DEG + halfArcDeg(railW, d);
+  map.toc = wrapLandmark(d, -clearDeg, band.topY, railW, band.height);
+  map.complementary = wrapLandmark(d, clearDeg, band.topY, railW, band.height);
+  return map;
 }
 
 /**
@@ -555,12 +657,9 @@ type DistributeFn = (
 
 // ── Shared helpers ───────────────────────────────────────────
 
-/**
- * Peripheral rails are width-capped so a scattered arrangement never places a
- * full main-width (≈1.4 m) panel beside another — the cause of overlap. Height
- * is capped to the viewport so tall side panels stay comfortable.
- */
-const RAIL_MAX_W = 0.5;
+// `RAIL_MAX_W` is declared at the top of the file — the desk templates size
+// their side rails through it too, so a rail is the same slab of the
+// workspace whichever path placed it.
 
 function railSize(spec: SlotSpec, cfg: LayoutConfig): Size2 {
   return {

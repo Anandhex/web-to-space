@@ -1,4 +1,4 @@
-import React, { useState, useRef, Suspense, useEffect } from "react";
+import React, { useState, useRef, useMemo, Suspense, useEffect } from "react";
 import { Canvas } from "@react-three/fiber";
 import { Stars, OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
@@ -19,20 +19,52 @@ import {
   THEME_FIELD_LABELS,
   type XRTheme,
 } from "../renderer/theme";
+import { contrast } from "../renderer/scene/section-tint";
+import { SR_ONLY, usePrefersReducedMotion } from "./a11y";
+
+// Re-exported so existing importers of these from this module keep working.
+export { SR_ONLY };
 
 // ─────────────────────────────────────────────────────────────
 // Types & defaults
 // ─────────────────────────────────────────────────────────────
 
 export interface HomeTheme {
+  /**
+   * The brand blue. Used for FILLS, rims and focus rings — things WCAG scores
+   * as non-text UI (3:1) — never as small ink: #0082FB on the card surface is
+   * 3.6:1, which is fine for a chip and not fine for a label.
+   */
   accent: string;
+  /** The same brand blue lifted until it passes 4.5:1 as ink on a card. */
+  accentText: string;
   accentDim: string;
   background: string;
   canvasBg: string;
   cardBg: string;
   cardHover: string;
+  /**
+   * The board the card grid stands on. Deliberately DARKER than the cards, so
+   * they read as raised off it. It is a grouping cue rather than a control, so
+   * it is not held to 3:1 itself — the card RIM is what has to be identifiable
+   * against it, and that is measured.
+   */
+  boardBg: string;
+  /** The accent chip carrying a destination's initial. */
+  chipBg: string;
+  chipBgActive: string;
+  /** Hairline rule inside a card. Held at 3:1 — an invisible rule is not one. */
+  divider: string;
+  /**
+   * The card's edge. A dark card on a dark starfield cannot reach 3:1 on fill
+   * alone without turning into a light grey slab, so the rim is what carries
+   * the boundary — which is what SC 1.4.11 actually asks for.
+   */
+  cardRim: string;
   textPrimary: string;
   textSecondary: string;
+  /** Tertiary ink — the URL line. Still held at 4.5:1; it is real text. */
+  textMuted: string;
 }
 
 export interface HomeSettings {
@@ -50,18 +82,34 @@ export interface HomeSettings {
   viewMode: ViewMode;
 }
 
-// Meta Horizon OS palette — neutral charcoal surfaces, #0082FB brand accent.
-// Mirrors DARK_THEME in theme.ts so the Home screen reads as the same design
-// language as the 3D document viewer.
+/**
+ * Meta Horizon OS palette — neutral charcoal surfaces, #0082FB brand accent,
+ * the same design language as the 3D document viewer's DARK_THEME.
+ *
+ * Every pair is measured rather than eyeballed. The previous values put the
+ * cards at #525256, a mid-grey with no headroom in either direction: seven of
+ * fourteen foreground/background pairs failed WCAG AA, the worst being the
+ * URL line at 1.82:1 and the divider at 1.13:1 — a rule you cannot see. The
+ * card surface moved DOWN instead (dark card, light ink), which is what gives
+ * the secondary and muted inks somewhere to go, and the boundary moved from
+ * the fill to the rim.
+ */
 export const DEFAULT_HOME_THEME: HomeTheme = {
   accent: "#0082FB",
+  accentText: "#6BAEFF",
   accentDim: "#0A4A8A",
-  background: "#161618",
-  canvasBg: "#0E0E10",
-  cardBg: "#525256",
-  cardHover: "#40404A",
+  background: "#131315",
+  canvasBg: "#0B0B0D",
+  cardBg: "#2E2E32",
+  cardHover: "#3C3C42",
+  boardBg: "#1A1A1E",
+  chipBg: "#1E3350",
+  chipBgActive: "#1A3454",
+  divider: "#7A7A84",
+  cardRim: "#6E6E76",
   textPrimary: "#F5F5F5",
-  textSecondary: "#B4B4BC",
+  textSecondary: "#B8B8BE",
+  textMuted: "#A8A8B0",
 };
 
 export const DEFAULT_HOME_SETTINGS: HomeSettings = {
@@ -72,6 +120,71 @@ export const DEFAULT_HOME_SETTINGS: HomeSettings = {
   parserBackend: "custom",
   viewMode: "standard",
 };
+
+export const HOME_THEME_FIELD_LABELS: Record<keyof HomeTheme, string> = {
+  accent: "Accent (fills, rings)",
+  accentText: "Accent as ink",
+  accentDim: "Accent (dim)",
+  background: "Page background",
+  canvasBg: "Canvas background",
+  cardBg: "Card",
+  cardHover: "Card (hover)",
+  cardRim: "Card border",
+  boardBg: "Launcher board",
+  chipBg: "Initial chip",
+  chipBgActive: "Initial chip (hover)",
+  divider: "Card rule",
+  textPrimary: "Text primary",
+  textSecondary: "Text secondary",
+  textMuted: "Text muted (URL)",
+};
+
+/**
+ * Every foreground/background pair the launcher actually draws, with the WCAG
+ * level each has to clear: 4.5:1 for text, 3:1 for the boundaries and rings
+ * that identify a control.
+ *
+ * The palette is user-editable, and a colour picker will happily produce a
+ * launcher nobody can read — the defaults shipped with seven failing pairs,
+ * including a URL line at 1.82:1. This is what the Settings panel checks
+ * against so a broken palette says so instead of just looking a bit murky.
+ */
+export function homeContrastPairs(
+  t: HomeTheme,
+): { label: string; fg: string; bg: string; need: number }[] {
+  return [
+    { label: "Card title", fg: t.textPrimary, bg: t.cardBg, need: 4.5 },
+    { label: "Card subtitle", fg: t.textSecondary, bg: t.cardBg, need: 4.5 },
+    {
+      label: "Card subtitle (hover)",
+      fg: t.textSecondary,
+      bg: t.cardHover,
+      need: 4.5,
+    },
+    { label: "Card URL", fg: t.textMuted, bg: t.cardBg, need: 4.5 },
+    { label: "Card URL (hover)", fg: t.textMuted, bg: t.cardHover, need: 4.5 },
+    { label: "Open hint", fg: t.accentText, bg: t.cardHover, need: 4.5 },
+    { label: "Chip initial", fg: t.accentText, bg: t.chipBg, need: 4.5 },
+    {
+      label: "Chip initial (hover)",
+      fg: t.accentText,
+      bg: t.chipBgActive,
+      need: 4.5,
+    },
+    { label: "Card border on board", fg: t.cardRim, bg: t.boardBg, need: 3 },
+    { label: "Card border on canvas", fg: t.cardRim, bg: t.canvasBg, need: 3 },
+    { label: "Card rule", fg: t.divider, bg: t.cardBg, need: 3 },
+    { label: "Focus ring on card", fg: t.accent, bg: t.cardBg, need: 3 },
+    { label: "Focus ring on board", fg: t.accent, bg: t.boardBg, need: 3 },
+    { label: "Heading on canvas", fg: t.textPrimary, bg: t.canvasBg, need: 3 },
+    {
+      label: "Subheading on canvas",
+      fg: t.textSecondary,
+      bg: t.canvasBg,
+      need: 4.5,
+    },
+  ];
+}
 
 const LS_KEY = "fsw-home-settings";
 
@@ -110,14 +223,22 @@ function hexToRgb(hex: string): string {
 export const TEST_PAGE_TOKEN = "__test_elements__";
 const TEST_PAGE_PATH = "/test-elements.html";
 
-const PRESET_SITES = [
-  {
-    id: "test-elements",
-    title: "▦ Renderer Test Page",
-    subtitle: "Every primitive + edge cases — local smoke test",
-    url: TEST_PAGE_TOKEN,
-    initial: "T",
-  },
+export interface PresetSite {
+  id: string;
+  title: string;
+  subtitle: string;
+  url: string;
+  initial: string;
+}
+
+/**
+ * The six destinations, in grid order. The renderer test page is NOT one of
+ * them — it is a local smoke test, a different kind of thing from a website,
+ * and giving it the seventh cell of a six-cell grid left it orphaned on a row
+ * of its own 1.8 m below the others (a 30° drop in gaze). It gets its own
+ * strip under the grid instead; see UTILITY_SITE.
+ */
+const PRESET_SITES: PresetSite[] = [
   {
     id: "nasa",
     title: "NASA",
@@ -153,62 +274,179 @@ const PRESET_SITES = [
     url: "https://web.dev/",
     initial: "D",
   },
+  {
+    id: "test-elements",
+    title: "Renderer Test Page",
+    subtitle: "Every primitive + edge cases · local smoke test",
+    url: TEST_PAGE_TOKEN,
+    initial: "▦",
+  },
 ];
 
-const CARD_POSITIONS: [number, number, number][] = [
-  [-1.65, 2.1, -3.0],
-  [0, 2.1, -3.0],
-  [1.65, 2.1, -3.0],
-  [-1.65, 0.9, -3.0],
-  [0, 0.9, -3.0],
-  [1.65, 0.9, -3.0],
-  // 7th card (renderer test page) — centred on a third row below the grid.
-  [0, -0.3, -3.0],
-];
+// ─────────────────────────────────────────────────────────────
+// Launcher geometry
+//
+// The grid used to be a flat table of seven hand-written positions on the
+// plane z = −3, spanning y −0.3 → 2.1. Measured from the camera at
+// (0, 1.5, 2.8) that is a 5.8 m reach and a vertical span of ±30° — the
+// bottom card sat a metre and a half below the eye line, and it collided in
+// screen space with the in-world search bar 3.5 m nearer the viewer.
+//
+// Everything below is derived from one arc instead: cards sit on a cylinder
+// centred on the viewer, so every card is the same distance (one
+// accommodation, one focal plane) and each is yawed to face them squarely
+// rather than raked away at the edges. The band is chosen to clear the chrome
+// stack, which occupies roughly −12° to −33° of elevation in front of it.
+// ─────────────────────────────────────────────────────────────
+
+/** Where the launcher's camera sits — the centre of the card cylinder. */
+const HOME_EYE: [number, number, number] = [0, 1.5, 2.8];
+/** Radius of that cylinder: every card is exactly this far from the eye. */
+const HOME_RADIUS = 3.4;
+
+const CARD_W = 1.16;
+const CARD_H = 0.62;
+const CARD_GAP_X = 0.1;
+const CARD_GAP_Y = 0.11;
+const CARD_COLS = 3;
+
+/** The utility strip under the grid — wider and shorter than a card. */
+const UTIL_W = CARD_COLS * CARD_W + (CARD_COLS - 1) * CARD_GAP_X;
+const UTIL_H = 0.28;
+
+/**
+ * Elevation of the BOTTOM of the whole board.
+ *
+ * The chrome stack sits 2.3–2.6 m from the eye and runs from −10.8° down to
+ * −29.9°; the board is 3.4 m away, so the two never intersect in world space
+ * and would happily overlap on screen. This clears the top of that band by
+ * ~2°, and the board's height then falls out of it: the whole launcher spans
+ * −8.5° to +20°, inside the comfortable vertical viewing zone.
+ */
+const BOARD_BOTTOM_DEG = -8.5;
+
+const DEG = Math.PI / 180;
+
+/** World y at a given elevation on the card cylinder. */
+function yAtElevation(deg: number): number {
+  return HOME_EYE[1] + HOME_RADIUS * Math.tan(deg * DEG);
+}
+
+const BOARD_BOTTOM_Y = yAtElevation(BOARD_BOTTOM_DEG);
+const GRID_ROWS = Math.ceil(PRESET_SITES.length / CARD_COLS);
+const BOARD_INNER_H =
+  UTIL_H + CARD_GAP_Y + GRID_ROWS * CARD_H + (GRID_ROWS - 1) * CARD_GAP_Y;
+const BOARD_PAD = 0.12;
+
+export interface CardPose {
+  position: [number, number, number];
+  /** Yaw that turns the card square-on to the eye. */
+  yaw: number;
+}
+
+/**
+ * Place a cell of width `w` whose centre is `alongX` metres along the arc from
+ * dead ahead, at world height `y`. The arc offset is converted to an angle so
+ * the row wraps around the reader instead of running off on a flat plane.
+ */
+function arcPose(alongX: number, y: number): CardPose {
+  const theta = alongX / HOME_RADIUS;
+  return {
+    position: [
+      HOME_EYE[0] + HOME_RADIUS * Math.sin(theta),
+      y,
+      HOME_EYE[2] - HOME_RADIUS * Math.cos(theta),
+    ],
+    yaw: -theta,
+  };
+}
+
+/** Pose of the i-th destination card, in reading order (left→right, top→down). */
+export function cardPose(i: number): CardPose {
+  const col = i % CARD_COLS;
+  const row = Math.floor(i / CARD_COLS);
+  const alongX = (col - (CARD_COLS - 1) / 2) * (CARD_W + CARD_GAP_X);
+  const topRowY = BOARD_BOTTOM_Y + BOARD_INNER_H - CARD_H / 2;
+  return arcPose(alongX, topRowY - row * (CARD_H + CARD_GAP_Y));
+}
+
+/** Pose of the utility strip, under the last grid row. */
+export function utilityPose(): CardPose {
+  return arcPose(0, BOARD_BOTTOM_Y + UTIL_H / 2);
+}
 
 // ─────────────────────────────────────────────────────────────
 // 3D Components
 // ─────────────────────────────────────────────────────────────
 
 interface SiteCardProps {
-  title: string;
-  subtitle: string;
-  url: string;
-  initial: string;
-  position: [number, number, number];
+  site: PresetSite;
+  pose: CardPose;
+  /** Cell size — the utility strip is wider and shorter than a grid card. */
+  width: number;
+  height: number;
   onSelect: (url: string) => void;
-  phase: number;
   disabled: boolean;
   theme: HomeTheme;
+  /**
+   * This cell owns keyboard focus. Driven by the DOM layer's focus, not by
+   * anything in the canvas: the ring IS the focus indicator for a sighted
+   * keyboard user, so it has to track the real focus and not a mouse hover.
+   */
+  focused: boolean;
 }
 
-const CARD_W = 1.34;
-const CARD_H = 0.92;
-
+/**
+ * One destination.
+ *
+ * Hover and focus are drawn DIFFERENTLY on purpose. Hover lifts the fill and
+ * warms the rim; focus draws a separate accent ring standing proud of the
+ * card, sized so it is still visible when the card is also hovered. Using one
+ * treatment for both would leave a keyboard user unable to tell where they
+ * are the moment the pointer happened to be resting somewhere.
+ */
 function SiteCard({
-  title,
-  subtitle,
-  url,
-  initial,
-  position,
+  site,
+  pose,
+  width,
+  height,
   onSelect,
   disabled,
   theme,
+  focused,
 }: SiteCardProps) {
   const [hovered, setHovered] = useState(false);
   const groupRef = useRef<THREE.Group>(null);
 
-  const active = hovered && !disabled;
-  const halfW = CARD_W / 2;
-  const halfH = CARD_H / 2;
-  const pad = 0.11;
+  const active = (hovered || focused) && !disabled;
+  const halfW = width / 2;
+  const halfH = height / 2;
+  const pad = height * 0.13;
+  const chip = height * 0.3;
+  // Type scale, proportional to the cell so the utility strip and the grid
+  // cards share one ratio rather than two hand-picked sets of sizes.
+  const titleSize = height * 0.133;
+  const bodySize = height * 0.088;
+  const metaSize = height * 0.072;
 
   return (
-    <group ref={groupRef} position={position}>
-      {/* Card body — Meta Horizon charcoal surface with top-edge gradient
-          and a hairline rim that lights up to the brand accent on hover. */}
+    <group ref={groupRef} position={pose.position} rotation={[0, pose.yaw, 0]}>
+      {/* Focus ring — behind the card, standing proud on every side. */}
+      {focused && (
+        <Surface
+          width={width + 0.05}
+          height={height + 0.05}
+          radius={0.09}
+          color={theme.accent}
+          flat
+          origin={[0, 0]}
+          z={-0.006}
+        />
+      )}
+
+      {/* Invisible hit plane so the whole card is one click target. */}
       <mesh
-        position={[0, 0, 0]}
+        position={[0, 0, 0.004]}
         onPointerOver={(e) => {
           e.stopPropagation();
           if (!disabled) {
@@ -222,100 +460,107 @@ function SiteCard({
         }}
         onClick={(e) => {
           e.stopPropagation();
-          if (!disabled) onSelect(url);
+          if (!disabled) onSelect(site.url);
         }}
       >
-        {/* Invisible hit plane so the whole card is clickable */}
-        <planeGeometry args={[CARD_W, CARD_H]} />
+        <planeGeometry args={[width, height]} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
 
       <Surface
-        width={CARD_W}
-        height={CARD_H}
+        width={width}
+        height={height}
         radius={0.07}
         color={active ? theme.cardHover : theme.cardBg}
         flat
-        rimColor={active ? theme.accent : "#5B5B5B"}
-        rimOpacity={active ? 0.9 : 0.6}
+        rimColor={active ? theme.accent : theme.cardRim}
+        rimOpacity={active ? 1 : 0.85}
         origin={[0, 0]}
       />
 
-      {/* Accent initial chip — rounded tile, top-left */}
-      <group position={[-halfW + pad + 0.12, halfH - pad - 0.12, 0.004]}>
+      {/* Accent chip carrying the initial, top-left. */}
+      <group
+        position={[-halfW + pad + chip / 2, halfH - pad - chip / 2, 0.004]}
+      >
         <Surface
-          width={0.24}
-          height={0.24}
-          radius={0.06}
-          color={active ? "#0A3A66" : "#22303C"}
+          width={chip}
+          height={chip}
+          radius={chip * 0.26}
+          color={active ? theme.chipBgActive : theme.chipBg}
           flat
           rimColor={theme.accent}
-          rimOpacity={active ? 0.9 : 0.5}
+          rimOpacity={active ? 1 : 0.6}
           origin={[0, 0]}
         />
         <Text
           position={[0, 0, 0.006]}
-          fontSize={0.13}
-          color={active ? "#7FC0FF" : theme.accent}
+          fontSize={chip * 0.52}
+          color={theme.accentText}
           anchorX="center"
           anchorY="middle"
         >
-          {initial}
+          {site.initial}
         </Text>
       </group>
 
       {/* Title, right of the chip */}
       <Text
-        position={[-halfW + pad + 0.26, halfH - pad - 0.07, 0.006]}
-        fontSize={0.082}
+        position={[
+          -halfW + pad + chip + pad * 0.7,
+          halfH - pad - chip * 0.34,
+          0.006,
+        ]}
+        fontSize={titleSize}
         color={theme.textPrimary}
         anchorX="left"
-        anchorY="top"
-        maxWidth={CARD_W - 0.5}
+        anchorY="middle"
+        maxWidth={width - (pad * 2 + chip + pad * 0.7)}
         letterSpacing={-0.01}
       >
-        {title}
+        {site.title}
       </Text>
 
       {/* Subtitle spans the full width below the header */}
       <Text
-        position={[-halfW + pad, 0.0, 0.006]}
-        fontSize={0.056}
+        position={[-halfW + pad, halfH - pad - chip - pad * 0.75, 0.006]}
+        fontSize={bodySize}
         color={theme.textSecondary}
         anchorX="left"
-        anchorY="middle"
-        maxWidth={CARD_W - 2 * pad}
+        anchorY="top"
+        maxWidth={width - 2 * pad}
         lineHeight={1.3}
       >
-        {subtitle}
+        {site.subtitle}
       </Text>
 
-      {/* Thin divider above the footer row */}
-      <mesh position={[0, -halfH + 0.2, 0.005]}>
-        <planeGeometry args={[CARD_W - 2 * pad, 0.006]} />
+      {/* Rule above the footer row */}
+      <mesh position={[0, -halfH + pad * 1.5, 0.005]}>
+        <planeGeometry args={[width - 2 * pad, 0.004]} />
         <meshBasicMaterial
-          color={active ? theme.accent : "#4A4A50"}
+          color={active ? theme.accent : theme.divider}
           transparent
-          opacity={active ? 0.7 : 0.4}
+          opacity={active ? 0.9 : 0.55}
         />
       </mesh>
 
-      {/* Footer: URL on the left, Open affordance on hover at the right */}
+      {/* Footer: host on the left, the Open affordance on the right */}
       <Text
-        position={[-halfW + pad, -halfH + 0.11, 0.006]}
-        fontSize={0.044}
-        color={active ? "#6FA8D8" : "#7A7A80"}
+        position={[-halfW + pad, -halfH + pad * 0.72, 0.006]}
+        fontSize={metaSize}
+        color={theme.textMuted}
         anchorX="left"
         anchorY="middle"
-        maxWidth={CARD_W - 0.45}
+        maxWidth={width - 2 * pad - 0.34}
       >
-        {url.replace(/^https?:\/\//, "")}
+        {site.url === TEST_PAGE_TOKEN
+          ? "localhost"
+          : site.url.replace(/^https?:\/\//, "")}
       </Text>
       {active && (
         <Text
-          position={[halfW - pad, -halfH + 0.11, 0.006]}
-          fontSize={0.05}
-          color={theme.accent}
+          position={[halfW - pad, -halfH + pad * 0.72, 0.006]}
+          fontSize={metaSize}
+          color={theme.accentText}
           anchorX="right"
           anchorY="middle"
         >
@@ -326,31 +571,180 @@ function SiteCard({
   );
 }
 
-function SceneTitle({ theme }: { theme: HomeTheme }) {
-  const groupRef = useRef<THREE.Group>(null);
-
+/**
+ * The board the grid stands on: one dark surface behind every cell, following
+ * the same arc they sit on. Same reason the wall has a backing and the desk
+ * has one — cards floating in a starfield have nothing behind them, so their
+ * text sits on whatever star happens to be there, and nothing says the six of
+ * them are one set.
+ */
+function LauncherBoard({ theme }: { theme: HomeTheme }) {
+  const w = UTIL_W + 2 * BOARD_PAD;
+  const h = BOARD_INNER_H + 2 * BOARD_PAD;
+  const pose = arcPose(0, BOARD_BOTTOM_Y + BOARD_INNER_H / 2);
   return (
-    <group ref={groupRef} position={[0, 3.1, -3.0]}>
+    <group
+      position={[pose.position[0], pose.position[1], pose.position[2] - 0.03]}
+      rotation={[0, pose.yaw, 0]}
+    >
+      <Surface
+        width={w}
+        height={h}
+        radius={0.12}
+        color={theme.boardBg}
+        flat
+        rimColor={theme.cardRim}
+        rimOpacity={0.35}
+        origin={[0, 0]}
+      />
+    </group>
+  );
+}
+
+/**
+ * The launcher's heading, on the same arc just above the board.
+ *
+ * It used to be 0.36 m of type at (0, 3.1, −3.0) — 1.6 m above the eye line
+ * and subtending nearly 7°, which is not a heading so much as a billboard.
+ * Sized against the board instead, and kept inside the vertical band.
+ */
+function SceneTitle({ theme }: { theme: HomeTheme }) {
+  const pose = arcPose(0, BOARD_BOTTOM_Y + BOARD_INNER_H + BOARD_PAD + 0.19);
+  return (
+    <group position={pose.position} rotation={[0, pose.yaw, 0]}>
       <Text
-        fontSize={0.36}
+        fontSize={0.15}
         color={theme.textPrimary}
         anchorX="center"
         anchorY="middle"
-        letterSpacing={0.02}
+        letterSpacing={0.01}
       >
         From Space to Web
       </Text>
       <Text
-        position={[0, -0.3, 0]}
-        fontSize={0.1}
-        color={theme.accent}
+        position={[0, -0.13, 0]}
+        fontSize={0.062}
+        color={theme.textSecondary}
         anchorX="center"
         anchorY="middle"
-        letterSpacing={0.04}
+        letterSpacing={0.03}
       >
-        Choose a destination below — or enter any URL
+        Choose a destination — or enter any URL
       </Text>
     </group>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Accessibility layer
+//
+// Everything the launcher draws lives on a WebGL canvas: to a screen reader
+// the whole screen was one <canvas> with no accessible name, and to a
+// keyboard it was a single 1×1 invisible <input>. Six destinations, a
+// settings panel, a tab bar and a view picker, none of them reachable without
+// a mouse and none of them announced.
+//
+// The fix is the standard one for canvas UI: a real DOM control per canvas
+// affordance, kept in the accessibility tree and in the tab order but drawn
+// nowhere, with DOM focus mirrored back into the scene as a visible ring. The
+// canvas stays the presentation; the DOM is the interface. Two rules make it
+// work and are easy to get wrong:
+//
+//  • The controls must NOT be `display:none` or `visibility:hidden` — either
+//    removes them from the tree and from the tab order, which is the whole
+//    point. They are clipped to a 1 px box instead.
+//  • Focus must be genuinely on them, so the browser's own focus management,
+//    screen-reader virtual cursor and `:focus-visible` all keep working. The
+//    ring in the scene is a mirror of that state, never a substitute for it.
+// ─────────────────────────────────────────────────────────────
+
+export interface A11yTarget {
+  id: string;
+  label: string;
+  hint: string;
+  onActivate: () => void;
+}
+
+/**
+ * The keyboard/screen-reader interface to the card grid.
+ *
+ * Roving tabindex: the grid is ONE tab stop and the arrow keys move within
+ * it, which is what a grid of peers should do — six separate tab stops would
+ * make getting past the launcher a six-key journey. Home/End jump to the ends.
+ */
+export function CardGridA11y({
+  targets,
+  focusIndex,
+  setFocusIndex,
+  disabled,
+  cols,
+  itemRefs,
+}: {
+  targets: A11yTarget[];
+  focusIndex: number;
+  setFocusIndex: (i: number) => void;
+  disabled: boolean;
+  cols: number;
+  itemRefs: React.MutableRefObject<(HTMLButtonElement | null)[]>;
+}) {
+  const move = (next: number) => {
+    const i = Math.max(0, Math.min(targets.length - 1, next));
+    setFocusIndex(i);
+    itemRefs.current[i]?.focus();
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent, i: number) => {
+    switch (e.key) {
+      case "ArrowRight":
+        e.preventDefault();
+        move(i + 1);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        move(i - 1);
+        break;
+      case "ArrowDown":
+        e.preventDefault();
+        move(i + cols);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        move(i - cols);
+        break;
+      case "Home":
+        e.preventDefault();
+        move(0);
+        break;
+      case "End":
+        e.preventDefault();
+        move(targets.length - 1);
+        break;
+      default:
+        break;
+    }
+  };
+
+  return (
+    <ul style={{ ...SR_ONLY, listStyle: "none" }} aria-label="Destinations">
+      {targets.map((t, i) => (
+        <li key={t.id}>
+          <button
+            ref={(el) => {
+              itemRefs.current[i] = el;
+            }}
+            type="button"
+            // Roving tabindex — only the current cell is in the tab order.
+            tabIndex={i === focusIndex ? 0 : -1}
+            disabled={disabled}
+            onFocus={() => setFocusIndex(i)}
+            onKeyDown={(e) => onKeyDown(e, i)}
+            onClick={t.onActivate}
+          >
+            {t.label}. {t.hint}
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -458,6 +852,49 @@ function ColorSwatch({
         {value}
       </span>
     </label>
+  );
+}
+
+/**
+ * Live WCAG check on the editable palette. Silent when everything passes, so
+ * it only speaks up when a picked colour has actually broken something.
+ */
+function ContrastReport({ theme }: { theme: HomeTheme }) {
+  const failing = homeContrastPairs(theme)
+    .map((p) => ({ ...p, ratio: contrast(p.fg, p.bg) }))
+    .filter((p) => p.ratio < p.need);
+
+  if (failing.length === 0) {
+    return (
+      <div style={{ fontSize: 11, color: theme.textSecondary, marginTop: 8 }}>
+        ✓ All {homeContrastPairs(theme).length} colour pairs meet WCAG AA.
+      </div>
+    );
+  }
+  return (
+    <div
+      role="status"
+      style={{
+        marginTop: 8,
+        padding: "8px 10px",
+        borderRadius: 6,
+        background: "rgba(220, 80, 60, 0.12)",
+        border: "1px solid rgba(220, 80, 60, 0.45)",
+      }}
+    >
+      <div style={{ fontSize: 11, color: "#FFB3A6", marginBottom: 4 }}>
+        {failing.length} colour pair{failing.length === 1 ? "" : "s"} below WCAG
+        AA:
+      </div>
+      {failing.map((p) => (
+        <div
+          key={p.label}
+          style={{ fontSize: 10, color: theme.textSecondary, lineHeight: 1.6 }}
+        >
+          {p.label} — {p.ratio.toFixed(2)}:1 (needs {p.need}:1)
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -695,6 +1132,9 @@ function SettingsPanel({
 
   return (
     <div
+      id="fsw-settings"
+      role="dialog"
+      aria-label="Settings"
       style={{
         position: "fixed",
         top: 0,
@@ -919,54 +1359,18 @@ function SettingsPanel({
 
         {/* ── Appearance (this Home screen only) ──────── */}
         <SettingsSection title="HOME SCREEN APPEARANCE" accent={acc}>
-          <ColorSwatch
-            label="Accent"
-            value={theme.accent}
-            onChange={(v) => updateTheme({ accent: v })}
-            theme={theme}
-          />
-          <ColorSwatch
-            label="Accent (dim)"
-            value={theme.accentDim}
-            onChange={(v) => updateTheme({ accentDim: v })}
-            theme={theme}
-          />
-          <ColorSwatch
-            label="Background"
-            value={theme.background}
-            onChange={(v) => updateTheme({ background: v })}
-            theme={theme}
-          />
-          <ColorSwatch
-            label="Canvas background"
-            value={theme.canvasBg}
-            onChange={(v) => updateTheme({ canvasBg: v })}
-            theme={theme}
-          />
-          <ColorSwatch
-            label="Card"
-            value={theme.cardBg}
-            onChange={(v) => updateTheme({ cardBg: v })}
-            theme={theme}
-          />
-          <ColorSwatch
-            label="Card (hover)"
-            value={theme.cardHover}
-            onChange={(v) => updateTheme({ cardHover: v })}
-            theme={theme}
-          />
-          <ColorSwatch
-            label="Text primary"
-            value={theme.textPrimary}
-            onChange={(v) => updateTheme({ textPrimary: v })}
-            theme={theme}
-          />
-          <ColorSwatch
-            label="Text secondary"
-            value={theme.textSecondary}
-            onChange={(v) => updateTheme({ textSecondary: v })}
-            theme={theme}
-          />
+          {(Object.keys(HOME_THEME_FIELD_LABELS) as (keyof HomeTheme)[]).map(
+            (key) => (
+              <ColorSwatch
+                key={key}
+                label={HOME_THEME_FIELD_LABELS[key]}
+                value={theme[key]}
+                onChange={(v) => updateTheme({ [key]: v })}
+                theme={theme}
+              />
+            ),
+          )}
+          <ContrastReport theme={theme} />
           <button
             onClick={() => updateTheme(DEFAULT_HOME_THEME)}
             style={{
@@ -1247,6 +1651,17 @@ export function HomeScreen({
   const [searchFocused, setSearchFocused] = useState(false);
   // Hidden HTML input that captures keystrokes for the in-world search field.
   const hiddenInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * Which launcher cell owns keyboard focus, and whether the focus ring should
+   * be drawn at all. The ring only appears once the reader is actually
+   * navigating by keyboard — showing it on load would put a ring on a card
+   * nobody has focused.
+   */
+  const [focusIndex, setFocusIndex] = useState(0);
+  const [keyboardActive, setKeyboardActive] = useState(false);
+  const cellRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  /** Announced to screen readers when the launcher starts loading a page. */
+  const [announcement, setAnnouncement] = useState("");
 
   useEffect(() => {
     try {
@@ -1254,11 +1669,20 @@ export function HomeScreen({
     } catch {}
   }, [settings]);
 
+  const reduceMotion = usePrefersReducedMotion();
+
   const { theme } = settings;
+
+  /** Every cell of the launcher, grid first then the utility strip. */
+  const cells = useMemo(() => [...PRESET_SITES], []);
 
   function handleLoad(url: string) {
     const raw = url.trim();
     if (!raw) return;
+    const site = cells.find((c) => c.url === raw);
+    setAnnouncement(
+      `Loading ${site?.title ?? raw} in ${settings.viewMode} view. Rendering in 3D.`,
+    );
     // Built-in test page: resolve the sentinel to an absolute same-origin URL.
     if (raw === TEST_PAGE_TOKEN) {
       onLoad(window.location.origin + TEST_PAGE_PATH, settings);
@@ -1304,6 +1728,10 @@ export function HomeScreen({
         <pointLight position={[-3, 2, -5]} intensity={0.35} color="#2040a0" />
         <pointLight position={[3, 2, -5]} intensity={0.35} color="#1a3080" />
 
+        {/* The starfield drifts. Readers who have asked their OS for reduced
+            motion get it still — WCAG 2.3.3; a slow field-wide drift is
+            exactly the kind of background motion that provokes symptoms in
+            vestibular disorders, and nothing here depends on it moving. */}
         <Stars
           radius={100}
           depth={60}
@@ -1311,20 +1739,23 @@ export function HomeScreen({
           factor={3.5}
           saturation={0.3}
           fade
-          speed={0.5}
+          speed={reduceMotion ? 0 : 0.5}
         />
 
         <Suspense fallback={null}>
+          <LauncherBoard theme={theme} />
           <SceneTitle theme={theme} />
           {PRESET_SITES.map((site, i) => (
             <SiteCard
               key={site.id}
-              {...site}
-              position={CARD_POSITIONS[i]}
+              site={site}
+              pose={cardPose(i)}
+              width={CARD_W}
+              height={CARD_H}
               onSelect={handleLoad}
-              phase={(i * Math.PI * 2) / PRESET_SITES.length}
               disabled={loading}
               theme={theme}
+              focused={keyboardActive && focusIndex === i}
             />
           ))}
 
@@ -1333,7 +1764,10 @@ export function HomeScreen({
             value={inputValue}
             focused={searchFocused}
             loading={loading}
-            onFocusField={() => hiddenInputRef.current?.focus()}
+            onFocusField={() => {
+              setKeyboardActive(false);
+              hiddenInputRef.current?.focus();
+            }}
             onSubmit={handleSubmit}
             width={1.3}
             position={[-0.12, 0.95, 0.6]}
@@ -1398,32 +1832,82 @@ export function HomeScreen({
         />
       </Canvas>
 
-      {/* Hidden input backing the in-world 3D search field. Kept in the DOM
-          (not display:none, so it can hold focus) but visually invisible;
-          clicking the 3D field focuses it and keystrokes flow here. */}
+      {/* ── Accessibility layer ─────────────────────────────────
+          The real interface. Everything above this point is drawn on a
+          canvas and is invisible to assistive technology; these controls
+          are what a screen reader reads and what the Tab key lands on, and
+          focus here is mirrored back into the scene as a ring. See the
+          "Accessibility layer" section above for why they are clipped
+          rather than hidden. */}
+      <h1 style={SR_ONLY}>From Space to Web</h1>
+      <p style={SR_ONLY}>
+        Choose a destination to render in 3D, or enter any URL. Use the arrow
+        keys to move between destinations.
+      </p>
+
+      <nav aria-label="Launcher">
+        <CardGridA11y
+          targets={cells.map((site) => ({
+            id: site.id,
+            label: site.title,
+            hint:
+              site.url === TEST_PAGE_TOKEN
+                ? site.subtitle
+                : `${site.subtitle}. ${site.url.replace(/^https?:\/\//, "")}`,
+            onActivate: () => handleLoad(site.url),
+          }))}
+          focusIndex={focusIndex}
+          setFocusIndex={(i) => {
+            setFocusIndex(i);
+            setKeyboardActive(true);
+          }}
+          disabled={loading}
+          cols={CARD_COLS}
+          itemRefs={cellRefs}
+        />
+      </nav>
+
+      {/* Backs the in-world search field: the 3D field is a drawing of this
+          input's value, and clicking it moves focus here so keystrokes and
+          the screen reader both go to a real text box. */}
+      <label style={SR_ONLY} htmlFor="fsw-url">
+        Enter a URL to explore in 3D
+      </label>
       <input
+        id="fsw-url"
         ref={hiddenInputRef}
+        type="url"
         value={inputValue}
         onChange={(e) => setInputValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") handleSubmit();
         }}
-        onFocus={() => setSearchFocused(true)}
+        onFocus={() => {
+          setSearchFocused(true);
+          setKeyboardActive(false);
+        }}
         onBlur={() => setSearchFocused(false)}
         disabled={loading}
-        aria-label="Enter a URL to explore in 3D"
-        style={{
-          position: "fixed",
-          bottom: 0,
-          left: 0,
-          width: 1,
-          height: 1,
-          opacity: 0,
-          border: "none",
-          outline: "none",
-          pointerEvents: "none",
-        }}
+        style={SR_ONLY}
       />
+
+      {/* The settings panel's own trigger. The 3D gear button draws the same
+          state; both drive `settingsOpen`. */}
+      <button
+        type="button"
+        style={SR_ONLY}
+        aria-expanded={settingsOpen}
+        aria-controls="fsw-settings"
+        onClick={() => setSettingsOpen((o) => !o)}
+      >
+        Settings
+      </button>
+
+      {/* Status, not alert: page loads are expected, so they are announced
+          when the reader next comes up for air rather than interrupting. */}
+      <div role="status" aria-live="polite" style={SR_ONLY}>
+        {announcement}
+      </div>
 
       {/* Settings panel */}
       {settingsOpen && (
@@ -1457,7 +1941,7 @@ export function HomeScreen({
               border: `2px solid rgba(${hexToRgb(theme.accent)}, 0.15)`,
               borderTop: `2px solid ${theme.accent}`,
               borderRadius: "50%",
-              animation: "hs-spin 1s linear infinite",
+              animation: reduceMotion ? "none" : "hs-spin 1s linear infinite",
               marginBottom: 14,
             }}
           />

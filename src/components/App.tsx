@@ -34,11 +34,23 @@ export default function App() {
     setActiveTabId(tab.id);
   }
 
+  /**
+   * Following a link off the page being read.
+   *
+   * The new tab inherits the CURRENT tab's settings rather than starting from
+   * `DEFAULT_HOME_SETTINGS`. Those settings are how the reader has chosen to
+   * read — the spatial view, the device profile, the palette, the parser
+   * backend — not anything about the particular document, so resetting them on
+   * every link meant a reader who picked Wall, followed a citation, and landed
+   * back in Standard, with the parser backend they were comparing quietly
+   * swapped out from under them.
+   */
   async function openInNewTab(url: string) {
     const tab: Tab = {
       ...makeHomeTab(),
       url,
       label: labelFromUrl(url),
+      settings: activeTab.settings,
     };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
