@@ -17,7 +17,12 @@ import { useTheme, type XRTheme } from "../theme";
 import { FontContext } from "../XRSceneRenderer";
 import { useClipPlanes, NavigateContext } from "./contexts";
 import { LinkPreviewContext } from "../scene/link-preview";
-import { usePanelCurve, curveLift, runBackingClearance } from "./curve";
+import {
+  usePanelCurve,
+  curveLift,
+  curvePoint,
+  runBackingClearance,
+} from "./curve";
 import {
   Z_LAYER_INLINE_TEXT,
   RENDER_ORDER_TEXT,
@@ -400,6 +405,7 @@ function ProseRow({
 }: ProseRowProps) {
   const navigate = useContext(NavigateContext);
   const linkPreview = useContext(LinkPreviewContext);
+  const curve = usePanelCurve();
   const theme = useTheme();
   const { text, colorRanges } = buildRowMeta(segments, theme, forceColor);
   const [hitRects, setHitRects] = React.useState<LinkHitRect[]>([]);
@@ -482,6 +488,72 @@ function ProseRow({
     [linkRanges, xInset, rowY],
   );
 
+  // Hit rects → placed quads.
+  //
+  // caretPositions are troika's FLAT layout coordinates. Inside a curved panel
+  // the glyphs are not drawn there: troika's curveRadius wraps the run around a
+  // cylinder centred on the run's own anchor, mapping flat x to
+  //   x' = R·sin(x/R),  z' = R·(1 − cos(x/R))
+  // (troika-three-text's raycast() builds its own curved proxy mesh the same
+  // way). A quad left at the flat x therefore drifts OUTWARD from the glyphs it
+  // is meant to cover — by x − R·sin(x/R), which is ~0 at the anchor and grows
+  // with distance along the row — and stays on the flat chord while the text
+  // moves metres forward in z. Since anchorX is "left", x only ever grows
+  // rightward, so it was the links at the RIGHT end of a line that became
+  // unclickable while the ones near the left margin still worked.
+  //
+  // curvePoint() is the same map the backing, the nav chips and <AtPos> use, so
+  // running the rect centres through it (pivoting on the run's anchor, xInset)
+  // puts the quads back on the glyphs. Wide links are split so each quad is a
+  // short chord of the arc rather than one long one cutting behind it.
+  const hitQuads = React.useMemo(() => {
+    const HIT_Z_FLAT = 0.004;
+    /** Longest flat span one quad may cover before it is split (metres). */
+    const MAX_QUAD_SPAN = 0.05;
+    return hitRects.flatMap((r, hi) => {
+      if (!curve) {
+        return [
+          {
+            key: `lh-${hi}`,
+            position: [r.cx, r.cy, HIT_Z_FLAT] as [number, number, number],
+            yaw: 0,
+            w: r.w,
+            h: r.h,
+            href: r.href,
+            label: r.label,
+          },
+        ];
+      }
+      // Sit just in front of the glyphs, which ClippedText already lifted off
+      // the backing by the sagitta at the run's anchor.
+      const baseZ =
+        Z_LAYER_INLINE_TEXT +
+        curveLift(xInset, curve, Z_CURVE_CONTENT_BASE_LIFT) +
+        0.002;
+      const n = Math.min(Math.max(Math.ceil(r.w / MAX_QUAD_SPAN), 1), 12);
+      const segW = r.w / n;
+      const left = r.cx - r.w / 2;
+      return Array.from({ length: n }, (_, si) => {
+        const { position, yaw } = curvePoint(
+          left + segW * (si + 0.5),
+          r.cy,
+          baseZ,
+          curve.radius,
+          xInset,
+        );
+        return {
+          key: `lh-${hi}-${si}`,
+          position,
+          yaw,
+          w: segW,
+          h: r.h,
+          href: r.href,
+          label: r.label,
+        };
+      });
+    });
+  }, [hitRects, curve, xInset]);
+
   return (
     <group>
       <ClippedText
@@ -502,10 +574,11 @@ function ProseRow({
         {text}
       </ClippedText>
       {navigate &&
-        hitRects.map((r, hi) => (
+        hitQuads.map((r) => (
           <mesh
-            key={`lh-${hi}`}
-            position={[r.cx, r.cy, 0.004]}
+            key={r.key}
+            position={r.position}
+            rotation={[0, r.yaw, 0]}
             onClick={(e) => {
               e.stopPropagation();
               linkPreview?.clear();

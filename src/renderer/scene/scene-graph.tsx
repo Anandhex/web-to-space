@@ -476,7 +476,7 @@ export function XRSceneGraph({
 
   return (
     <NavigateContext.Provider value={navigate}>
-      <LinkPreviewProvider>
+      <LinkPreviewProvider viewMode={viewMode}>
       <PageRangeContext.Provider value={focusedRange}>
       {scene.root.children.map((primitive) => {
         // In carousel mode, the main content panel is rendered via CarouselPanelGroup

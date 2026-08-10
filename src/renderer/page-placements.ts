@@ -2150,20 +2150,65 @@ const ROOM_PAGE_SCALE = 1;
 /** Gap between two pages hung side by side on the same wall. */
 const ROOM_PAGE_GAP = 0.12;
 /** Half-width of the corridor between rooms. */
-const CORRIDOR_HALF = 1.15;
+const CORRIDOR_HALF = 1.45;
 /** Corridor in front of the first room — the building's entrance hall. */
-const CORRIDOR_LOBBY = 3.0;
+const CORRIDOR_LOBBY = 3.4;
 /** Where the first room's near wall stands. */
 const ROOM_Z0 = -1.4;
 /** Wall length beyond the outermost page on it. */
-const ROOM_WALL_MARGIN = 0.45;
+const ROOM_WALL_MARGIN = 0.7;
 /**
- * How far a wall carries on above the top edge of the pages hung on it. Rooms
- * are for reading in, not cathedrals: this puts the wall head at about 2 m of
- * world height, which leaves a lintel over a door without towering over the
- * pages (which hang with their tops on the panel-anchor line).
+ * How far a wall carries on above the top edge of the pages hung on it —
+ * which, with the floor at world y = 0 and the pages' tops on the panel-anchor
+ * line, is what sets the ceiling height.
+ *
+ * This used to be 0.55, putting the head at about 2 m — the ceiling of a
+ * service corridor, and inside the reader's peripheral vision the whole time.
+ * It was then tried at 1.15 (a 2.65 m head), which overshot: with the pages
+ * hanging at the main panel's height and topping out at 1.5 m, a 2.65 m
+ * ceiling leaves over a metre of blank wall above every exhibit and the room
+ * reads as a hall the pages are lost in. This lands at about 2.35 m — over a
+ * head of clear wall above the pages, and no more.
  */
-const ROOM_WALL_HEADROOM = 0.55;
+const ROOM_WALL_HEADROOM = 0.95;
+
+/**
+ * WHERE THE ART HANGS: the height of a page's CENTRE above the floor.
+ *
+ * Galleries hang to a fixed centre line — the museum convention is 57 inches,
+ * which is 1.45 m — because that is eye level, and a wall of work whose
+ * centres agree reads as a hang rather than as things stuck on a wall.
+ *
+ * The pages used to hang at the main panel's own slot, whose centre is about
+ * 0.95 m: half a metre low, waist height, which is what made every doorway
+ * and every link door out-measure the exhibits and made a reader standing at
+ * a normal height feel like they were looming over the work. Both of those
+ * were reported as other problems (doors too tall, camera too high) and both
+ * were this.
+ *
+ * Breaking the pages away from the panel slot is only possible because
+ * nothing in this view still reads content off that slot: the preview camera
+ * is on `roomsAxis`, the XR recentre is on the same point, the in-world
+ * chrome is not mounted in rooms, and panel clipping is derived from each
+ * page's own placed entry.
+ */
+export const ROOM_HANG_CENTRE = 1.45;
+/**
+ * …and where the reader's eye is. A shade above the hang line, which is how
+ * a standing adult meets a picture hung to centre.
+ */
+export const ROOM_EYE_HEIGHT = 1.55;
+/** Clear floor under the lowest edge of a page — art is not skirting board. */
+const ROOM_HANG_FLOOR_CLEAR = 0.25;
+/**
+ * The dropped band round the ceiling perimeter, drawn by `RoomSlabs`. It
+ * lives here rather than with the geometry that draws it because it HANGS IN
+ * FRONT OF THE WALL: anything mounted high — a section sign above a doorway,
+ * say — has to keep clear of it or it is quietly sliced off at the top, which
+ * is exactly what happened to the signs.
+ */
+export const ROOM_SOFFIT_DROP = 0.09;
+export const ROOM_SOFFIT_BAND = 0.26;
 /**
  * Doorway opening, measured from the floor. Nearly as wide as the corridor on
  * purpose: a reader walking with the keys does not track the centre line to
@@ -2171,15 +2216,43 @@ const ROOM_WALL_HEADROOM = 0.55;
  * jamb catches them and, since the push is straight into it, sliding cannot
  * help. Width here plus `roomWalkFunnel` is what keeps doors passable.
  */
-const DOOR_WIDTH = 1.9;
-const DOOR_HEIGHT = 1.75;
+const DOOR_WIDTH = 2.3;
+const DOOR_HEIGHT = 2.0;
 /** How wide the reader is, for walking into things. */
 const WALK_RADIUS = 0.24;
-/** A door out of the building: same opening, filled by the link's own leaf. */
-const LINK_DOOR_W = 1.35;
-const LINK_DOOR_PITCH = LINK_DOOR_W + 0.75;
+/**
+ * A door out of the building, filled by the link's own leaf.
+ *
+ * A DOOR, at human scale. It was briefly sized off the pages instead —
+ * shrunk to about 1.7 m so it would stop towering over exhibits that hung
+ * 0.45–1.50 m — but that was treating the symptom. The pages were the thing
+ * in the wrong place, and now that they hang to a gallery centre line (see
+ * ROOM_HANG_CENTRE) a page tops out around 1.95 m and a normal door beside
+ * it reads as exactly that.
+ *
+ * The proportion (a bit over 2:1) is what makes the eye call it a door; the
+ * original 1.35 × 1.75 was 0.77:1, which is a hatch.
+ */
+const LINK_DOOR_W = 0.92;
+const LINK_DOOR_H = 2.05;
+
+function linkDoorSize(): { width: number; height: number } {
+  return { width: LINK_DOOR_W, height: LINK_DOOR_H };
+}
+
+/** Gap between one link door and the next down a stretch of corridor. */
+function linkDoorPitch(): number {
+  return LINK_DOOR_W + 1.15;
+}
 /** Pages, plates and plaques sit this far proud of the wall they hang on. */
 const MOUNT_PROUD = 0.02;
+/**
+ * …but a section SIGN sits further out than that, because it hangs over a
+ * doorway and a doorway has an architrave round it (`JAMB_PROUD` in
+ * room-decor.tsx, 0.028). At the pages' 0.02 the frame's head band stood in
+ * front of the sign and took the bottom off every letter.
+ */
+const SIGN_PROUD = 0.055;
 /** Shortest stretch of links corridor between one room and the next. */
 const LINK_STRETCH_MIN = 3.4;
 /** Metres past the reading distance over which a page dims to full recession. */
@@ -2189,7 +2262,7 @@ const ROOM_DIM_RANGE = 7;
  * `viewingDistance`, so a room shallower than this would put them in the far
  * wall. In reading distances.
  */
-const ROOM_MIN_SPAN_D = 1.9;
+const ROOM_MIN_SPAN_D = 2.5;
 /** How far outside a room's walls still counts as being in it (doorway slack). */
 const ROOM_ENTERED_SLACK = 0.7;
 
@@ -2235,6 +2308,48 @@ interface Museum {
   /** Corridor extent: the lobby's near edge down to the last stretch's end. */
   zStart: number;
   zEnd: number;
+  /**
+   * A link door's leaf, and the gap between one and the next. Carried on the
+   * plan rather than read from a constant because both now scale with the
+   * page (see `linkDoorSize`), and the stretch of corridor a section's links
+   * hang in is sized from the same numbers — a plan whose doors and whose
+   * corridor length disagreed would put leaves through the end wall.
+   */
+  doorSize: { width: number; height: number };
+  doorPitch: number;
+  /** The floor, panel-anchor-relative — what the hang height is measured from. */
+  floorY: number;
+}
+
+/**
+ * The height a page's centre hangs at, panel-anchor-relative.
+ *
+ * `ROOM_HANG_CENTRE` is the gallery line and is what this returns in every
+ * ordinary case. The clamps are for profiles whose panel is a very different
+ * size from Quest's: a tall page hung to the same centre would push its own
+ * gallery light up into the soffit, and a short one would sit needlessly low.
+ */
+function roomHangCentre(panel: { height: number }, floorY: number): number {
+  const ceiling = ROOM_WALL_HEADROOM - floorY;
+  // The highest a page's top edge can go and still leave its light clear of
+  // the dropped soffit band.
+  const topLimit = ceiling - ROOM_SOFFIT_DROP - PICTURE_LIGHT_RISE - 0.14;
+  return Math.max(
+    panel.height / 2 + ROOM_HANG_FLOOR_CLEAR,
+    Math.min(ROOM_HANG_CENTRE, topLimit - panel.height / 2),
+  );
+}
+
+/**
+ * The picture rail — the line a gallery hangs from — which sits just above
+ * the top edge of the pages and therefore has to move with them. Exported
+ * because the shell draws it and only this file knows where the art is.
+ */
+export function roomRailY(
+  panel: { height: number },
+  floorY: number,
+): number {
+  return floorY + roomHangCentre(panel, floorY) + panel.height / 2 + 0.06;
 }
 
 /** One outbound link found in a section's pages. */
@@ -2256,9 +2371,22 @@ function roomSlot(panel: { width: number }): number {
   return panel.width * ROOM_PAGE_SCALE + ROOM_PAGE_GAP;
 }
 
-/** Room width: wide enough to stand back from either side wall. */
+/**
+ * Room width: wide enough to stand back from either side wall — and then
+ * some. The reading spots sit one viewing distance off each side wall, so
+ * `2·vd` is the bare minimum where two readers would be back to back; the
+ * slack on top is the aisle between them. At 1.1 m of slack the room was
+ * exactly as wide as it had to be and no wider, which is the width of a
+ * passage, not of a gallery.
+ *
+ * Not too much, though. A room wider than the corridor it opens off has to
+ * make up the difference in its END walls, and those returns are what a
+ * reader standing in the doorway is looking at — go to 2.6 and each return is
+ * a metre and a half of blank plaster squarely across the view back down the
+ * building. 1.9 keeps the aisle and keeps the returns to the width of a pier.
+ */
 function roomWidth(viewingDistance: number): number {
-  return 2 * viewingDistance + 1.1;
+  return 2 * viewingDistance + 1.9;
 }
 
 /**
@@ -2273,11 +2401,13 @@ function museumPlan(
   panel: { width: number; height: number },
   viewingDistance: number,
   linkCounts: number[],
+  floorY: number,
 ): Museum {
   const spineX = panel.width / 2;
   const step = roomSlot(panel);
   const rooms: Room[] = [];
   const stretches: LinkStretch[] = [];
+  const doorPitch = linkDoorPitch();
   let z = ROOM_Z0;
   for (let k = 0; k < ranges.length; k++) {
     const range = ranges[k];
@@ -2303,7 +2433,7 @@ function museumPlan(
     // The links of the section just read, hung down the next stretch: half on
     // each wall, so the stretch is as long as one wall's worth of plates.
     const perWall = Math.ceil((linkCounts[k] ?? 0) / 2);
-    const stretch = Math.max(LINK_STRETCH_MIN, perWall * LINK_DOOR_PITCH + 1.4);
+    const stretch = Math.max(LINK_STRETCH_MIN, perWall * doorPitch + 1.4);
     stretches.push({ sectionIndex: k, zNear: zFar, zFar: zFar - stretch });
     z = zFar - stretch;
   }
@@ -2313,6 +2443,9 @@ function museumPlan(
     stretches,
     zStart: ROOM_Z0 + CORRIDOR_LOBBY,
     zEnd: z,
+    doorSize: linkDoorSize(),
+    doorPitch,
+    floorY,
   };
 }
 
@@ -2337,7 +2470,9 @@ function roomCell(
   return {
     centre: {
       x: m.spineX + side * (room.width / 2 - MOUNT_PROUD),
-      y: -panel.height / 2,
+      // Hung to the gallery centre line, NOT to the main panel's slot. See
+      // ROOM_HANG_CENTRE for why that changed and what had to be true first.
+      y: m.floorY + roomHangCentre(panel, m.floorY),
       z: zc + ((room.rows - 1) / 2 - row) * step,
     },
     yaw: (-side * Math.PI) / 2, // faces across the room
@@ -2382,6 +2517,7 @@ function planFor(
     panel,
     opts.viewingDistance ?? 1.2,
     ranges.map((_, i) => opts.sectionLinks?.[i]?.length ?? 0),
+    opts.floorY ?? -panel.height * 2,
   );
 }
 
@@ -2548,6 +2684,16 @@ export function roomAtPose(
  * Lintels are not obstacles — a wall piece whose foot is above the floor is
  * the bit OVER a door, and you walk under it — so pieces are only solid if
  * they reach down to `floorY`.
+ *
+ * THE STEP IS SWEPT, not sampled at its far end. A wall here is a line
+ * segment with no thickness, so testing only where the step LANDS lets a long
+ * enough step cross one without ever being inside it — and the steps do get
+ * long. `dt` is clamped at 0.1 s and `WALK_SPEED` is 2.4, so a frame the
+ * renderer takes its time over produces a 0.24 m step, which is exactly
+ * `WALK_RADIUS`: land 0.24 m past a wall and the endpoint test says "clear".
+ * A heavy page makes that the normal case rather than the rare one, which is
+ * how a building whose whole point is that doorways are the only way through
+ * became one a reader could walk out of in any direction.
  */
 export function roomWalkStep(
   from: { x: number; z: number },
@@ -2564,24 +2710,85 @@ export function roomWalkStep(
     for (const w of solid) if (wallDistance(w, x, z) < radius) return false;
     return true;
   };
-  if (clear(from.x + dx, from.z + dz))
-    return { x: from.x + dx, z: from.z + dz };
+
+  // Standing inside a wall already — which a reader who tunnelled through one
+  // before this was fixed can still be, and which nothing below can recover
+  // from, since every candidate step is blocked and the reader is frozen for
+  // good. Push them out along the face they are nearest to, on the side they
+  // are already on, rather than leaving them stuck.
+  if (!clear(from.x, from.z)) {
+    let worst = 0;
+    let deepest: RoomWall | null = null;
+    for (const w of solid) {
+      const d = radius - wallDistance(w, from.x, from.z);
+      if (d > worst) {
+        worst = d;
+        deepest = w;
+      }
+    }
+    if (deepest) {
+      const nx = Math.sin(deepest.yaw);
+      const nz = Math.cos(deepest.yaw);
+      const side =
+        (from.x - deepest.centre.x) * nx + (from.z - deepest.centre.z) * nz >= 0
+          ? 1
+          : -1;
+      const px = from.x + side * nx * (worst + 0.02);
+      const pz = from.z + side * nz * (worst + 0.02);
+      if (clear(px, pz)) return { x: px, z: pz };
+    }
+    return { x: from.x, z: from.z };
+  }
+
+  /**
+   * Walk from `from` along (ax, az) in sub-steps no longer than half the
+   * reader's radius, stopping at the last point that was clear. Returns how
+   * far it got, so the caller can prefer the candidate that moved furthest
+   * instead of only ever taking one that completed.
+   */
+  const sweep = (ax: number, az: number) => {
+    const len = Math.hypot(ax, az);
+    if (len < 1e-9) return { x: from.x, z: from.z, moved: 0, full: true };
+    const n = Math.max(1, Math.ceil(len / (radius * 0.5)));
+    let x = from.x;
+    let z = from.z;
+    for (let i = 1; i <= n; i++) {
+      const cx = from.x + (ax * i) / n;
+      const cz = from.z + (az * i) / n;
+      if (!clear(cx, cz))
+        return { x, z, moved: Math.hypot(x - from.x, z - from.z), full: false };
+      x = cx;
+      z = cz;
+    }
+    return { x, z, moved: len, full: true };
+  };
+
+  const direct = sweep(dx, dz);
+  if (direct.full) return { x: direct.x, z: direct.z };
+
   // Blocked head-on. If the push is toward a doorway the reader has not lined
   // up with, steer them at it: walking a corridor with the keys does not aim
   // to the centimetre, and a door you cannot get through is worse than no
   // door at all. The nudge is along the opening, never through the wall.
   const aim = roomWalkFunnel(from, dx, dz, walls, floorY);
+  let best = direct;
   if (aim) {
     const step = Math.hypot(dx, dz);
-    const nx = dx + aim.x * step;
-    const nz = dz + aim.z * step;
-    if (clear(from.x + nx, from.z + nz))
-      return { x: from.x + nx, z: from.z + nz };
+    // Renormalised to the step the reader actually asked for. Added raw, the
+    // nudge made the steered step up to twice as long as an unsteered one —
+    // so the one move most likely to be aimed at a wall was also the one most
+    // able to cross it.
+    const rx = dx + aim.x * step;
+    const rz = dz + aim.z * step;
+    const rl = Math.hypot(rx, rz) || 1;
+    const steered = sweep((rx / rl) * step, (rz / rl) * step);
+    if (steered.full) return { x: steered.x, z: steered.z };
+    if (steered.moved > best.moved) best = steered;
   }
-  // Otherwise slide along whichever axis is still free.
-  if (clear(from.x + dx, from.z)) return { x: from.x + dx, z: from.z };
-  if (clear(from.x, from.z + dz)) return { x: from.x, z: from.z + dz };
-  return { x: from.x, z: from.z };
+  // Otherwise slide along whichever axis gets furthest.
+  for (const c of [sweep(dx, 0), sweep(0, dz)])
+    if (c.moved > best.moved) best = c;
+  return { x: best.x, z: best.z };
 }
 
 /** Distance from a point to a wall piece, in the floor plane. */
@@ -2613,10 +2820,24 @@ function roomWalkFunnel(
   if (len < 1e-6) return null;
   const ux = dx / len;
   const uz = dz / len;
+  // A link door's opening has a leaf in it, so it is not a way through and
+  // steering anybody at it is steering them into a solid object. Worse, it is
+  // the one opening a reader is regularly walking straight at (that is how
+  // you follow the link), so the nudge fired constantly and pushed them
+  // sideways along the corridor wall while they leaned on the door.
+  const leaves = walls.filter((w) => w.portal);
   let best: { x: number; z: number } | null = null;
   let bestScore = Infinity;
   for (const w of walls) {
     if (w.centre.y - w.size.height / 2 <= floorY + 0.05) continue; // not a lintel
+    if (
+      leaves.some(
+        (p) =>
+          Math.abs(p.centre.x - w.centre.x) < 0.02 &&
+          Math.abs(p.centre.z - w.centre.z) < 0.02,
+      )
+    )
+      continue;
     const toX = w.centre.x - from.x;
     const toZ = w.centre.z - from.z;
     const ahead = toX * ux + toZ * uz;
@@ -2690,7 +2911,7 @@ function wallRun(
   from: { x: number; z: number },
   to: { x: number; z: number },
   yaw: number,
-  doors: { at: number; width: number }[],
+  doors: { at: number; width: number; height?: number }[],
   floorY: number,
   topY: number,
 ): RoomWall[] {
@@ -2700,7 +2921,6 @@ function wallRun(
   if (len < 0.01) return [];
   const ux = dx / len;
   const uz = dz / len;
-  const doorTopY = Math.min(floorY + DOOR_HEIGHT, topY - 0.1);
   const piece = (a: number, b: number, y0: number, y1: number): RoomWall => ({
     centre: {
       x: from.x + ux * ((a + b) / 2),
@@ -2715,6 +2935,10 @@ function wallRun(
   for (const d of [...doors].sort((p, q) => p.at - q.at)) {
     const a = Math.max(0, d.at - d.width / 2);
     const b = Math.min(len, d.at + d.width / 2);
+    // Each opening carries its own height: a room doorway is a full-height
+    // way through, a link door is a leaf a shade over two metres tall, and
+    // cutting both to the same height left a strip of void above every leaf.
+    const doorTopY = Math.min(floorY + (d.height ?? DOOR_HEIGHT), topY - 0.1);
     if (a > cursor + 0.01) out.push(piece(cursor, a, floorY, topY));
     if (topY > doorTopY + 0.01)
       out.push({ ...piece(a, b, doorTopY, topY), lintel: true });
@@ -2741,7 +2965,7 @@ export function computeRoomShell(
     from: { x: number; z: number },
     to: { x: number; z: number },
     yaw: number,
-    doors: { at: number; width: number }[] = [],
+    doors: { at: number; width: number; height?: number }[] = [],
     hangs = false,
   ) =>
     out.push(
@@ -2797,10 +3021,28 @@ export function computeRoomShell(
         { x, z: s.zNear },
         { x, z: s.zFar },
         yaw,
-        mine.map((d) => ({ at: s.zNear - d.centre.z, width: d.size.width })),
+        mine.map((d) => ({
+          at: s.zNear - d.centre.z,
+          width: d.size.width,
+          height: d.size.height,
+        })),
       );
     }
   }
+  // THE TWO ENDS OF THE BUILDING. Every space is walled along its sides and
+  // separated from the next by an end wall with a doorway in it — but the
+  // enfilade as a whole had nothing closing it off, so it was a tube open at
+  // both ends: a reader who walked backwards out of the lobby, or forwards
+  // past the last stretch of corridor, left the building entirely and stood
+  // in the void looking at the outside of it. Backwards out of the lobby is
+  // the one that bites, because the lobby is where every reader starts.
+  const ends = {
+    left: m.spineX - CORRIDOR_HALF,
+    right: m.spineX + CORRIDOR_HALF,
+  };
+  run({ x: ends.left, z: m.zStart }, { x: ends.right, z: m.zStart }, Math.PI);
+  run({ x: ends.left, z: m.zEnd }, { x: ends.right, z: m.zEnd }, 0);
+
   // Each link door's leaf: a solid piece of wall filling its opening that
   // happens to be a way out of the building.
   for (const d of doors) {
@@ -2884,10 +3126,16 @@ export interface RoomFixture {
 /** How far below the ceiling a luminaire's plate sits. */
 const FIXTURE_DROP = 0.03;
 /** A ceiling luminaire's plate. */
-const CEILING_LIGHT_W = 0.46;
-const CEILING_LIGHT_D = 0.46;
-/** Longest gap between luminaires down a corridor. */
-const CORRIDOR_LIGHT_PITCH = 2.6;
+const CEILING_LIGHT_W = 0.62;
+const CEILING_LIGHT_D = 0.62;
+/**
+ * Longest gap between luminaires down a corridor. A point light falls off
+ * with the square of the distance, so the pitch is what decides how dark the
+ * middle of each bay gets — and a corridor that alternates lit and unlit
+ * every two and a half metres is the lighting of a horror film, not of a
+ * gallery. Tighter than the ceiling is high, so the pools overlap.
+ */
+const CORRIDOR_LIGHT_PITCH = 1.9;
 /** A picture light stands this far above its page's top edge… */
 const PICTURE_LIGHT_RISE = 0.26;
 /** …and this far out from the wall, so it looks down the page's face. */
@@ -2913,12 +3161,13 @@ export function computeRoomFixtures(
   const lampY = ROOM_WALL_HEADROOM - FIXTURE_DROP;
 
   const out: RoomFixture[] = [];
-  /** A run of luminaires down the middle of a space, evenly spaced. */
+  /** A run of luminaires down a space, evenly spaced along its length. */
   const run = (
     zNear: number,
     zFar: number,
     space: "room" | "corridor",
     pitch: number,
+    x = m.spineX,
   ) => {
     const depth = zNear - zFar;
     const n = Math.max(1, Math.round(depth / pitch));
@@ -2926,10 +3175,10 @@ export function computeRoomFixtures(
       const z = zNear - (depth * (i + 0.5)) / n;
       out.push({
         kind: "ceiling",
-        centre: { x: m.spineX, y: lampY, z },
+        centre: { x, y: lampY, z },
         size: { width: CEILING_LIGHT_W, depth: CEILING_LIGHT_D },
         yaw: 0,
-        target: { x: m.spineX, y: floorY, z },
+        target: { x, y: floorY, z },
         space,
       });
     }
@@ -2940,8 +3189,21 @@ export function computeRoomFixtures(
     run(s.zNear, s.zFar, "corridor", CORRIDOR_LIGHT_PITCH);
   for (const room of m.rooms) {
     // A room's own luminaires follow its page rows, so the light down the
-    // middle keeps step with the exhibits either side of it.
-    run(room.zNear, room.zFar, "room", (room.zNear - room.zFar) / room.rows);
+    // middle keeps step with the exhibits either side of it — but never
+    // sparser than a corridor's, or a deep room with few pages goes dark
+    // between its own lamps.
+    const pitch = Math.min(
+      CORRIDOR_LIGHT_PITCH,
+      (room.zNear - room.zFar) / room.rows,
+    );
+    // Two files, not one: a room this wide lit only down its spine leaves the
+    // aisle either side of the centre line noticeably dimmer than the middle,
+    // and an unevenly lit floor is the single strongest "abandoned building"
+    // cue there is. The files sit a third of the way in from each wall, which
+    // is roughly over where a reader walks.
+    const inset = room.width / 6;
+    run(room.zNear, room.zFar, "room", pitch, m.spineX - inset);
+    run(room.zNear, room.zFar, "room", pitch, m.spineX + inset);
     // …and every page gets its own gallery light.
     for (let page = room.range.start; page <= room.range.end; page++) {
       const c = roomCell(m, room, page - room.range.start, panel);
@@ -3003,11 +3265,11 @@ function linkDoorsOf(
         sectionIndex: stretch.sectionIndex,
         centre: {
           x: m.spineX + side * CORRIDOR_HALF,
-          y: floorY + DOOR_HEIGHT / 2,
-          z: stretch.zNear - 0.8 - row * LINK_DOOR_PITCH,
+          y: floorY + m.doorSize.height / 2,
+          z: stretch.zNear - 1.1 - row * m.doorPitch,
         },
         yaw: (-side * Math.PI) / 2, // faces the corridor
-        size: { width: LINK_DOOR_W, height: DOOR_HEIGHT },
+        size: { ...m.doorSize },
       });
     });
   }
@@ -3102,6 +3364,14 @@ export interface FieldLabel {
    * and not a size.
    */
   sign?: boolean;
+  /**
+   * The tallest the sign's plate may be. The renderer sizes the plate from
+   * the text (only it knows the font), but only the placement side knows how
+   * much clear wall there is between the door head and the soffit — so it
+   * ships the budget and the renderer shrinks the name to fit it. Without
+   * this a long section name simply grew until the soffit cut it in half.
+   */
+  maxHeight?: number;
 }
 
 /**
@@ -3122,6 +3392,14 @@ export function computeFieldLabels(
   const m = planFor(pageCount, panel, opts);
   const floorY = opts.floorY ?? -panel.height * 2;
   const doorTop = floorY + DOOR_HEIGHT;
+  // The clear band on the lintel: from the door head up to the underside of
+  // the dropped soffit, which hangs in front of the wall and will occlude
+  // anything mounted behind it.
+  // …less a margin, because the renderer draws a rule round the plate that
+  // stands outside the height budgeted here, and the sign is mounted proud
+  // enough to be well inside the soffit's overhang.
+  const bandTop = ROOM_WALL_HEADROOM - ROOM_SOFFIT_DROP;
+  const band = Math.max(0.12, bandTop - doorTop - 0.05);
   return m.rooms.map((room, index) => ({
     text: room.label || `Section ${index + 1}`,
     offset: {
@@ -3132,12 +3410,18 @@ export function computeFieldLabels(
       // in the distance, and a sign parked at eye height is a sign with lines
       // drawn through it. Up here it has the lintel to itself.
       x: m.spineX,
-      y: doorTop - 0.05,
-      z: room.zNear + MOUNT_PROUD,
+      // Centred in that clear band, measured rather than nudged: it follows
+      // the ceiling, the doorway and the soffit, so a fixed offset from the
+      // door head would drift the moment any of the three is tuned.
+      y: doorTop + band / 2,
+      z: room.zNear + SIGN_PROUD,
     },
     // Facing back up the corridor, i.e. at whoever is walking toward the door.
     rotation: { x: 0, y: 0, z: 0 },
-    fontSize: 0.15,
+    // A ceiling, not a target: the renderer starts here and comes down until
+    // the plate fits `maxHeight`.
+    fontSize: 0.17,
+    maxHeight: band,
     // A lit sign, not bare letters: the lintel it hangs on is the darkest
     // surface in the corridor (the luminaires point away from it), so the
     // name has to carry its own light or it is a grey word on a grey band

@@ -92,6 +92,27 @@ export function useXRSession(): UseXRSessionReturn {
     () => undefined,
   );
 
+  // An XRSession outlives React. It is owned by the browser (or the emulator),
+  // and it holds the canvas's WebGL context through its baseLayer — so if the
+  // component that owns this store unmounts, the context dies while the session
+  // keeps requesting frames against it. gl.getParameter() returns null on a lost
+  // context, which is how the Immersive Web Emulator ends up throwing
+  // "Cannot read properties of null (reading '0')" once per frame, forever.
+  //
+  // store.destroy() only unbinds; it does not end the session. Ending it here is
+  // the only thing that stops the frame loop.
+  //
+  // Callers should prefer to keep the canvas mounted across navigation (see the
+  // loading overlay in App.tsx) — an unmount mid-session still blacks the world
+  // out for anyone wearing a headset. This just makes it fail cleanly.
+  useEffect(
+    () => () => {
+      store.getState().session?.end().catch(() => {});
+      store.destroy();
+    },
+    [store],
+  );
+
   const [vrSupported, setVRSupported] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

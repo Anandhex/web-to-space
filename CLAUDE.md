@@ -31,7 +31,9 @@ Converts raw HTML into an accessibility-semantic intermediate representation usi
 Three-layer classification:
 1. Explicit ARIA `role=` attributes
 2. Structural inference (heading-bounded sections, link-runs → nav, paragraph-runs → article)
-3. AI fallback (stubbed via `StubAIProvider` — swap in a real provider via `AIFallbackProvider` interface)
+3. AI fallback (`src/ir/ai/` — Claude / OpenAI / Gemini / Ollama adapters behind one `AIFallbackProvider`; the reader supplies the key on the Home screen)
+
+Layer 3 is **batched, not per-node**: the walk parks every unclassified node on `BuildContext.aiQueue` and `parsePageToIR` drains it with a single `classifyBatch` call after the walk (`applyAIClassifications`), which the provider chunks by `batchSize` and runs `maxConcurrent` at a time. An answer is only taken when it clears `aiFallbackThreshold` and beats the node's own confidence; anything else leaves the structural role alone. With no provider configured the parser holds a `StubAIProvider` and the whole layer is a no-op — parses are identical to what they were before it existed, and nothing leaves the browser.
 
 Controlled by `ParserConfig` — individual layers can be disabled for testing.
 

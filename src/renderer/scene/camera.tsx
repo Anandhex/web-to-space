@@ -82,7 +82,7 @@ export function XRViewerAnchor({
  * a turn of the head, and the eye can never wander more than 2 cm off the
  * spot it was put on.
  */
-const LOOK_PIVOT = 0.01;
+export const LOOK_PIVOT = 0.01;
 
 /**
  * Stands the flat preview's camera AT `axis` and lets it look around from

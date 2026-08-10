@@ -84,10 +84,12 @@ import { Web2VRScene } from "./Web2VRScene";
 import { EMPTY_CONFIG } from "./scene/config";
 import { FontContext, type PageState } from "./scene/contexts";
 import { usePipeline } from "./scene/use-pipeline";
+import type { AIProviderSettings } from "../ir/ai";
 import { XRViewerAnchor, PreviewFieldOfView, AxisLook } from "./scene/camera";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
 import { DeskDecor } from "./scene/desk-decor";
 import { sectionRangesFor } from "./scene/page-ghosts";
+import { ROOM_EYE_HEIGHT } from "./page-placements";
 import { SR_ONLY } from "../components/a11y";
 import { VRButton, styles } from "./scene/chrome";
 import {
@@ -184,6 +186,12 @@ export interface XRSceneRendererProps {
    */
   parserBackend?: ParserBackend;
   /**
+   * Layer 3 (AI fallback) provider config, chosen on the Home screen. Omitted
+   * or unconfigured means the parser keeps its stub provider — the pipeline
+   * runs exactly as it does today and nothing leaves the browser.
+   */
+  aiSettings?: AIProviderSettings | null;
+  /**
    * Spatial arrangement to present the page in. Selected on the Home screen
    * (see HomeSettings.viewMode) — the viewer itself offers no switcher.
    */
@@ -213,6 +221,7 @@ export function XRSceneRenderer({
   fontType = undefined,
   parserConfig = {},
   parserBackend = "custom",
+  aiSettings = null,
   viewMode,
   onPlanReady,
   onExternalNavigate,
@@ -269,6 +278,7 @@ export function XRSceneRenderer({
     plan,
     error: pipelineError,
     backendLabel,
+    aiReport,
   } = usePipeline(
     html,
     sceneIn,
@@ -283,6 +293,7 @@ export function XRSceneRenderer({
     parserBackend,
     templateOverride,
     arrangement,
+    aiSettings ?? null,
   );
 
   const {
@@ -478,6 +489,43 @@ export function XRSceneRenderer({
   }, [viewMode, mainPanelId, plan]);
 
   /**
+   * The rooms view's standing point, for the same reason and with the same
+   * rig as the elevator's axis above.
+   *
+   * `rooms` carries the whole building so the reader's pose lands here, and
+   * turning (Q/E) spins the building about the vertical line through it. The
+   * default preview rig orbits the camera around the main panel's CENTRE —
+   * one reading distance in front of this — so the first drag took the eye
+   * off the line the building turns about. From there, every turn swung the
+   * camera on a circle around a point it was no longer standing on, straight
+   * out through the walls: the reader had not moved, but the view had.
+   *
+   * Fixing the ease in RoomWalk (which had the same shape of bug, in the
+   * carrier rather than the camera) was necessary and not sufficient. This is
+   * the other half.
+   */
+  const roomsAxis = useMemo((): [number, number, number] | null => {
+    if (viewMode !== "rooms") return null;
+    const e = mainPanelId ? plan?.entries[mainPanelId] : null;
+    if (!e || !plan) return null;
+    return [
+      e.position.x + e.size.width / 2,
+      // Standing eye height, measured from the FLOOR (which this view puts at
+      // world y = 0) rather than offset from the panel slot. The pages hang
+      // to a gallery centre line now, not to that slot, so the eye belongs on
+      // the same absolute line they do — see ROOM_HANG_CENTRE.
+      ROOM_EYE_HEIGHT,
+      e.position.z + plan.config.viewingDistance,
+    ];
+  }, [viewMode, mainPanelId, plan]);
+
+  /**
+   * The views where the reader stands INSIDE what they are reading, and the
+   * camera therefore rotates in place instead of orbiting something.
+   */
+  const standingAxis = elevatorAxis ?? roomsAxis;
+
+  /**
    * `deck` composes a reading page with a card table under it, and the page
    * itself is lifted clear of that table (DECK_STAGE_LIFT) — so neither the
    * flat preview's pivot nor the headset recentre can use the panel's usual
@@ -503,16 +551,32 @@ export function XRSceneRenderer({
     if (plan && onPlanReady) onPlanReady(plan);
   }, [plan, onPlanReady]);
 
-  if (pipelineError) {
-    return (
-      <div style={{ ...styles.root, color: "#ff6b6b", padding: "1rem" }}>
-        Pipeline error: {pipelineError}
-      </div>
-    );
-  }
-
   return (
     <div style={{ ...styles.root, width, height: "auto" }}>
+      {/* A failed parse is reported over the scene, not instead of it. This
+          used to be an early return, which unmounted the <Canvas> below and
+          took its WebGL context with it — while any immersive XRSession, owned
+          by the browser rather than by React, kept requesting frames against
+          the dead context. Everything downstream of the plan already handles
+          plan === null, so the canvas can stay up and hold the session. */}
+      {pipelineError && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 10000,
+            color: "#ff6b6b",
+            background: "rgba(8, 14, 24, 0.92)",
+            padding: "0.75rem 1rem",
+            fontFamily: "monospace",
+            fontSize: 12,
+          }}
+        >
+          Pipeline error: {pipelineError}
+        </div>
+      )}
       <VRButton
         supported={capabilities.immersiveVR}
         sessionState={sessionState}
@@ -538,6 +602,29 @@ export function XRSceneRenderer({
             )}
             <span style={{ marginLeft: "auto", opacity: 0.5 }}>
               {plan.template} layout
+            </span>
+          </>
+        )}
+        {/* Layer 3 only ever runs when the reader configured a provider, and
+            when it does they are spending their own quota on it — so what it
+            asked for, what came back, and what failed is reported rather than
+            left to the console. */}
+        {aiReport && aiReport.requested > 0 && (
+          <>
+            <span style={{ opacity: 0.4 }}> · </span>
+            <span
+              style={{ color: aiReport.errors.length > 0 ? "#f6a623" : "#8b949e" }}
+              title={
+                aiReport.errors.length > 0
+                  ? aiReport.errors.join("\n")
+                  : `${aiReport.chunks} request${aiReport.chunks === 1 ? "" : "s"}`
+              }
+            >
+              AI {aiReport.answered}/{aiReport.requested} in {aiReport.chunks}{" "}
+              call
+              {aiReport.chunks === 1 ? "" : "s"} ·{" "}
+              {(aiReport.elapsedMs / 1000).toFixed(1)}s
+              {aiReport.errors.length > 0 ? " · failed" : ""}
             </span>
           </>
         )}
@@ -641,10 +728,14 @@ export function XRSceneRenderer({
                   "world" frame: body/head/hand frames already carry the scene
                   with the viewer, and their entries aren't world-space, so
                   there'd be nothing static to recentre against. */}
+              {/* Rooms recentres on its own standing point for the same
+                  reason the elevator does: the reader is in a building with a
+                  floor, and levelling the headset with the panel slot would
+                  stand them 0.95 m tall in it. */}
               <XRViewerAnchor
                 target={
                   (plan?.referenceFrame ?? "world") === "world"
-                    ? (elevatorAxis ?? xrLevel)
+                    ? (elevatorAxis ?? roomsAxis ?? xrLevel)
                     : null
                 }
               />
@@ -691,11 +782,14 @@ export function XRSceneRenderer({
                    below. No environment map: a city HDR both flattens the
                    fittings' pools and, offline, never loads at all. */
                 <>
-                  <ambientLight intensity={0.62} color="#F1EEE8" />
+                  <ambientLight intensity={0.78} color="#F6F3ED" />
                   <hemisphereLight
-                    intensity={0.55}
-                    color="#FFF3E2"
-                    groundColor="#BFB7A8"
+                    intensity={0.66}
+                    color="#FFF6E9"
+                    // The bounce off the floor, which is now pale oak rather
+                    // than khaki stone — a cool-grey ground term under a warm
+                    // wood floor is what tips the whole room sallow.
+                    groundColor="#D8C4A6"
                   />
                 </>
               ) : (
@@ -797,26 +891,36 @@ export function XRSceneRenderer({
                           // on the ring axis, neither of which it can do
                           // without them.
                           makeDefault
-                          // In the elevator AxisLook owns the pivot — it sits
-                          // a centimetre ahead of the eye, not on the axis
-                          // itself, and two effects writing the same target
-                          // would race.
+                          // In the elevator and in rooms AxisLook owns the
+                          // pivot — it sits a centimetre ahead of the eye, not
+                          // on the axis itself, and two effects writing the
+                          // same target would race.
                           target={
-                            elevatorAxis ? undefined : (deckLook ?? readingLook)
+                            standingAxis ? undefined : (deckLook ?? readingLook)
                           }
-                          // In the elevator the reader is INSIDE the scene:
-                          // dragging turns the head (AxisLook parks the pivot
-                          // a centimetre ahead of the eye) and there is
-                          // nowhere to pan or dolly to — the whole view is
-                          // built around one standing point.
-                          enablePan={!elevatorAxis}
-                          enableZoom={!elevatorAxis}
-                          minDistance={elevatorAxis ? 0.01 : 0}
-                          maxDistance={elevatorAxis ? 0.01 : Infinity}
+                          // In the elevator and in rooms the reader is INSIDE
+                          // the scene: dragging turns the head (AxisLook parks
+                          // the pivot a centimetre ahead of the eye) and there
+                          // is nowhere to pan or dolly to — both views are
+                          // built around one standing point, and in rooms the
+                          // reader moves off it by WALKING, not by dragging.
+                          enablePan={!standingAxis}
+                          enableZoom={!standingAxis}
+                          minDistance={standingAxis ? 0.01 : 0}
+                          maxDistance={standingAxis ? 0.01 : Infinity}
+                          // Rooms only: a reader on their feet in a building
+                          // has a neck, not a gimbal. With the pivot at the
+                          // eye, a drag that runs past straight up carries
+                          // the view over the top and lands it upside down in
+                          // the floor, with no horizon left to recover by.
+                          // The elevator is exempt — it is a shaft, and
+                          // looking up and down it is the whole view.
+                          minPolarAngle={roomsAxis ? 0.35 : 0}
+                          maxPolarAngle={roomsAxis ? Math.PI - 0.35 : Math.PI}
                           enableDamping
                           dampingFactor={0.08}
                         />
-                        <AxisLook axis={elevatorAxis} />
+                        <AxisLook axis={standingAxis} />
                       </>
                     )}
 

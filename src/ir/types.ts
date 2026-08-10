@@ -244,11 +244,43 @@ export interface AIFallbackResponse {
   reasoning: string;
 }
 
+/** One node the parser could not classify, as handed to the provider. */
+export interface AIClassifyRequest {
+  /** IR node id — the key the response must come back under. */
+  nodeId: string;
+  /** The element's tag name, lower-cased. */
+  tag: string;
+  /** Serialised DOM subtree (attributes + a few levels of children). */
+  subtree: string;
+  /** What layers 1–2 settled on — always `generic` today, but say it anyway. */
+  currentRole: IRRole;
+}
+
 /**
- * Provider interface. Swap the stub for a real implementation that calls
- * Ollama / llama.cpp / a cloud API without changing any other parser code.
+ * Provider interface. Swap the stub for a real implementation that calls a
+ * cloud API or a local model without changing any other parser code.
+ *
+ * **`classifyBatch` is the real entry point.** A page that falls through to
+ * layer 3 does so for tens of nodes at once, and one round trip per node is
+ * the difference between a parse that finishes and one the reader abandons:
+ * the walk is sequential, so per-node calls serialise end to end — 40 nodes ×
+ * ~1 s is 40 s of staring at nothing, and it pays the prompt overhead 40
+ * times over. The parser therefore collects every unresolved node during the
+ * tree walk and calls this ONCE, after the walk (see `parsePageToIR`), which
+ * also lets an implementation chunk and parallelise as it sees fit.
+ *
+ * The returned array is positional: `out[i]` answers `items[i]`, and `null`
+ * means "no answer for this one" (unparseable, filtered, or dropped by a
+ * failed chunk) — never a shorter array, never a re-ordered one.
  */
 export interface AIFallbackProvider {
+  classifyBatch(
+    items: AIClassifyRequest[],
+  ): Promise<(AIFallbackResponse | null)[]>;
+  /**
+   * Single-node convenience, kept for callers outside the parser. Implement it
+   * as a batch of one rather than as a second code path.
+   */
   classify(
     domSubtree: string,
     nodeId: string,
@@ -392,6 +424,26 @@ export interface ParserConfig {
    */
   aiFallbackThreshold: number;
 
+  /**
+   * Whether a surviving `div`/`span` container may be sent to layer 3.
+   *
+   * Default false, which is the parser's long-standing behaviour: the layer-3
+   * gate excluded every div and span outright. That exclusion made sense while
+   * layer 3 was a stub — a node it declines to classify is recorded as
+   * `ai-timeout`, and marking every anonymous div on every page that way would
+   * be noise in the IR for no gain.
+   *
+   * It stops making sense the moment a real provider is configured, because
+   * div soup is the entire problem layer 3 exists for: a div that reaches the
+   * gate has already survived wrapper-piercing and the pure-text and
+   * inline-container splices, so it is a real container with block children
+   * and no semantics — exactly the node worth asking about. The renderer's
+   * pipeline turns this on when, and only when, the reader has configured a
+   * provider (see scene/use-pipeline.ts), so a parse with no AI configured is
+   * byte-for-byte what it was before.
+   */
+  aiFallbackIncludeWrappers: boolean;
+
   // ── Reading order strategy ────────────────────────────────────────────────
 
   /**
@@ -440,6 +492,18 @@ export interface TreeCounters {
   reading: number;
 }
 
+/**
+ * A node parked during the tree walk for the layer-3 batch pass.
+ *
+ * It carries the `element` as well as the serialised subtree because a node
+ * the AI re-roles may want its label resolved again: `resolveNodeLabelSmart`
+ * treats a semantic container differently from a `generic` div, and the walk
+ * had already labelled it as generic by the time we asked.
+ */
+export interface AIPendingNode extends AIClassifyRequest {
+  element: Element;
+}
+
 export interface BuildContext {
   nodes: Record<string, IRNode>;
   landmarkRecords: LandmarkRecord[];
@@ -447,6 +511,8 @@ export interface BuildContext {
   counters: TreeCounters;
   elementToNodeId: WeakMap<Element, string>;
   fallbackProvider: AIFallbackProvider;
+  /** Nodes awaiting layer 3, in walk order. Drained once, after the walk. */
+  aiQueue: AIPendingNode[];
   fallbackLog: IRFallbackEntry[];
   config: ParserConfig;
   skipTags: Set<string>;

@@ -42,6 +42,7 @@ import {
   computeElevatorShell,
   roomAtPose,
   roomReadingPose,
+  roomRailY,
   elevatorEmphasis,
   elevatorFloorTarget,
   LIVE_GHOST_RADIUS,
@@ -263,15 +264,36 @@ function FieldLabelText({
   // The sign's plate, sized off the text: roughly half an em per character
   // for the mixed-case names these are, with a comfortable margin. Only the
   // renderer knows the font, so the placement side ships a flag, not a size.
+  //
+  // …and a BUDGET (`maxHeight`): the plate hangs on a lintel with a soffit
+  // dropping in front of it, and only the placement side knows how much clear
+  // wall that leaves. A section name long enough to wrap grew the plate past
+  // the band and the soffit took the top line off it, so the size below is a
+  // ceiling to come down from rather than the size to use. Coming down beats
+  // wrapping further: two lines of a real page's h1 ("Resources for
+  // Developers, by Developers") need three times the band that one line does.
   const plate = React.useMemo(() => {
     if (!label.sign) return null;
-    const wanted = label.text.length * label.fontSize * 0.56 + 0.34;
-    const width = Math.min(2.4, Math.max(0.9, wanted));
-    // A long heading wraps rather than being cut, so the plate has to grow
-    // with it — a sign the name overflows is worse than no sign.
-    const lines = Math.max(1, Math.ceil(wanted / width));
-    return { width, height: label.fontSize * (1.1 + lines) };
-  }, [label.sign, label.text, label.fontSize]);
+    const budget = label.maxHeight ?? Infinity;
+    let fontSize = label.fontSize;
+    for (let i = 0; i < 8; i++) {
+      const wanted = label.text.length * fontSize * 0.56 + 0.34;
+      const width = Math.min(3.1, Math.max(0.9, wanted));
+      // A long heading wraps rather than being cut, so the plate has to grow
+      // with it — a sign the name overflows is worse than no sign.
+      const lines = Math.max(1, Math.ceil(wanted / width));
+      // 0.3 em of margin above and below the name. It was 0.55 em each way,
+      // which is a generous plate when there is wall to spare — but the band
+      // between a door head and the soffit is about 0.2 m, and every
+      // centimetre spent on margin came off the letters, which is how a
+      // one-word section name ended up set at 9 cm.
+      const height = fontSize * (0.6 + lines);
+      if (height <= budget || fontSize <= 0.055)
+        return { width, height, fontSize };
+      fontSize *= 0.85;
+    }
+    return { width: 3.1, height: budget, fontSize };
+  }, [label.sign, label.text, label.fontSize, label.maxHeight]);
   return (
     <group
       position={[
@@ -291,7 +313,7 @@ function FieldLabelText({
             <meshBasicMaterial color={GALLERY_SIGN.plate} toneMapped={false} />
           </mesh>
           <mesh position={[0, 0, -0.008]}>
-            <planeGeometry args={[plate.width + 0.016, plate.height + 0.016]} />
+            <planeGeometry args={[plate.width + 0.03, plate.height + 0.03]} />
             <meshBasicMaterial color={GALLERY_SIGN.edge} toneMapped={false} />
           </mesh>
         </>
@@ -303,7 +325,7 @@ function FieldLabelText({
         // A hair proud of its plate: the name must never be a coplanar
         // decision for the depth buffer to make.
         position={[0, 0, plate ? 0.004 : 0]}
-        fontSize={label.fontSize}
+        fontSize={plate ? plate.fontSize : label.fontSize}
         color={plate ? GALLERY_SIGN.text : theme.emphasisCol}
         fillOpacity={opacity}
         outlineWidth={plate ? 0 : label.fontSize * 0.06}
@@ -692,6 +714,7 @@ export function PageGhostField({
           walls={roomShell}
           anchor={entry.position}
           floorY={-entry.position.y}
+          railY={roomRailY(entry.size, -entry.position.y)}
         />
       )}
       {roomSlabs.length > 0 && (
@@ -825,10 +848,18 @@ export function PageGhostField({
                     dim={!!p.offFloor}
                   />
                 )}
-                {/* In the elevator the current page sits in the wall like
-                    every other one, so it needs a hit target too — being
-                    current buys it no special treatment here. */}
-                {(!p.isStage || elevator) && (
+                {/* Never over the page being read. PageHitPlane is a
+                    full-cell quad at z = 0.045 that stopPropagation()s its
+                    click, so it sits in front of that page's links (z ≈ 0.004)
+                    and eats every one of them. The elevator used to keep it on
+                    the current page too — "it sits in the wall like every other
+                    one" — but the click it swallowed only ever re-selected the
+                    page that was already current, in exchange for making the
+                    one live, interactive page the only unclickable one.
+                    Losing it also costs the current page its `pointedAt`
+                    hover, which it does not need: `isStage` already forces
+                    `live`, and ElevatorSlotMark already marks it `current`. */}
+                {!p.isStage && (
                   <PageHitPlane
                     width={cellW}
                     height={cellH}

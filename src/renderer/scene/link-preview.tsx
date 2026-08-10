@@ -5,9 +5,14 @@
  * as spatial neighbours instead of hidden jumps). Dwelling the pointer on
  * any inline link for ~350 ms spawns a small tethered card beside the hit
  * point showing the link's label and where it leads (domain for external
- * links, "jump to section" for fragments). The card is view-independent —
- * it works in flip, page views, and rooms alike — and non-interactive, so
+ * links, "jump to section" for fragments). The card is non-interactive, so
  * it never steals the click from the link underneath.
+ *
+ * Where it runs: rooms only — see PREVIEW_VIEW_MODES. In the reading views a
+ * link should just be a link you click; a card that floats up over the prose
+ * on hover covers the very text you are reading and turns a one-step action
+ * into a wait. Rooms is the one view whose whole point is standing off and
+ * surveying, so a tethered satellite has somewhere to sit and something to add.
  *
  * Research basis: VRowser / WebDriving / LitForager — tethered satellite
  * previews of link targets aid foraging. This is the instant, zero-network
@@ -19,6 +24,7 @@ import { Line, Text } from "@react-three/drei";
 
 import { useTheme } from "../theme";
 import { FontContext } from "./contexts";
+import type { ViewMode } from "../../components/viewTypes";
 
 export interface LinkPreviewApi {
   show: (href: string, label: string, point: [number, number, number]) => void;
@@ -31,6 +37,17 @@ export const LinkPreviewContext = React.createContext<LinkPreviewApi | null>(
 
 const DWELL_MS = 350;
 const LINGER_MS = 150;
+
+/**
+ * The only view modes that summon a preview card. Everywhere else an inline
+ * link is a plain click target with nothing rendered over it on hover.
+ *
+ * Enforced by handing down a null context rather than by a check at the hit
+ * mesh: consumers already call through `linkPreview?.show(...)`, so a null
+ * provider switches off the dwell timer, the card, and its state in one move,
+ * and no per-link code needs to know about view modes at all.
+ */
+const PREVIEW_VIEW_MODES: ReadonlySet<ViewMode> = new Set<ViewMode>(["rooms"]);
 
 interface PreviewState {
   href: string;
@@ -127,10 +144,13 @@ function LinkPreviewCard({ preview }: { preview: PreviewState }) {
  * inline link hit-mesh below it and renders the active card.
  */
 export function LinkPreviewProvider({
+  viewMode,
   children,
 }: {
+  viewMode: ViewMode | undefined;
   children: React.ReactNode;
 }) {
+  const enabled = viewMode !== undefined && PREVIEW_VIEW_MODES.has(viewMode);
   const [preview, setPreview] = React.useState<PreviewState | null>(null);
   const dwellTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const lingerTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -169,9 +189,9 @@ export function LinkPreviewProvider({
   );
 
   return (
-    <LinkPreviewContext.Provider value={api}>
+    <LinkPreviewContext.Provider value={enabled ? api : null}>
       {children}
-      {preview && <LinkPreviewCard preview={preview} />}
+      {enabled && preview && <LinkPreviewCard preview={preview} />}
     </LinkPreviewContext.Provider>
   );
 }

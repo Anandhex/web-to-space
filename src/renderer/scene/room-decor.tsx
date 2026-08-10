@@ -28,7 +28,13 @@
 import React from "react";
 import * as THREE from "three";
 
-import type { RoomFixture, RoomSlab, RoomWall } from "../page-placements";
+import {
+  ROOM_SOFFIT_BAND,
+  ROOM_SOFFIT_DROP,
+  type RoomFixture,
+  type RoomSlab,
+  type RoomWall,
+} from "../page-placements";
 
 /** Panel-anchor origin in world space — everything here is relative to it. */
 type Anchor = { x: number; y: number; z: number };
@@ -48,23 +54,42 @@ type Anchor = { x: number; y: number; z: number };
 // doors) still come from the theme, so the palette follows the product; the
 // architecture does not.
 
+// THE FLOOR IS WHAT WAS WRONG (2026-08-09). The walls were already a gallery
+// off-white, but the floor was #CDC6BA — the same khaki, half a shade darker.
+// Wall and floor in one beige family, under warm lamps, is the colour of an
+// institution after hours, and it is what made a correct gallery read as a
+// horror set. So: the wall goes cleaner and brighter (and much less dark
+// where it meets the floor — gloom pooling at floor level is a horror cue in
+// its own right), and the floor becomes PALE OAK. A wood floor is the single
+// cheapest way to say "somewhere people were meant to be": it is warm, it is
+// obviously a made surface, and its planks give the reader's own walking
+// something to move against down the length of a corridor.
+
 const GALLERY = {
   /** Wall, at the top and where it meets the floor — a gentle wash, not a
       gradient you can name. */
-  wallTop: "#F3F0EA",
-  wallBottom: "#DCD6CB",
-  skirting: "#BDB5A7",
-  rail: "#AFA697",
-  floor: "#CDC6BA",
-  floorLine: "#B5AC9E",
+  wallTop: "#F8F6F2",
+  wallBottom: "#EAE5DC",
+  skirting: "#D6CFC1",
+  rail: "#C3B9A6",
+  /** Pale oak, and the joint between two boards. */
+  floor: "#CBB396",
+  floorLine: "#A98F6E",
+  floorGrain: "#BCA383",
   /** Gallery ceilings are white; the fittings sit in them, not against them. */
-  ceiling: "#E9E6DF",
-  soffit: "#F5F3EE",
+  ceiling: "#F1EFEA",
+  soffit: "#FBFAF7",
 } as const;
 
 /** Warm bulbs in the rooms, near-neutral daylight in the corridors. */
-const LAMP_WARM = "#FFE7C4";
-const LAMP_COOL = "#EDF2FB";
+const LAMP_WARM = "#FFE9CC";
+const LAMP_COOL = "#F2F5FC";
+/**
+ * The gallery lights over the pages are the one fitting whose light lands on
+ * something being READ, so they are near-white — a warm bulb here tints the
+ * page it is there to make legible.
+ */
+const LAMP_PICTURE = "#FFF6E9";
 
 /**
  * The section sign over each doorway, in the same architectural palette:
@@ -73,9 +98,40 @@ const LAMP_COOL = "#EDF2FB";
  * under a luminaire. (Used by the plaque renderer in page-ghosts.tsx.)
  */
 export const GALLERY_SIGN = {
-  plate: "#F7F5F1",
+  // A shade warmer and darker than the plaster it hangs on. It used to be
+  // #F7F5F1 against a #F3F0EA wall, which was already close; once the wall
+  // was brightened to #F8F6F2 the plate was the same colour as the wall and
+  // the name appeared to be written directly on the lintel.
+  plate: "#EFEAE0",
   text: "#23211D",
-  edge: "#C3BBAC",
+  // A real dark rule, not a tint. This is what makes a sign read AS a sign
+  // from the far end of a corridor, where the name itself is a few pixels
+  // tall and the only thing carrying it is the shape of the plate.
+  edge: "#6E6455",
+} as const;
+
+/**
+ * A LINK DOOR, in the same architectural palette (used by `LinkDoors` in
+ * room-walk.tsx).
+ *
+ * These used to be filled with `theme.panelBg` — which in the dark theme is
+ * #323232. A row of near-black rectangles set into a pale wall, down a dim
+ * corridor, is not a set of doors: it is a set of holes, and it was the
+ * loudest single thing making the building read as a horror set. A door is
+ * timber, it is lighter than the shadow behind it, and it has a handle. All
+ * three matter, and none of them can come from the UI theme, for the same
+ * reason the walls don't (see the palette above).
+ */
+export const GALLERY_DOOR = {
+  /** The leaf: warm oak, a shade deeper than the floor it stands on. */
+  leaf: "#A98055",
+  /** Stiles and rails, and the recessed panels between them. */
+  frame: "#966F47",
+  panel: "#B98C5E",
+  /** Lever and rose. */
+  brass: "#C9A45C",
+  /** Lifted on hover, so pointing at a door says so before you walk into it. */
+  leafHot: "#C39A6C",
 } as const;
 
 interface RoomPalette {
@@ -85,6 +141,7 @@ interface RoomPalette {
   rail: THREE.Color;
   floor: THREE.Color;
   floorLine: THREE.Color;
+  floorGrain: THREE.Color;
   ceiling: THREE.Color;
   soffit: THREE.Color;
 }
@@ -97,6 +154,7 @@ function roomPalette(): RoomPalette {
     rail: new THREE.Color(GALLERY.rail),
     floor: new THREE.Color(GALLERY.floor),
     floorLine: new THREE.Color(GALLERY.floorLine),
+    floorGrain: new THREE.Color(GALLERY.floorGrain),
     ceiling: new THREE.Color(GALLERY.ceiling),
     soffit: new THREE.Color(GALLERY.soffit),
   };
@@ -112,10 +170,12 @@ function wallGradientTexture(p: RoomPalette): THREE.Texture {
   const g = c.getContext("2d")!;
   const grad = g.createLinearGradient(0, c.height, 0, 0);
   grad.addColorStop(0, p.wallBottom.getStyle());
-  grad.addColorStop(
-    0.45,
-    p.wallBottom.clone().lerp(p.wallTop, 0.75).getStyle(),
-  );
+  // Most of the wall is at (or near) the top colour: the wash is there to
+  // stop a flat plane reading as a flat plane, not to darken the room. Pulled
+  // low, it puts a band of shadow round the reader's feet the whole way down
+  // the building, which is precisely how a corridor is lit to frighten people.
+  grad.addColorStop(0.3, p.wallBottom.clone().lerp(p.wallTop, 0.85).getStyle());
+  grad.addColorStop(0.62, p.wallTop.getStyle());
   grad.addColorStop(1, p.wallTop.getStyle());
   g.fillStyle = grad;
   g.fillRect(0, 0, c.width, c.height);
@@ -124,37 +184,83 @@ function wallGradientTexture(p: RoomPalette): THREE.Texture {
   return t;
 }
 
+/** Boards per metre of floor — a 25 cm board, which is a wide plank. */
+const FLOOR_BOARDS = 4;
+
 /**
- * The floor: a stone-ish tile with a faint joint every metre and a little
- * grain, so walking has something to move against. Without it the floor is
- * a single flat colour and the reader's own motion is invisible.
+ * The floor: pale oak boards running the length of the building, with a joint
+ * between each pair and a little grain along them, so walking has something
+ * to move against. Without it the floor is a single flat colour and the
+ * reader's own motion is invisible.
+ *
+ * The tile is one square metre (the caller sets `repeat` from the slab's size
+ * in metres), and the boards run along v — which, on a floor plane laid down
+ * by a quarter turn about x, is along z: down the corridor, away from the
+ * reader. That is the direction that does the most work, since it is the one
+ * they walk in.
+ *
+ * Everything here is deterministic — a hash of the board index, not an RNG.
+ * A floor that came out different on each build is a floor nobody can tune.
  */
 function floorTexture(p: RoomPalette): THREE.Texture {
   const c = document.createElement("canvas");
   c.width = 256;
   c.height = 256;
   const g = c.getContext("2d")!;
-  g.fillStyle = p.floor.getStyle();
-  g.fillRect(0, 0, c.width, c.height);
-  // Grain: cheap, low-contrast speckle. Deterministic pattern, no RNG — a
-  // floor that came out different on each build is a floor nobody can tune.
-  const img = g.getImageData(0, 0, c.width, c.height);
-  for (let i = 0; i < img.data.length; i += 4) {
-    const n = ((i * 2654435761) % 17) - 8; // ±8 levels
-    img.data[i] = Math.max(0, Math.min(255, img.data[i] + n));
-    img.data[i + 1] = Math.max(0, Math.min(255, img.data[i + 1] + n));
-    img.data[i + 2] = Math.max(0, Math.min(255, img.data[i + 2] + n));
+  const boardW = c.width / FLOOR_BOARDS;
+  /** 0…1 from an integer, well spread — the same seed always the same board. */
+  const hash = (n: number) => {
+    const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  };
+
+  for (let b = 0; b < FLOOR_BOARDS; b++) {
+    // Each board is its own shade, so the floor reads as laid boards rather
+    // than as one surface with lines ruled on it.
+    const shade = p.floor
+      .clone()
+      .lerp(p.floorGrain, hash(b) * 0.7)
+      .getStyle();
+    g.fillStyle = shade;
+    g.fillRect(b * boardW, 0, boardW, c.height);
+    // Grain: long, very low-contrast streaks down the board. Faint on
+    // purpose — at 0.3 alpha these read as SCRATCHES on a lit floor rather
+    // than as figure in the timber, and a scuffed floor is a neglected
+    // building, which is the read this whole palette exists to avoid.
+    g.strokeStyle = p.floorGrain.getStyle();
+    g.globalAlpha = 0.13;
+    g.lineWidth = 1;
+    for (let s = 0; s < 5; s++) {
+      const x = (b + 0.12 + hash(b * 7 + s) * 0.76) * boardW;
+      g.beginPath();
+      g.moveTo(x, 0);
+      // A gentle waver, so the streak is grain and not a pinstripe.
+      for (let y = 0; y <= c.height; y += 32)
+        g.lineTo(x + Math.sin((y / c.height) * 6 + s) * 1.6, y);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+    // The joint at the board's left edge — the one line that should be
+    // legible, since it is what says "boards".
+    g.strokeStyle = p.floorLine.getStyle();
+    g.globalAlpha = 0.5;
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(b * boardW + 0.5, 0);
+    g.lineTo(b * boardW + 0.5, c.height);
+    g.stroke();
+    g.globalAlpha = 1;
   }
-  g.putImageData(img, 0, 0);
-  // The joint, along two edges of the tile.
-  g.strokeStyle = p.floorLine.getStyle();
-  g.lineWidth = 2;
-  g.strokeRect(0, 0, c.width, c.height);
+  // No butt joints. Staggering a cross-cut per board looked, at floor scale,
+  // like a scatter of short dark dashes across the room — closer to debris
+  // than to joinery. Boards that run unbroken down the building also do more
+  // for the walk, which is what the floor is mostly there for.
+
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.wrapS = THREE.RepeatWrapping;
   t.wrapT = THREE.RepeatWrapping;
-  t.anisotropy = 4;
+  t.anisotropy = 8;
   return t;
 }
 
@@ -184,6 +290,8 @@ interface RoomMaterials {
   ceiling: THREE.Material;
   soffit: THREE.Material;
   headMat: THREE.Material;
+  /** The lining round a doorway — jambs and head, seen from both sides. */
+  jamb: THREE.Material;
 }
 
 /**
@@ -240,6 +348,12 @@ function roomMaterials(): RoomMaterials {
       roughness: 0.9,
       metalness: 0,
     }),
+    jamb: new THREE.MeshStandardMaterial({
+      color: p.skirting,
+      side: THREE.DoubleSide,
+      roughness: 0.6,
+      metalness: 0.04,
+    }),
   };
   MATERIALS = built;
   return built;
@@ -261,6 +375,15 @@ const SKIRT_H = 0.11;
 const TRIM_PROUD = 0.022;
 /** The rail above the pages — the line a gallery hangs from. */
 const RAIL_H = 0.035;
+/**
+ * The lining round a doorway: how wide the jamb and head bands are, and how
+ * far they stand proud of the wall. An opening with no lining is a HOLE, and
+ * a corridor of dark rectangular holes is the whole vocabulary of a haunted
+ * house; the same opening with a frame round it is a door, which is what it
+ * was always meant to be. Cheap, too — three boxes an opening.
+ */
+const JAMB_W = 0.085;
+const JAMB_PROUD = 0.028;
 
 /**
  * The building's walls: the flat surfaces the pages hang on and the corridor
@@ -281,12 +404,20 @@ export function RoomShell({
   walls,
   anchor,
   floorY,
+  railY,
 }: {
   walls: RoomWall[];
   /** The main panel's top-left anchor in world space — walls are relative to it. */
   anchor: Anchor;
   /** The floor, panel-anchor-relative: where the skirting stands. */
   floorY: number;
+  /**
+   * The picture rail, panel-anchor-relative (`roomRailY`). Passed in rather
+   * than assumed: it has to sit just above the top edge of the pages, and the
+   * pages no longer hang at the panel-anchor line — they hang to a gallery
+   * centre line, so the rail moved with them.
+   */
+  railY: number;
 }) {
   const mats = useRoomMaterials();
   return (
@@ -308,9 +439,50 @@ export function RoomShell({
                read as a neon exit sign rather than as a gallery: the opening
                is legible because the space beyond it is lit, and because the
                section's name hangs above it. */
-            <mesh material={mats.headMat}>
-              <planeGeometry args={[w.size.width, w.size.height]} />
-            </mesh>
+            <>
+              <mesh material={mats.headMat}>
+                <planeGeometry args={[w.size.width, w.size.height]} />
+              </mesh>
+              {/* The lining round the opening below it. The lintel is the one
+                  piece that knows where a doorway IS — it is the piece that
+                  spans one — so the frame is drawn from it: a head band along
+                  its foot and a jamb down each side, reaching from there to
+                  the floor. Straddling boxes, like the skirting, so one set
+                  serves the space on either side of the wall. */}
+              <mesh
+                material={mats.jamb}
+                position={[0, -w.size.height / 2 + JAMB_W / 2, 0]}
+              >
+                <boxGeometry
+                  args={[
+                    w.size.width + 2 * JAMB_W,
+                    JAMB_W,
+                    JAMB_PROUD * 2,
+                  ]}
+                />
+              </mesh>
+              {(() => {
+                // The opening below this lintel: from the floor up to the
+                // lintel's own foot, which IS the door head.
+                const openH = Math.max(
+                  0.01,
+                  w.centre.y - w.size.height / 2 - floorY,
+                );
+                // The jamb runs the height of the opening plus the head band
+                // it dies into at the top.
+                const jambH = openH + JAMB_W;
+                const jambY = floorY + jambH / 2 - w.centre.y;
+                return [-1, 1].map((s) => (
+                  <mesh
+                    key={`jamb-${s}`}
+                    material={mats.jamb}
+                    position={[(s * (w.size.width + JAMB_W)) / 2, jambY, 0]}
+                  >
+                    <boxGeometry args={[JAMB_W, jambH, JAMB_PROUD * 2]} />
+                  </mesh>
+                ));
+              })()}
+            </>
           ) : (
             /* A link door's opening is filled by its own leaf (see
                LinkDoors), which sits exactly on this piece — so the piece
@@ -341,7 +513,7 @@ export function RoomShell({
                   the distance: it drew itself straight through the section
                   sign over each far doorway. */}
               {w.hangs && (
-                <mesh material={mats.rail} position={[0, -w.centre.y + 0.06, 0]}>
+                <mesh material={mats.rail} position={[0, railY - w.centre.y, 0]}>
                   <boxGeometry args={[w.size.width, RAIL_H, TRIM_PROUD * 2]} />
                 </mesh>
               )}
@@ -353,9 +525,14 @@ export function RoomShell({
   );
 }
 
-/** How far the perimeter soffit drops below the ceiling, and how wide it is. */
-const SOFFIT_DROP = 0.13;
-const SOFFIT_BAND = 0.3;
+/**
+ * How far the perimeter soffit drops below the ceiling, and how wide it is.
+ * Owned by page-placements: the band hangs in front of the wall, so anything
+ * mounted high on that wall has to know how much clear height it leaves (see
+ * `computeFieldLabels`, whose signs it was quietly slicing the tops off).
+ */
+const SOFFIT_DROP = ROOM_SOFFIT_DROP;
+const SOFFIT_BAND = ROOM_SOFFIT_BAND;
 
 /**
  * The floor and the ceiling. A room is not a room without them — four walls
@@ -407,10 +584,14 @@ export function RoomSlabs({ slabs, anchor }: { slabs: RoomSlab[]; anchor: Anchor
               rotation={[-Math.PI / 2, 0, 0]}
             >
               <planeGeometry args={[s.size.width, s.size.depth]} />
+              {/* Sealed boards: a shade glossier than plaster, so the
+                  luminaires above leave a soft sheen down the floor and the
+                  reader can see the light has a source. Not metallic — the
+                  old 0.06 metalness on a warm floor greyed it out. */}
               <meshStandardMaterial
                 map={floorMaps[i] ?? undefined}
-                roughness={0.72}
-                metalness={0.06}
+                roughness={0.6}
+                metalness={0}
               />
             </mesh>
           );
@@ -462,11 +643,18 @@ export function RoomSlabs({ slabs, anchor }: { slabs: RoomSlab[]; anchor: Anchor
  * three compiles the light count into every material's shader, so a count
  * that changed as somebody walked would stall on every threshold.
  */
-const CEILING_LIGHT_SLOTS = 4;
+const CEILING_LIGHT_SLOTS = 6;
 /** One per page on the wall a reader can see at once, near enough. */
 const PICTURE_LIGHT_SLOTS = 4;
-/** Past this the fitting still glows, but it stops lighting anything. */
-const CEILING_LIGHT_RANGE = 9;
+/**
+ * Past this the fitting still glows, but it stops lighting anything. Three
+ * windows a point light's falloff to zero at `distance`, so this is also how
+ * abruptly the light ends — set tight it draws a visible edge on the floor
+ * where the lit part of the corridor stops, and a lit patch you are standing
+ * in the middle of with darkness beyond it is the shot every horror film
+ * opens on. Generous, therefore, and the slots above are what pay for it.
+ */
+const CEILING_LIGHT_RANGE = 13;
 const PICTURE_LIGHT_RANGE = 5;
 
 /**
@@ -476,9 +664,15 @@ const PICTURE_LIGHT_RANGE = 5;
  * ratio is the point: the room is evenly lit, and the PAGE is the brightest
  * thing in it. Pushed too far the other way the fittings stop being accents
  * and the space between them goes black.
+ *
+ * The ceiling figure tracks the ceiling height (see ROOM_WALL_HEADROOM):
+ * inverse-square means the lid's height sets what reaches the floor, so this
+ * has to be retuned whenever that is. At ~2.35 m this lands a little above
+ * where the old 6 put a ~2.0 m ceiling, which is the intent — the room should
+ * be brighter than it was, not merely as bright.
  */
-const CEILING_LIGHT_INTENSITY = 6;
-const PICTURE_LIGHT_INTENSITY = 3.6;
+const CEILING_LIGHT_INTENSITY = 8.2;
+const PICTURE_LIGHT_INTENSITY = 4;
 
 /** The nearest `n` fixtures of one kind, nearest first. */
 function nearest(
@@ -578,10 +772,14 @@ export function RoomLights({
     () =>
       new THREE.MeshBasicMaterial({
         map: mats.pool,
+        // Warm, like the bulbs throwing them — a white pool added over a warm
+        // oak floor bleaches the wood back toward the beige it just left.
+        color: LAMP_WARM,
         transparent: true,
         // Subtle: on a pale gallery floor a strong pool reads as a puddle of
-        // paint, not as light.
-        opacity: 0.16,
+        // paint, not as light. Lower than it was, because a room now carries
+        // two files of luminaires and their pools overlap down the aisle.
+        opacity: 0.12,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
         toneMapped: false,
@@ -621,7 +819,8 @@ export function RoomLights({
                 position={[0, f.target.y - f.centre.y + 0.008, 0]}
                 rotation={[-Math.PI / 2, 0, 0]}
               >
-                <planeGeometry args={[2.4, 2.4]} />
+                {/* Roughly the spread a lamp throws from ceiling height. */}
+                <planeGeometry args={[2.7, 2.7]} />
               </mesh>
             </group>
           ) : (
@@ -645,7 +844,7 @@ export function RoomLights({
                   coplanar, and coplanar z-fights. */}
               <mesh position={[0, -0.046, 0]} rotation={[Math.PI / 2, 0, 0]}>
                 <planeGeometry args={[f.size.width * 0.8, f.size.depth * 0.7]} />
-                <meshBasicMaterial color={LAMP_WARM} toneMapped={false} />
+                <meshBasicMaterial color={LAMP_PICTURE} toneMapped={false} />
               </mesh>
             </group>
           ),
@@ -675,7 +874,7 @@ export function RoomLights({
             key={`picture-light-${i}`}
             from={f ? world(f.centre) : [0, -50, 0]}
             to={f ? world(f.target) : [0, -51, 0]}
-            color={LAMP_WARM}
+            color={LAMP_PICTURE}
             intensity={f ? PICTURE_LIGHT_INTENSITY : 0}
           />
         );

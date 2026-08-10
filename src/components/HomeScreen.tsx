@@ -14,6 +14,16 @@ import type { Tab, ViewMode } from "./viewTypes";
 import type { XRDeviceType } from "../renderer/XRSceneRenderer";
 import type { ParserConfig, ParserBackend } from "../ir/types";
 import {
+  AI_PROVIDERS,
+  DEFAULT_AI_SETTINGS,
+  aiProviderMeta,
+  aiSettingsReady,
+  testAIConnection,
+  withProvider,
+  type AIProviderId,
+  type AIProviderSettings,
+} from "../ir/ai";
+import {
   LIGHT_THEME,
   DARK_THEME,
   THEME_FIELD_LABELS,
@@ -75,6 +85,20 @@ export interface HomeSettings {
   parserConfig: Partial<ParserConfig>;
   parserBackend: ParserBackend;
   /**
+   * Layer 3 of the parser — which AI service classifies the nodes ARIA and
+   * structure could not, and with whose key. Inert until a key is entered.
+   */
+  ai: AIProviderSettings;
+  /**
+   * Whether the key is written to this device's localStorage.
+   *
+   * Off by default, and deliberately a decision rather than a default: a key
+   * in localStorage is readable by anything else running on this origin, and
+   * survives until it is cleared. Off means the key lives in memory for this
+   * session only — everything else about the AI config still persists.
+   */
+  aiRememberKey: boolean;
+  /**
    * Spatial arrangement the page opens in. Chosen here on the Home screen —
    * the document viewer has no switcher of its own, so the view is decided
    * before launch and travels with the tab.
@@ -118,6 +142,8 @@ export const DEFAULT_HOME_SETTINGS: HomeSettings = {
   xrTheme: DARK_THEME,
   parserConfig: {},
   parserBackend: "custom",
+  ai: DEFAULT_AI_SETTINGS,
+  aiRememberKey: false,
   viewMode: "standard",
 };
 
@@ -187,6 +213,51 @@ export function homeContrastPairs(
 }
 
 const LS_KEY = "fsw-home-settings";
+/**
+ * The AI config is stored under its own key rather than inside the settings
+ * blob above, for two reasons: it is the one part of settings that has to
+ * survive a reload to be useful (nobody wants to paste a key per page), and it
+ * is the only part that holds a secret — so it needs a write path that can
+ * leave the secret out. `apiKey` is persisted only with the reader's consent
+ * (`aiRememberKey`); everything else about the config always is.
+ */
+const LS_AI_KEY = "fsw-ai-config";
+
+interface StoredAI extends AIProviderSettings {
+  rememberKey: boolean;
+}
+
+function loadStoredAI(): { ai: AIProviderSettings; rememberKey: boolean } {
+  try {
+    const raw = localStorage.getItem(LS_AI_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<StoredAI>;
+      const { rememberKey, ...rest } = parsed;
+      return {
+        ai: { ...DEFAULT_AI_SETTINGS, ...rest, apiKey: rest.apiKey ?? "" },
+        rememberKey: rememberKey === true,
+      };
+    }
+  } catch {
+    /* unreadable or absent storage — fall through to the defaults */
+  }
+  return { ai: DEFAULT_AI_SETTINGS, rememberKey: false };
+}
+
+function saveStoredAI(ai: AIProviderSettings, rememberKey: boolean) {
+  try {
+    localStorage.setItem(
+      LS_AI_KEY,
+      JSON.stringify({
+        ...ai,
+        apiKey: rememberKey ? ai.apiKey : "",
+        rememberKey,
+      } satisfies StoredAI),
+    );
+  } catch {
+    /* private mode / storage full — the session still works, it just forgets */
+  }
+}
 
 function loadStoredSettings(): HomeSettings {
   // try {
@@ -203,7 +274,12 @@ function loadStoredSettings(): HomeSettings {
   //     };
   //   }
   // } catch {}
-  return DEFAULT_HOME_SETTINGS;
+  const stored = loadStoredAI();
+  return {
+    ...DEFAULT_HOME_SETTINGS,
+    ai: stored.ai,
+    aiRememberKey: stored.rememberKey,
+  };
 }
 
 function hexToRgb(hex: string): string {
@@ -1019,6 +1095,326 @@ function ParserNumber({
   );
 }
 
+/** A labelled text/password field, sized for the settings rail. */
+function SettingsField({
+  label,
+  value,
+  onChange,
+  theme,
+  type = "text",
+  placeholder,
+  hint,
+  mono,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  theme: HomeTheme;
+  type?: "text" | "password";
+  placeholder?: string;
+  hint?: string;
+  mono?: boolean;
+}) {
+  return (
+    <label style={{ display: "block", marginBottom: 10 }}>
+      <span
+        style={{
+          display: "block",
+          fontSize: 12,
+          color: theme.textPrimary,
+          marginBottom: 4,
+        }}
+      >
+        {label}
+      </span>
+      <input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          background: "#0a1220",
+          border: "1px solid #1a3a6a",
+          color: theme.textPrimary,
+          borderRadius: 4,
+          padding: "6px 8px",
+          fontSize: 12,
+          fontFamily: mono ? "ui-monospace, monospace" : "inherit",
+          outline: "none",
+        }}
+      />
+      {hint && (
+        <span
+          style={{
+            display: "block",
+            fontSize: 10.5,
+            color: theme.textSecondary,
+            marginTop: 3,
+          }}
+        >
+          {hint}
+        </span>
+      )}
+    </label>
+  );
+}
+
+/**
+ * Layer 3's whole configuration surface.
+ *
+ * Everything here is inert until a key is entered: with no provider
+ * configured the parser runs its stub and nothing leaves the browser, which
+ * is what the panel says at the top rather than making the reader infer it
+ * from an empty field.
+ *
+ * The Test button sends one real classification rather than pinging a health
+ * endpoint — a key can be valid and the call still fail on the model id or on
+ * the browser's CORS policy, and those are exactly the failures worth finding
+ * here instead of on the next page load.
+ */
+function AISettings({
+  ai,
+  rememberKey,
+  onChange,
+  onRememberChange,
+  theme,
+}: {
+  ai: AIProviderSettings;
+  rememberKey: boolean;
+  onChange: (next: AIProviderSettings) => void;
+  onRememberChange: (v: boolean) => void;
+  theme: HomeTheme;
+}) {
+  const meta = aiProviderMeta(ai.provider);
+  const [status, setStatus] = useState<
+    { state: "idle" | "testing" } | { state: "ok" | "fail"; detail: string }
+  >({ state: "idle" });
+  const set = (partial: Partial<AIProviderSettings>) =>
+    onChange({ ...ai, ...partial });
+
+  async function runTest() {
+    setStatus({ state: "testing" });
+    try {
+      const res = await testAIConnection(ai);
+      setStatus({
+        state: res.ok ? "ok" : "fail",
+        detail: res.ok ? `${res.detail} (${res.elapsedMs} ms)` : res.detail,
+      });
+    } catch (err) {
+      setStatus({ state: "fail", detail: (err as Error).message });
+    }
+  }
+
+  const ready = aiSettingsReady(ai);
+
+  return (
+    <>
+      <p
+        style={{
+          color: theme.textSecondary,
+          fontSize: 11,
+          margin: "0 0 12px",
+          lineHeight: 1.5,
+        }}
+      >
+        Nodes that ARIA and structural inference both leave as{" "}
+        <code style={{ fontFamily: "ui-monospace, monospace" }}>generic</code>{" "}
+        are sent to a model in one batched request per {ai.batchSize} nodes.
+        Leave the key empty and this stays off — the parser keeps its own
+        answers and nothing leaves the browser.
+      </p>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {AI_PROVIDERS.map((p) => {
+          const active = p.id === ai.provider;
+          return (
+            <button
+              key={p.id}
+              onClick={() => onChange(withProvider(ai, p.id as AIProviderId))}
+              style={{
+                flex: "1 1 45%",
+                background: active ? theme.chipBgActive : "transparent",
+                border: `1px solid ${active ? theme.accent : theme.cardRim}`,
+                color: active ? theme.accentText : theme.textSecondary,
+                borderRadius: 6,
+                padding: "6px 8px",
+                fontSize: 11.5,
+                cursor: "pointer",
+                textAlign: "left",
+              }}
+            >
+              {p.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <p
+        style={{
+          color: theme.textSecondary,
+          fontSize: 10.5,
+          lineHeight: 1.5,
+          margin: "0 0 12px",
+        }}
+      >
+        {meta.note}
+      </p>
+
+      {meta.needsKey && (
+        <SettingsField
+          label="API key"
+          type="password"
+          value={ai.apiKey}
+          placeholder="sk-…"
+          hint={meta.keyHint}
+          mono
+          theme={theme}
+          onChange={(v) => set({ apiKey: v.trim() })}
+        />
+      )}
+      <SettingsField
+        label="Model"
+        value={ai.model}
+        placeholder={meta.defaultModel}
+        hint="Any model id this provider accepts."
+        mono
+        theme={theme}
+        onChange={(v) => set({ model: v })}
+      />
+      <SettingsField
+        label={ai.provider === "ollama" ? "Ollama host" : "API base URL"}
+        value={ai.baseUrl}
+        placeholder={meta.defaultBaseUrl || "(provider default)"}
+        hint={
+          ai.provider === "ollama"
+            ? "Needs OLLAMA_ORIGINS set, or the browser blocks the call."
+            : "Point at a proxy or gateway; blank uses the provider's own host."
+        }
+        mono
+        theme={theme}
+        onChange={(v) => set({ baseUrl: v.trim() })}
+      />
+
+      <div style={{ display: "flex", gap: 10 }}>
+        <label style={{ flex: 1 }}>
+          <span
+            style={{
+              display: "block",
+              fontSize: 12,
+              color: theme.textPrimary,
+              marginBottom: 4,
+            }}
+          >
+            Nodes per request
+          </span>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={ai.batchSize}
+            onChange={(e) =>
+              set({
+                batchSize: Math.max(1, Math.min(100, Number(e.target.value) || 1)),
+              })
+            }
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              background: "#0a1220",
+              border: "1px solid #1a3a6a",
+              color: theme.textPrimary,
+              borderRadius: 4,
+              padding: "6px 8px",
+              fontSize: 12,
+              outline: "none",
+            }}
+          />
+        </label>
+        <label style={{ flex: 1 }}>
+          <span
+            style={{
+              display: "block",
+              fontSize: 12,
+              color: theme.textPrimary,
+              marginBottom: 4,
+            }}
+          >
+            Max nodes / page
+          </span>
+          <input
+            type="number"
+            min={0}
+            max={2000}
+            value={ai.maxNodes}
+            onChange={(e) =>
+              set({ maxNodes: Math.max(0, Math.min(2000, Number(e.target.value) || 0)) })
+            }
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              background: "#0a1220",
+              border: "1px solid #1a3a6a",
+              color: theme.textPrimary,
+              borderRadius: 4,
+              padding: "6px 8px",
+              fontSize: 12,
+              outline: "none",
+            }}
+          />
+        </label>
+      </div>
+
+      {meta.needsKey && (
+        <div style={{ marginTop: 12 }}>
+          <ParserToggle
+            label="Remember key on this device"
+            desc="Off: kept for this session only. On: stored in localStorage, readable by any script on this origin."
+            value={rememberKey}
+            onChange={onRememberChange}
+            theme={theme}
+          />
+        </div>
+      )}
+
+      <div
+        style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}
+      >
+        <button
+          onClick={runTest}
+          disabled={!ready || status.state === "testing"}
+          style={{
+            background: ready ? theme.chipBgActive : "transparent",
+            border: `1px solid ${ready ? theme.accent : theme.cardRim}`,
+            color: ready ? theme.accentText : theme.textSecondary,
+            borderRadius: 6,
+            padding: "6px 12px",
+            fontSize: 12,
+            cursor: ready ? "pointer" : "not-allowed",
+          }}
+        >
+          {status.state === "testing" ? "Testing…" : "Test"}
+        </button>
+        {"detail" in status && (
+          <span
+            style={{
+              flex: 1,
+              fontSize: 11,
+              lineHeight: 1.4,
+              color: status.state === "ok" ? "#7ee787" : "#f6a623",
+            }}
+          >
+            {status.detail}
+          </span>
+        )}
+      </div>
+    </>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
 // Settings panel
 // ─────────────────────────────────────────────────────────────
@@ -1474,6 +1870,17 @@ function SettingsPanel({
         </SettingsSection>
 
         {/* ── Parser options ──────────────────────────── */}
+        {/* ── AI fallback (parser layer 3) ────────────── */}
+        <SettingsSection title="AI FALLBACK · LAYER 3" accent={acc}>
+          <AISettings
+            ai={settings.ai}
+            rememberKey={settings.aiRememberKey}
+            onChange={(ai) => onChange({ ...settings, ai })}
+            onRememberChange={(v) => onChange({ ...settings, aiRememberKey: v })}
+            theme={theme}
+          />
+        </SettingsSection>
+
         <SettingsSection title="PARSER OPTIONS" accent={acc}>
           <p
             style={{
@@ -1665,8 +2072,16 @@ export function HomeScreen({
 
   useEffect(() => {
     try {
-      localStorage.setItem(LS_KEY, JSON.stringify(settings));
+      // The key never rides in the general settings blob — that is written on
+      // every keystroke and has no consent attached. It goes through
+      // saveStoredAI, which honours aiRememberKey.
+      const { ai, ...rest } = settings;
+      localStorage.setItem(
+        LS_KEY,
+        JSON.stringify({ ...rest, ai: { ...ai, apiKey: "" } }),
+      );
     } catch {}
+    saveStoredAI(settings.ai, settings.aiRememberKey);
   }, [settings]);
 
   const reduceMotion = usePrefersReducedMotion();

@@ -7,6 +7,8 @@ import {
   WRAPPER_TAGS,
 } from "./defaults";
 import type {
+  IRSource,
+  AIClassifyRequest,
   AIFallbackProvider,
   AIFallbackResponse,
   BuildContext,
@@ -45,13 +47,120 @@ import {
   createInlineNodes,
 } from "./inline-parser";
 
+/**
+ * The do-nothing provider — layer 3 present but declining to answer, which is
+ * what a parse gets when no AI provider is configured. Every node keeps the
+ * role layers 1 and 2 gave it.
+ */
 export class StubAIProvider implements AIFallbackProvider {
+  async classifyBatch(
+    items: AIClassifyRequest[],
+  ): Promise<(AIFallbackResponse | null)[]> {
+    return items.map(() => null);
+  }
   async classify(
     _domSubtree: string,
     _nodeId: string,
   ): Promise<AIFallbackResponse | null> {
     return null;
   }
+}
+
+/**
+ * How much the parser actually believes a node's role.
+ *
+ * For an identified node that is the confidence of the source that identified
+ * it. For a `generic` one it is `sourceConfidence.generic`, regardless of
+ * source: a structural pass that concluded "no role" is not 75% sure of
+ * anything, and reading it that way is what kept layer 3 from ever firing.
+ */
+function effectiveConfidence(
+  role: IRRole,
+  source: IRSource,
+  config: ParserConfig,
+): number {
+  return confidenceForSource(role === "generic" ? "generic" : source, config);
+}
+
+/**
+ * Layer 3, run once over everything the walk could not classify.
+ *
+ * The rule for taking an answer is the same one the old per-node path used,
+ * and it is deliberately conservative: the provider has to clear the config's
+ * threshold AND beat the confidence of whatever the structural layers already
+ * concluded. An uncertain guess is discarded and the node keeps its `generic`
+ * role — a wrong specific role is worse than an honest generic one, because
+ * the mapper acts on it.
+ *
+ * Nodes that got no usable answer are logged as `ai-timeout` (the IR's one
+ * name for "layer 3 was asked and did not deliver"), which is what the
+ * benchmark's per-source breakdown counts.
+ */
+async function applyAIClassifications(ctx: BuildContext): Promise<void> {
+  if (ctx.aiQueue.length === 0) return;
+  // Nobody was asked, so nothing timed out. Without this, a parse with no
+  // provider configured — the overwhelmingly common case, and every offline
+  // benchmark run — would relabel each unidentified node `ai-timeout` and drop
+  // its confidence to 0.4, changing the IR's own account of itself to record
+  // a call that never happened.
+  if (ctx.fallbackProvider instanceof StubAIProvider) return;
+  const queue = ctx.aiQueue;
+
+  let answers: (AIFallbackResponse | null)[];
+  try {
+    answers = await ctx.fallbackProvider.classifyBatch(
+      queue.map(({ nodeId, tag, subtree, currentRole }) => ({
+        nodeId,
+        tag,
+        subtree,
+        currentRole,
+      })),
+    );
+  } catch {
+    // A provider that throws outright takes layer 3 down, not the parse.
+    answers = queue.map(() => null);
+  }
+
+  queue.forEach((pending, i) => {
+    const node = ctx.nodes[pending.nodeId];
+    if (!node) return;
+    const answer = answers[i] ?? null;
+    const confident =
+      answer !== null &&
+      answer.confidence >= ctx.config.aiFallbackThreshold &&
+      answer.confidence >
+        effectiveConfidence(node.role, node.source, ctx.config);
+
+    if (!confident) {
+      ctx.fallbackLog.push({
+        id: pending.nodeId,
+        tag: pending.tag,
+        reason: "ai-timeout",
+      });
+      node.source = "ai-timeout";
+      node.confidence = confidenceForSource("ai-timeout", ctx.config);
+      return;
+    }
+
+    node.role = answer.role;
+    node.source = "ai";
+    node.confidence = answer.confidence;
+    // A node the walk saw as a generic div was labelled by the generic branch
+    // of resolveNodeLabelSmart. Now that it is a section or a nav, ask again —
+    // that branch reads headings and ARIA names a generic div is never given.
+    if (node.label === null) {
+      const relabelled = resolveNodeLabelSmart(
+        pending.element,
+        answer.role,
+        ctx.config,
+        ctx.doc,
+      );
+      if (relabelled) {
+        node.label = relabelled;
+        node.unlabelledYet = false;
+      }
+    }
+  });
 }
 
 function serialiseDOMSubtree(
@@ -428,35 +537,37 @@ async function createNode(
 
   const needsAIFallback =
     ctx.config.useAIFallback &&
-    resolvedConfidence < ctx.config.aiFallbackThreshold &&
+    // A `generic` role means NOTHING identified this node. The source that
+    // produced that non-answer is still `structural` (0.75) — it records how
+    // the parser arrived at "no idea", not how sure it is of it — so testing
+    // `resolvedConfidence` against the 0.6 threshold could never be true and
+    // the whole layer was unreachable, stub or no stub. An unidentified node
+    // is scored as one: `sourceConfidence.generic`, which is what that entry
+    // in the config is for. Lower `aiFallbackThreshold` past it (≤ 0.55 by
+    // default) and layer 3 goes quiet again.
+    effectiveConfidence(resolvedRole, resolvedSource, ctx.config) <
+      ctx.config.aiFallbackThreshold &&
     resolvedRole === "generic" &&
     hasContent &&
-    !isGenericWrapper;
+    (!isGenericWrapper || ctx.config.aiFallbackIncludeWrappers);
 
+  // Park it for the batch pass rather than calling the provider here.
+  //
+  // This used to `await` one classification per node, inside the walk. The
+  // walk is sequential, so that serialised every call end to end — a page with
+  // forty stragglers spent forty round trips, one after another, re-sending
+  // the same system prompt each time, with the reader watching nothing happen.
+  // The node is created below with its structural role either way; the pass
+  // after the walk (see `applyAIClassifications`) is what rewrites the ones
+  // the provider had a confident answer for.
   if (needsAIFallback) {
-    const subtree = serialiseDOMSubtree(element, ctx.skipTags);
-    try {
-      const aiResult = await ctx.fallbackProvider.classify(subtree, id);
-
-      const isAIConfident =
-        aiResult &&
-        aiResult.confidence >= ctx.config.aiFallbackThreshold &&
-        aiResult.confidence > confidenceForSource(resolvedSource, ctx.config);
-
-      if (isAIConfident) {
-        resolvedRole = aiResult.role;
-        resolvedSource = "ai";
-        resolvedConfidence = aiResult.confidence;
-      } else {
-        ctx.fallbackLog.push({ id, tag, reason: "ai-timeout" });
-        resolvedSource = "ai-timeout";
-        resolvedConfidence = confidenceForSource("ai-timeout", ctx.config);
-      }
-    } catch {
-      ctx.fallbackLog.push({ id, tag, reason: "ai-timeout" });
-      resolvedSource = "ai-timeout";
-      resolvedConfidence = confidenceForSource("ai-timeout", ctx.config);
-    }
+    ctx.aiQueue.push({
+      nodeId: id,
+      tag,
+      currentRole: resolvedRole,
+      subtree: serialiseDOMSubtree(element, ctx.skipTags),
+      element,
+    });
   }
   // ---- SYNTHESIS OF TEXT CHILD FOR LEAF TEXT NODES ----
   // If we have no children at all, no textNodes (i.e. no inline decomposition),
@@ -1716,6 +1827,7 @@ export const parsePageToIR = async (
     counters: { node: 0, section: 0, reading: 3 },
     elementToNodeId: new WeakMap<Element, string>(),
     fallbackProvider,
+    aiQueue: [],
     fallbackLog,
     config,
     skipTags,
@@ -1732,6 +1844,11 @@ export const parsePageToIR = async (
     ctx,
   );
   // await buildExternalLinksSection(parsedDoc, mainChildIds, ctx);
+
+  // Layer 3, in one pass over everything the walk parked (see the queue in
+  // buildNodeFromElement). It runs before the analytics and reading-order
+  // passes below so those see the final roles.
+  await applyAIClassifications(ctx);
 
   const parsedTitle = parsedDoc.title?.trim() || null;
   landmarkRecords.push({

@@ -71,6 +71,7 @@ export const DEFAULT_CONFIG: ParserConfig = {
     inline: 0.9,
   },
   aiFallbackThreshold: 0.6,
+  aiFallbackIncludeWrappers: false,
   readingOrderStrategy: "dom",
   excludeHiddenContent: true,
 };

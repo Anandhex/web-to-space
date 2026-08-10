@@ -31,11 +31,14 @@ import { Text } from "@react-three/drei";
 import * as THREE from "three";
 
 import { MORPH_RATE, MORPH_EPS } from "./config";
+import { LOOK_PIVOT } from "./camera";
+import { GALLERY_DOOR, GALLERY_SIGN } from "./room-decor";
 import { useTheme } from "../theme";
 import { FontContext } from "./contexts";
 import { NavigateContext } from "../primitives/contexts";
 import {
   roomPoseTransform,
+  ROOM_EYE_HEIGHT,
   roomWalkStep,
   type ReaderPose,
   type ReadingSpot,
@@ -63,55 +66,79 @@ export function RoomWalk({
 }) {
   const ref = React.useRef<THREE.Group>(null);
   const inited = React.useRef(false);
+  /**
+   * THE EASE LIVES IN POSE SPACE, NOT IN TRANSFORM SPACE.
+   *
+   * This used to hold an eased copy of the GROUP's position and rotation, one
+   * lerped toward the other's target independently — and those two are not
+   * independent. `roomPoseTransform` sets position to `station − Ry(yaw)·pose`,
+   * so the position that puts the reader at the station depends on the yaw,
+   * nonlinearly. Ease them apart and, part-way through, they describe a
+   * transform that puts the reader somewhere else entirely: they swing on an
+   * arc whose radius is their distance from the panel anchor.
+   *
+   * That radius is the whole building — tens of metres by the last section —
+   * so a turn on the spot deep in the enfilade slid the reader most of a
+   * metre sideways and straight through a corridor wall, growing worse the
+   * further in they had walked. Turning was moving.
+   *
+   * Easing the pose itself and deriving the transform from it each frame
+   * makes that unrepresentable: whatever the ease is doing, the transform is
+   * always one that puts the reader exactly at their station.
+   */
+  const eased = React.useRef<ReaderPose>({ ...poseRef.current });
 
-  const target = React.useCallback(() => {
-    const t = roomPoseTransform(poseRef.current, panel, viewingDistance);
-    return {
-      x: anchor.x + t.position.x,
-      y: anchor.y + t.position.y,
-      z: anchor.z + t.position.z,
-      yaw: t.yaw,
-    };
-  }, [anchor.x, anchor.y, anchor.z, panel, viewingDistance, poseRef]);
+  const apply = React.useCallback(
+    (pose: ReaderPose) => {
+      const g = ref.current;
+      if (!g) return;
+      const t = roomPoseTransform(pose, panel, viewingDistance);
+      g.position.set(
+        anchor.x + t.position.x,
+        anchor.y + t.position.y,
+        anchor.z + t.position.z,
+      );
+      g.rotation.y = t.yaw;
+    },
+    [anchor.x, anchor.y, anchor.z, panel, viewingDistance],
+  );
 
   // The first room is entered, not walked into: land on the pose so the view
   // opens with the reader already at page 1 rather than gliding in from the
   // world origin.
   React.useLayoutEffect(() => {
-    const g = ref.current;
-    if (g && !inited.current) {
-      const t = target();
-      g.position.set(t.x, t.y, t.z);
-      g.rotation.y = t.yaw;
+    if (ref.current && !inited.current) {
+      eased.current = { ...poseRef.current };
+      apply(eased.current);
       inited.current = true;
     }
   });
 
   useFrame((_, dt) => {
-    const g = ref.current;
-    if (!g || !inited.current) return;
-    const t = target();
+    if (!ref.current || !inited.current) return;
+    const t = poseRef.current;
+    const e = eased.current;
     const a = 1 - Math.exp(-MORPH_RATE * Math.min(dt, 0.1));
 
-    const p = g.position;
-    const dx = t.x - p.x;
-    const dy = t.y - p.y;
-    const dz = t.z - p.z;
-    if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) < MORPH_EPS) {
-      p.set(t.x, t.y, t.z);
+    const dx = t.x - e.x;
+    const dz = t.z - e.z;
+    if (Math.abs(dx) + Math.abs(dz) < MORPH_EPS) {
+      e.x = t.x;
+      e.z = t.z;
     } else {
-      p.x += dx * a;
-      p.y += dy * a;
-      p.z += dz * a;
+      e.x += dx * a;
+      e.z += dz * a;
     }
 
     // Turns take the short way round: a reader who steps through a doorway
     // and turns to the next wall must not spin the long way through 350°.
-    let dyaw = t.yaw - g.rotation.y;
+    let dyaw = t.yaw - e.yaw;
     while (dyaw > Math.PI) dyaw -= 2 * Math.PI;
     while (dyaw < -Math.PI) dyaw += 2 * Math.PI;
-    if (Math.abs(dyaw) < MORPH_EPS) g.rotation.y = t.yaw;
-    else g.rotation.y += dyaw * a;
+    if (Math.abs(dyaw) < MORPH_EPS) e.yaw = t.yaw;
+    else e.yaw += dyaw * a;
+
+    apply(e);
   });
 
   return (
@@ -151,8 +178,6 @@ const PROXIMITY_STEP = 0.6;
 const SPOT_RADIUS = 0.42;
 /** Scratch vector for the camera heading — one, not one per frame. */
 const look = new THREE.Vector3();
-/** How far above the panel's centre the preview's eye sits. */
-const READING_EYE_LIFT = 0.55;
 
 /**
  * Walking: W/A/S/D or the arrow keys move the reader through the building —
@@ -404,6 +429,17 @@ export function useRoomWalking({
  * takes — and so does walking into it (see `useRoomWalking`), which is what
  * makes an external link a door to another gallery rather than a note on a
  * wall.
+ *
+ * It is BUILT like a door — stiles and rails, two recessed panels, a brass
+ * lever at hand height — rather than drawn as a rectangle with a label on it.
+ * That is not decoration for its own sake: a plain slab reads as a hole in
+ * the wall, and the reader's only cue that they may walk into it was the
+ * writing, which is unreadable from the far end of a corridor. The panel
+ * shadows and the lever read as "door" at any distance, and the sign then
+ * only has to say WHICH door.
+ *
+ * Every proportion below is a fraction of the leaf, so retuning LINK_DOOR_W /
+ * LINK_DOOR_H in page-placements.ts cannot leave a rail hanging in mid-air.
  */
 function LinkDoorLeaf({
   wall,
@@ -431,6 +467,36 @@ function LinkDoorLeaf({
     }
   }, [portal.href]);
 
+  // Joinery, all in the leaf's own frame: y runs from −h/2 at the threshold
+  // to +h/2 at the head.
+  const stile = w * 0.11;
+  const panelW = w - 2 * stile;
+  const lockY = -h * 0.03;
+  const lockH = h * 0.07;
+  const upper = { top: h / 2 - h * 0.05, bottom: lockY + lockH / 2 };
+  const lower = { top: lockY - lockH / 2, bottom: -h / 2 + h * 0.09 };
+  const panel = (p: { top: number; bottom: number }, key: string) => (
+    <mesh
+      key={key}
+      position={[0, (p.top + p.bottom) / 2, 0.006]}
+      raycast={() => null}
+    >
+      <planeGeometry args={[panelW, p.top - p.bottom]} />
+      <meshStandardMaterial
+        color={GALLERY_DOOR.panel}
+        roughness={0.72}
+        metalness={0}
+      />
+    </mesh>
+  );
+  /**
+   * The sign plate, on the upper panel where a room's name would be. It takes
+   * most of the panel: the leaf is sized off the pages now (see
+   * `linkDoorSize`) and is narrower than it was, so a link title runs to three
+   * lines where it used to run to two.
+   */
+  const plateH = Math.min((upper.top - upper.bottom) * 0.72, 0.38);
+
   return (
     <group
       position={[
@@ -440,6 +506,9 @@ function LinkDoorLeaf({
       ]}
       rotation={[0, wall.yaw, 0]}
     >
+      {/* The leaf. This one mesh takes the click and the hover for the whole
+          door — everything mounted on it is raycast-inert, so pointing at the
+          lever or the sign is still pointing at the door. */}
       <mesh
         onClick={(e) => {
           e.stopPropagation();
@@ -453,35 +522,95 @@ function LinkDoorLeaf({
       >
         <planeGeometry args={[w, h]} />
         <meshStandardMaterial
-          color={hot ? theme.listItemBg : theme.panelBg}
-          roughness={0.85}
+          color={hot ? GALLERY_DOOR.leafHot : GALLERY_DOOR.leaf}
+          roughness={0.68}
           metalness={0}
         />
       </mesh>
-      {/* The door's own sign, at head height on the leaf. */}
-      <Text
-        font={fontType}
-        anchorX="center"
-        anchorY="bottom"
-        position={[0, h * 0.12, 0.02]}
-        fontSize={0.075}
-        color={hot ? theme.rimHighlight : theme.accentCol}
-        maxWidth={w * 0.84}
-        textAlign="center"
-      >
-        {portal.label.slice(0, 70)}
-      </Text>
-      <Text
-        font={fontType}
-        anchorX="center"
-        anchorY="top"
-        position={[0, h * 0.04, 0.02]}
-        fontSize={0.05}
-        color={theme.mutedTextCol}
-        maxWidth={w * 0.84}
-      >
-        {target}
-      </Text>
+      {/* Stiles and rails: a frame standing a few millimetres proud, with the
+          two panels set back inside it. Boxes rather than planes so the
+          gallery light above rakes across their edges — which is the entire
+          reason a panelled door reads as one. */}
+      <group raycast={() => null}>
+        {[-1, 1].map((s) => (
+          <mesh key={`stile-${s}`} position={[(s * (w - stile)) / 2, 0, 0.012]}>
+            <boxGeometry args={[stile, h, 0.024]} />
+            <meshStandardMaterial
+              color={GALLERY_DOOR.frame}
+              roughness={0.66}
+              metalness={0}
+            />
+          </mesh>
+        ))}
+        {[
+          { y: h / 2 - (h * 0.05) / 2, t: h * 0.05 },
+          { y: lockY, t: lockH },
+          { y: -h / 2 + (h * 0.09) / 2, t: h * 0.09 },
+        ].map((r, i) => (
+          <mesh key={`rail-${i}`} position={[0, r.y, 0.012]}>
+            <boxGeometry args={[panelW, r.t, 0.024]} />
+            <meshStandardMaterial
+              color={GALLERY_DOOR.frame}
+              roughness={0.66}
+              metalness={0}
+            />
+          </mesh>
+        ))}
+        {[panel(upper, "panel-upper"), panel(lower, "panel-lower")]}
+        {/* The lever, on the lock rail at hand height. A door with a handle
+            is a door you may open; without one it is a panel in a wall. */}
+        <mesh position={[w * 0.3, lockY, 0.036]}>
+          <cylinderGeometry args={[0.03, 0.03, 0.014, 16]} />
+          <meshStandardMaterial
+            color={GALLERY_DOOR.brass}
+            roughness={0.34}
+            metalness={0.7}
+          />
+        </mesh>
+        <mesh position={[w * 0.24, lockY, 0.044]}>
+          <boxGeometry args={[0.13, 0.022, 0.022]} />
+          <meshStandardMaterial
+            color={GALLERY_DOOR.brass}
+            roughness={0.34}
+            metalness={0.7}
+          />
+        </mesh>
+      </group>
+      {/* The door's sign: a pale plate with the name cut dark into it, the
+          same plate a room's doorway carries (GALLERY_SIGN). Unlit, so it is
+          as readable from the dark end of a corridor as from under a lamp —
+          which is the whole job, since this is what tells the reader where
+          the door goes before they are close enough to touch it. */}
+      <group raycast={() => null}>
+        <mesh position={[0, (upper.top + upper.bottom) / 2, 0.014]}>
+          <planeGeometry args={[panelW * 0.9, plateH]} />
+          <meshBasicMaterial color={GALLERY_SIGN.plate} toneMapped={false} />
+        </mesh>
+        <Text
+          font={fontType}
+          anchorX="center"
+          anchorY="bottom"
+          position={[0, (upper.top + upper.bottom) / 2 + plateH * 0.04, 0.016]}
+          fontSize={0.045}
+          color={hot ? theme.accentCol : GALLERY_SIGN.text}
+          maxWidth={panelW * 0.8}
+          textAlign="center"
+          overflowWrap="break-word"
+        >
+          {portal.label.slice(0, 60)}
+        </Text>
+        <Text
+          font={fontType}
+          anchorX="center"
+          anchorY="top"
+          position={[0, (upper.top + upper.bottom) / 2 - plateH * 0.06, 0.016]}
+          fontSize={0.034}
+          color={GALLERY_SIGN.edge}
+          maxWidth={panelW * 0.8}
+        >
+          {target}
+        </Text>
+      </group>
     </group>
   );
 }
@@ -598,19 +727,22 @@ export function ReadingSpots({
 }
 
 /**
- * Putting the preview camera back on the reading line.
+ * Aiming the preview camera back down the reading line.
  *
  * The building is carried so the reader's pose lands at the panel slot — that
  * is what "standing in front of a page" means here — but the preview's camera
- * is OrbitControls', and orbiting swings the eye around that slot. Come at a
- * page from 90° round and it lands edge-on: correctly placed, uselessly
- * viewed. So clicking a spot restores the reading view as well as the pose,
- * which is what "take me to this page" has to mean when the camera is free.
+ * is OrbitControls'. Come at a page having dragged 90° round and it lands
+ * edge-on: correctly placed, uselessly viewed. So clicking a spot restores
+ * the reading VIEW as well as the pose.
  *
- * The restored view is the preview's own default: one reading distance in
- * front of the panel centre, a little above it. Dragging the camera away
- * again is always one gesture away, and in an immersive session there are no
- * controls to restore — the headset is the camera — so this no-ops.
+ * It restores the direction only. The eye is pinned to the standing point by
+ * `AxisLook` (see `roomsAxis` in XRSceneRenderer) and the orbit radius is
+ * clamped to a centimetre, so there is no position left to restore — and
+ * setting one here would fight that rig, which is exactly what this function
+ * used to do when it parked the camera a whole reading distance off the pivot.
+ *
+ * In an immersive session there are no controls and the headset is the
+ * camera, so this no-ops.
  */
 export function useReadingView(
   panelCentre: { x: number; y: number; z: number } | null,
@@ -626,12 +758,17 @@ export function useReadingView(
     if (!panelCentre || gl.xr.isPresenting) return;
     const t = controls?.target;
     if (!t) return;
-    t.set(panelCentre.x, panelCentre.y, panelCentre.z);
-    camera.position.set(
-      panelCentre.x,
-      panelCentre.y + READING_EYE_LIFT,
-      panelCentre.z + viewingDistance,
-    );
+    // The standing point: on the panel slot's line, one reading distance back
+    // from it, at standing eye height above the floor. The same point
+    // `roomsAxis` pins the camera to — this only turns the head back toward
+    // the page.
+    const eye = {
+      x: panelCentre.x,
+      y: ROOM_EYE_HEIGHT,
+      z: panelCentre.z + viewingDistance,
+    };
+    camera.position.set(eye.x, eye.y, eye.z);
+    t.set(eye.x, eye.y, eye.z - LOOK_PIVOT);
     camera.lookAt(t);
     controls?.update?.();
   }, [panelCentre, viewingDistance, camera, controls, gl]);

@@ -144,7 +144,7 @@ export default function App() {
           onCloseTab={handleCloseTab}
           onNewTab={handleNewTab}
         />
-      ) : hasContent ? (
+      ) : (
         <>
           {/* Active URL indicator.
               top: 78 clears XRSceneRenderer's own in-flow header (VR button
@@ -221,6 +221,7 @@ export default function App() {
             theme={activeTab.settings.xrTheme}
             parserConfig={activeTab.settings.parserConfig}
             parserBackend={activeTab.settings.parserBackend}
+            aiSettings={activeTab.settings.ai}
             viewMode={activeTab.settings.viewMode}
             onPlanReady={onPlanReady}
             onExternalNavigate={openInNewTab}
@@ -230,40 +231,53 @@ export default function App() {
             onCloseTab={handleCloseTab}
             onNewTab={handleNewTab}
           />
+          {/* URL set but HTML not yet fetched.
+              An OVERLAY, not a branch. This used to replace <XRSceneRenderer>
+              outright, which unmounted its <Canvas> and destroyed the WebGL
+              context — while the immersive XRSession, owned by the browser and
+              not by React, stayed alive. The session's frame loop then ran
+              against a lost context every frame: gl.getParameter() returns null
+              once a context is lost, so the Immersive Web Emulator's
+              onDeviceFrame threw "Cannot read properties of null (reading '0')"
+              on clearColor(A[0], …) forever after any in-scene link click.
+              In a real headset the same swap blacks the world out mid-session.
+              Keeping the canvas mounted with empty html costs an idle frame
+              loop and keeps the session on a live context. */}
+          {!hasContent && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                zIndex: 9998,
+                background: "#050a10",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 16,
+                fontFamily: "system-ui, -apple-system, sans-serif",
+              }}
+            >
+              <div
+                style={{
+                  width: 40,
+                  height: 40,
+                  border: "2px solid rgba(88, 166, 255, 0.15)",
+                  borderTop: "2px solid #58a6ff",
+                  borderRadius: "50%",
+                  animation: "app-spin 1s linear infinite",
+                }}
+              />
+              <p style={{ margin: 0, color: "#58a6ff", fontSize: 13, letterSpacing: "0.06em" }}>
+                Rendering in 3D…
+              </p>
+              <p style={{ margin: 0, color: "#3a5a7a", fontSize: 11, fontFamily: "monospace", maxWidth: "60vw", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {activeTab.url}
+              </p>
+              <style>{`@keyframes app-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+            </div>
+          )}
         </>
-      ) : (
-        /* URL set but HTML not yet fetched — loading state */
-        <div
-          style={{
-            width: "100%",
-            height: "100vh",
-            background: "#050a10",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 16,
-            fontFamily: "system-ui, -apple-system, sans-serif",
-          }}
-        >
-          <div
-            style={{
-              width: 40,
-              height: 40,
-              border: "2px solid rgba(88, 166, 255, 0.15)",
-              borderTop: "2px solid #58a6ff",
-              borderRadius: "50%",
-              animation: "app-spin 1s linear infinite",
-            }}
-          />
-          <p style={{ margin: 0, color: "#58a6ff", fontSize: 13, letterSpacing: "0.06em" }}>
-            Rendering in 3D…
-          </p>
-          <p style={{ margin: 0, color: "#3a5a7a", fontSize: 11, fontFamily: "monospace", maxWidth: "60vw", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {activeTab.url}
-          </p>
-          <style>{`@keyframes app-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
-        </div>
       )}
 
       {/* Parser comparison overlay */}
