@@ -31,10 +31,13 @@ import {
   PRIMITIVE_CONFIG,
   estimateHeight,
   flattenAndMerge,
+  isEmptyContainerNode,
 } from "../positionConfigs";
 import {
   computeWordsPerLine,
+  cardGridGap,
   countWords,
+  isDecorativeGlyphItem,
   flattenInlineWrappers,
   isInlinePrimitive,
   resolveListColumns,
@@ -189,26 +192,9 @@ export function paginateContentPanel(
     return true;
   }
 
-  // Text carried directly on a node (not in a child XRText). An unmapped
-  // <label>/<address> becomes a CHILDLESS XRGenericPanel whose only content is
-  // this string — it still renders and must be placed, not skipped as "empty".
-  // Check content AND label independently: a node can carry an empty-string
-  // content ("") while still having a real label (e.g. XRSearchBox), and
-  // `content ?? label` would wrongly return "" for it.
-  function nodeHasText(p: XRPrimitive): boolean {
-    return (p.content ?? "").trim() !== "" || (p.label ?? "").trim() !== "";
-  }
-
-  // A container-typed node (recursive/section) is one whose whole purpose is to
-  // group children — when childless AND textless it renders nothing and is
-  // skipped. Leaf VISUAL primitives (XRImage, XRMediaPlayer, XRSeparator,
-  // XRProgressBar, form controls, …) are paginate:"atomic" and draw themselves
-  // with no children or text, so they must NEVER be treated as empty.
-  function isEmptyContainerNode(p: XRPrimitive): boolean {
-    if (p.children.length > 0 || nodeHasText(p)) return false;
-    const cfg = PRIMITIVE_CONFIG[p.type];
-    return cfg?.paginate === "recursive" || cfg?.forceNewPage === true;
-  }
+  // isEmptyContainerNode (imported from positionConfigs) is shared with
+  // stackChildrenSimple's placer so the paginator, the height estimate and the
+  // placement all skip the same textless wrapper divs.
 
   // A recursive container is one whose config says paginate:'recursive' but
   // does NOT force a new page (those are handled by isSectionLike above).
@@ -659,11 +645,16 @@ export function paginateContentPanel(
   // Grid layout for XRList: places items in rows of `columns` cards with
   // row-level page overflow (entire row moves to next page if it doesn't fit).
   function placeListGrid(node: XRPrimitive): void {
-    const columns = resolveListColumns(childWidth, metrics);
+    const columns = resolveListColumns(
+      childWidth,
+      metrics,
+      node.children.filter((c) => !isDecorativeGlyphItem(c)).length,
+    );
     const usableW = childWidth; // childWidth is already panelWidth - 2*panelPaddingX
+    const gutter = cardGridGap(metrics);
     const cardWidth = Math.max(
       0.025,
-      (usableW - config.childGapY * (columns - 1)) / columns,
+      (usableW - gutter * (columns - 1)) / columns,
     );
     // The most vertical room any row could ever get, even alone on a fresh
     // page. An item whose card-width estimate exceeds this can never fit its
@@ -683,7 +674,9 @@ export function paginateContentPanel(
       rowHeights: number[],
     ): void => {
       const rowH = Math.max(...rowHeights);
-      const g = rowsOnPage > 0 ? config.childGapY : 0;
+      // Row gap and column pitch both use the card gutter (not childGapY), to
+      // match what _estimateListHeight reserved for this same grid.
+      const g = rowsOnPage > 0 ? gutter : 0;
 
       // Overflow: advance to a fresh page when this row won't fit.
       //
@@ -711,7 +704,7 @@ export function paginateContentPanel(
         cursorY = -config.panelPaddingTop;
       }
 
-      const gap = rowsOnPage > 0 ? config.childGapY : 0;
+      const gap = rowsOnPage > 0 ? gutter : 0;
       const rowY = cursorY - gap;
 
       let itemX = config.panelPaddingX;
@@ -746,7 +739,7 @@ export function paginateContentPanel(
         const pageIdxBeforeDescendants = pageIdx;
         stampDescendants(item, itemX, rowY, w);
         pageIdx = pageIdxBeforeDescendants;
-        itemX += w + config.childGapY;
+        itemX += w + gutter;
       }
 
       cursorY -= gap + rowH;
@@ -783,7 +776,10 @@ export function paginateContentPanel(
       }
     };
 
-    const children = node.children;
+    // Decoration-only items (a card's lone "…" flourish) take neither a column
+    // nor a row — see isDecorativeGlyphItem. They keep their entry so nothing
+    // is dropped; the renderer draws nothing for them.
+    const children = node.children.filter((c) => !isDecorativeGlyphItem(c));
     let i = 0;
     while (i < children.length) {
       const item = children[i];
@@ -852,9 +848,42 @@ export function paginateContentPanel(
         );
         i += 1;
       }
+      // A row that came up short of `columns` — the list's last partial row,
+      // or one cut short because the next item was promoted to its own
+      // full-width row — used to keep the full column width and leave the rest
+      // of the row empty. A lone card stranded in a third of the panel beside
+      // dead space doesn't read as "the last item of a grid"; it reads as a
+      // different, arbitrarily narrower kind of item than the full-width cards
+      // above and below it. Stretch a short row's cards to fill the width
+      // instead, so every row spans the panel and the only width difference
+      // left is the honest one: how many cards share the row.
+      const rowW =
+        rowItems.length < columns
+          ? Math.max(
+              0.025,
+              (usableW - gutter * (rowItems.length - 1)) / rowItems.length,
+            )
+          : cardWidth;
+      if (rowW !== cardWidth) {
+        // Re-measure at the width they will actually be drawn at: the same
+        // text wraps into fewer lines when the card gets wider, and a height
+        // still budgeted for the narrow column would leave a tall dead gap.
+        for (let r = 0; r < rowItems.length; r++) {
+          const h = estimateHeight(
+            rowItems[r],
+            rowW,
+            metrics,
+            config,
+            new Set(),
+            scene,
+          );
+          rowHeights[r] =
+            h > 0 && isFinite(h) ? h : metrics.fallbackElementHeight;
+        }
+      }
       placeRow(
         rowItems,
-        rowItems.map(() => cardWidth),
+        rowItems.map(() => rowW),
         rowHeights,
       );
     }
@@ -1378,7 +1407,7 @@ export function paginateContentPanel(
     // to panel-absolute by adding the parent's known absolute position.
     const resolvedListColumns =
       node.type === "XRList"
-        ? resolveListColumns(availableWidth, metrics)
+        ? resolveListColumns(availableWidth, metrics, node.children.length)
         : undefined;
 
     const { childEntries } = stackChildrenSimple(

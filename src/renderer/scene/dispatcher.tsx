@@ -31,6 +31,7 @@ import type { LayoutEntry, LayoutPlan } from "../../layout/types";
 import { useTheme } from "../theme";
 import {
   flattenInlineWrappers,
+  isDecorativeGlyphItem,
   isInlinePrimitive,
   mergeAdjacentTextRuns,
 } from "../../layout/utils";
@@ -48,6 +49,7 @@ import {
   XRProgressBarMesh,
   XRImageMesh,
   XRListItemMesh,
+  cardTileColor,
   XRButtonMesh,
   XRAlertMesh,
   XRTableMesh,
@@ -60,6 +62,8 @@ import {
   ClipPlanesContext,
   PanelOriginYContext,
   CardSelfClipContext,
+  InsideCardContext,
+  SurfaceBgContext,
   PanelCurveContext,
   resolveCurveRadius,
   type PanelCurve,
@@ -158,6 +162,10 @@ export function PrimitiveDispatcher({
   const fontType = React.useContext(FontContext);
   const theme = useTheme();
   const metrics = useRenderMetrics();
+  // Read BEFORE the XRListItem branches below install their own provider, so a
+  // card sees whether its PARENT was a card — not its own value.
+  const insideCard = React.useContext(InsideCardContext);
+  const cardTile = cardTileColor(theme, insideCard);
 
   const renderChild = useCallback(
     (childId: string) => {
@@ -526,6 +534,11 @@ export function PrimitiveDispatcher({
     }
 
     case "XRListItem": {
+      // A lone "…" flourish the source page draws with CSS. Layout gives it no
+      // space (isDecorativeGlyphItem); drawing a card tile for it would put an
+      // empty card among the real stories.
+      if (isDecorativeGlyphItem(primitive)) return null;
+
       // FIX: flatten transparent XRGenericPanel wrappers (e.g. a <span> or
       // <cite> node wrapping <a>…</a>) before deciding whether this item
       // has only block children.  Without flattening, a list item whose
@@ -559,22 +572,27 @@ export function PrimitiveDispatcher({
       if (hasOnlyBlockChildren) {
         // Block-only card: backing at card position, children as siblings.
         return (
-          <WithSiblingChildren
-            entry={entry}
-            backing={
-              <XRListItemMesh
-                primitive={primitive as XRListItem}
-                entry={zeroedEntry(entry)}
-                renderChild={() => null}
-                panelRelativeY={entry.position.y}
-              />
-            }
-            primitives={primitive.children}
-            plan={plan}
-            pageState={pageState}
-            setPage={setPage}
-            primitiveMap={primitiveMap}
-          />
+          <InsideCardContext.Provider value={true}>
+            <SurfaceBgContext.Provider value={cardTile}>
+            <WithSiblingChildren
+              entry={entry}
+              backing={
+                <XRListItemMesh
+                  primitive={primitive as XRListItem}
+                  entry={zeroedEntry(entry)}
+                  renderChild={() => null}
+                  panelRelativeY={entry.position.y}
+                  nested={insideCard}
+                />
+              }
+              primitives={primitive.children}
+              plan={plan}
+              pageState={pageState}
+              setPage={setPage}
+              primitiveMap={primitiveMap}
+            />
+            </SurfaceBgContext.Provider>
+          </InsideCardContext.Provider>
         );
       }
 
@@ -606,22 +624,27 @@ export function PrimitiveDispatcher({
       // siblings via WithSiblingChildren — never nested inside the mesh's
       // own positioned group.
       return (
-        <WithSiblingChildren
-          entry={entry}
-          backing={
-            <XRListItemMesh
-              primitive={primitive as XRListItem}
-              entry={zeroedEntry(entry)}
-              renderChild={() => null}
-              panelRelativeY={entry.position.y}
-            />
-          }
-          primitives={blockChildrenForDispatch}
-          plan={plan}
-          pageState={pageState}
-          setPage={setPage}
-          primitiveMap={primitiveMap}
-        />
+        <InsideCardContext.Provider value={true}>
+          <SurfaceBgContext.Provider value={cardTile}>
+          <WithSiblingChildren
+            entry={entry}
+            backing={
+              <XRListItemMesh
+                primitive={primitive as XRListItem}
+                entry={zeroedEntry(entry)}
+                renderChild={() => null}
+                panelRelativeY={entry.position.y}
+                nested={insideCard}
+              />
+            }
+            primitives={blockChildrenForDispatch}
+            plan={plan}
+            pageState={pageState}
+            setPage={setPage}
+            primitiveMap={primitiveMap}
+          />
+          </SurfaceBgContext.Provider>
+        </InsideCardContext.Provider>
       );
     }
 

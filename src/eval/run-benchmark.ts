@@ -40,6 +40,18 @@ function stddev(xs: number[]): number {
 function fmt(m: number, s: number, dp = 2): string {
   return `${m.toFixed(dp)} ± ${s.toFixed(dp)}`;
 }
+/**
+ * Row suffix marking a backend that ran degraded.
+ *
+ * Applied to every table, not just the first: these tables get copied out of the
+ * report individually, and a marker that only exists in one of them stops
+ * protecting the reader the moment that happens.
+ */
+function caveatMarker(rows: { caveat?: string }[]): string {
+  const caveats = new Set(rows.map((r) => r.caveat).filter(Boolean));
+  return caveats.size > 0 ? ` ⚠️ ${[...caveats].join("; ")}` : "";
+}
+
 function csvRow(cells: (string | number)[]): string {
   return cells
     .map((c) => {
@@ -125,6 +137,24 @@ async function main(): Promise<void> {
   md.push(`Device profile: **${QUEST_3_LABEL}**  ·  generated ${new Date().toISOString()}`);
   md.push("");
 
+  // Environment provenance — every number below depends on it.
+  const info = results[0].segmentationInfo;
+  md.push(`## Run environment`);
+  md.push("");
+  md.push(`| | |`);
+  md.push(`|---|---|`);
+  md.push(`| Layout engine | ${info.vipsMode === "visual" ? "**available** — rendered geometry in use" : "**absent** (jsdom) — no CSS layout"} |`);
+  md.push(`| BCubed weighting | ${info.weighting === "pixel-area" ? "rendered pixel area (Kiesel et al.)" : "text length (rendering-free proxy)"} |`);
+  md.push(`| VIPS fidelity | ${info.vipsMode === "visual" ? "visual — separator detection over real geometry" : "DOM-only approximation"} |`);
+  md.push(`| Reference | ${info.proxyReference ? "HTML5-semantic proxy oracle" : "gold annotation"} |`);
+  md.push("");
+  if (info.vipsMode === "dom-only") {
+    md.push(
+      `> **VIPS is running degraded in this environment.** Cai et al.'s algorithm segments a page from its *rendered* layout — visual separators, background changes, font shifts — and bills itself as tag-tree independent. The offline runner uses jsdom, which performs no layout, so VIPS falls back to a rendering-free approximation that reads the tag tree instead. **A win over the VIPS row below is not a win over VIPS.** Run the in-app comparison panel (real browser) for a fair head-to-head.`,
+    );
+    md.push("");
+  }
+
   // Per-backend aggregate table.
   md.push(`## Pipeline backends (mean ± sd across corpus)`);
   md.push("");
@@ -134,7 +164,7 @@ async function main(): Promise<void> {
   for (const b of PIPELINE_BACKENDS) {
     const rows = results.map((r) => r.backends.find((x) => x.id === b.id)!);
     const cells = cols.map((k) => fmt(mean(rows.map((r) => r[k] as number)), stddev(rows.map((r) => r[k] as number)), k === "timingMs" ? 0 : 1));
-    md.push(`| ${b.label} | ${cells.join(" | ")} |`);
+    md.push(`| ${b.label}${caveatMarker(rows)} | ${cells.join(" | ")} |`);
   }
   md.push("");
 
@@ -150,7 +180,7 @@ async function main(): Promise<void> {
       const vals = rows.map((r) => r.xr![k]);
       return fmt(mean(vals), stddev(vals), k === "totalPages" ? 1 : 3);
     });
-    md.push(`| ${b.label} | ${cells.join(" | ")} |`);
+    md.push(`| ${b.label}${caveatMarker(rows)} | ${cells.join(" | ")} |`);
   }
   md.push("");
   md.push(`> Legibility floor ${0.29}° · comfort target ${1.375}° cap-height at ${1.2} m viewing distance.`);
@@ -161,8 +191,14 @@ async function main(): Promise<void> {
   md.push("");
   md.push(`Reference: HTML5-semantic proxy oracle (supply gold annotations for a true ground truth). Each segmenter is an independent DOM→partition algorithm; no shared parser.`);
   md.push("");
+  md.push(`Weights: **${info.weighting === "pixel-area" ? "rendered pixel area" : "text length"}**${info.weighting === "pixel-area" ? " — as specified by Kiesel et al." : " — proxy for visual mass; the paper specifies pixel area, unavailable without layout"}.`);
+  md.push("");
   md.push(`> Caveat: on pages with no landmarks/sectioning the proxy oracle degenerates to a single segment, so every algorithm (including \`flat\`) scores 1.0 there. Such pages inflate the mean and cannot discriminate — use gold annotations to evaluate div-soup pages.`);
   md.push("");
+  if (info.vipsMode === "dom-only") {
+    md.push(`> Caveat: the \`vips\` row is the rendering-free approximation (see Run environment above), not Cai et al.'s algorithm.`);
+    md.push("");
+  }
   md.push(`| Segmenter | precision | recall | F |`);
   md.push(`|---|---|---|---|`);
   const segAgg = segIds

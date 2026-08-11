@@ -109,6 +109,41 @@ export function inkOn(fill: string): string {
     : INK_DARK;
 }
 
+/**
+ * The nearest version of `fg` that clears `target` contrast on `bg`, keeping
+ * its hue and saturation — only lightness moves, away from the background.
+ *
+ * A single accent hex cannot be legible on every surface it lands on. The
+ * theme's link blue (#0082FB) is chosen against the content panel (#323232 in
+ * dark) where it clears 4.5:1, but a list-item card is a much lighter grey
+ * (#525256) and the very same blue drops to about 2:1 there — a headline link
+ * on a news card was effectively unreadable. Rather than adding a second
+ * hand-tuned "link on card" colour per theme (which drifts the moment either
+ * surface changes), derive it: same hue, lifted or dropped until it measures.
+ *
+ * Lightness is stepped in sRGB, explicitly — three's default working space is
+ * LINEAR sRGB, where a step that reads as a nudge on paper is enormous.
+ * Falls back to whichever ink reads best if even full white/black can't hit
+ * the target (only possible for a mid-luminance background and a high target).
+ */
+export function ensureContrast(fg: string, bg: string, target = 4.5): string {
+  if (contrast(fg, bg) >= target) return fg;
+  // Preferred direction is away from the background — lighten on a dark
+  // surface, darken on a light one — but a mid-luminance grey (a list-item
+  // card sits close to the 0.5 line) can be a surface where the preferred
+  // direction never gets there and the opposite one does after a few steps.
+  // Try both at each step and take the smaller move, so the link keeps its
+  // hue instead of collapsing to plain ink.
+  const away = luminance(bg) < 0.5 ? 1 : -1;
+  for (let step = 0.02; step <= 1.0001; step += 0.02) {
+    const preferred = shade(fg, away * step);
+    if (contrast(preferred, bg) >= target) return preferred;
+    const opposite = shade(fg, -away * step);
+    if (contrast(opposite, bg) >= target) return opposite;
+  }
+  return inkOn(bg);
+}
+
 export function sectionTint(index: number, dark: boolean): SectionTint {
   const hue = SECTION_HUES[index % SECTION_HUES.length];
   // Accent lightness is picked so the WORST of the six hues still clears

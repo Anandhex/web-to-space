@@ -11,9 +11,21 @@
  * elements** into segments, and two segmentations are compared with a
  * size-weighted **BCubed** precision / recall / F-measure over pairs of atomic
  * elements. Kiesel et al. weight each atomic element by its rendered **pixel
- * area**. We run entirely on the DOM (no rendering / no CSSOM), so we weight by
- * **text length** as a rendering-free proxy for visual mass. This is the one
- * documented deviation from the paper; everything else follows the framework.
+ * area**.
+ *
+ * WEIGHTING — matches the paper when rendering is available
+ * ---------------------------------------------------------
+ * `extractAtomicUnits` weights by **rendered pixel area** whenever it is given a
+ * laid-out document (see `weighting` in `AtomicUnitOptions`), which is the
+ * paper's definition. In the offline Node harness the document comes from jsdom,
+ * which implements the DOM but performs no layout — every
+ * `getBoundingClientRect()` there returns all-zeros — so it falls back to
+ * **text length** as a rendering-free proxy for visual mass.
+ *
+ * The fallback is detected, not assumed: a zero-area probe switches the mode and
+ * `AtomicUnitStats.weighting` reports which one was used, so a report can state
+ * whether its numbers follow the paper or approximate it. Callers must not
+ * compare an area-weighted score against a length-weighted one.
  *
  * WHY THIS MATTERS FOR THE PROJECT
  * --------------------------------
@@ -38,6 +50,7 @@
  */
 
 import type { XRPrimitive } from "../mapper/types";
+import { runVipsVisual } from "../ir/vips-visual";
 
 // ─────────────────────────────────────────────────────────────
 // Atomic elements
@@ -54,8 +67,47 @@ export interface AtomicUnit {
   id: number;
   /** The DOM element this unit corresponds to. */
   el: Element;
-  /** Visual-mass weight. Text length (chars); ≥ 1 for non-empty media. */
+  /**
+   * Visual-mass weight — rendered pixel area (Kiesel et al.) when the document
+   * is laid out, otherwise text length as a rendering-free proxy.
+   */
   weight: number;
+}
+
+/** How atomic-element weights were derived. Reported alongside every score. */
+export type WeightingMode = "pixel-area" | "text-length";
+
+export interface AtomicUnitOptions {
+  /**
+   * Force a weighting mode. Omit to auto-detect: pixel area if the document
+   * reports non-zero geometry, text length otherwise.
+   */
+  weighting?: WeightingMode;
+}
+
+/** Units plus the provenance a report needs to describe them honestly. */
+export interface AtomicUnitSet {
+  units: AtomicUnit[];
+  weighting: WeightingMode;
+}
+
+/**
+ * Does this document actually have layout?
+ *
+ * jsdom answers every geometry query with zeros, so probing the root element is
+ * the only reliable discriminator — the presence of `getBoundingClientRect` as a
+ * function tells us nothing.
+ */
+function documentHasLayout(root: Element): boolean {
+  try {
+    const probe = root.getBoundingClientRect?.();
+    if (probe && (probe.width > 0 || probe.height > 0)) return true;
+    const body = root.ownerDocument?.body;
+    const bodyRect = body?.getBoundingClientRect?.();
+    return !!bodyRect && (bodyRect.width > 0 || bodyRect.height > 0);
+  } catch {
+    return false;
+  }
 }
 
 /** Partition of atomic units: unit id → segment label. */
@@ -106,13 +158,41 @@ function directTextLength(el: Element): number {
 }
 
 /**
+ * Rendered area of an element in CSS px².
+ *
+ * Guarded to a floor of 1 so a zero-area-but-present unit still participates in
+ * the BCubed sums rather than silently dropping out of the denominator.
+ */
+function renderedArea(el: Element): number {
+  try {
+    const r = el.getBoundingClientRect();
+    return Math.max(1, Math.round(r.width * r.height));
+  } catch {
+    return 1;
+  }
+}
+
+/**
  * Extract the page's atomic units in document order. Called ONCE per page; the
  * returned list is shared by every segmenter and by the ground truth so that
  * BCubed compares like-for-like partitions.
+ *
+ * Returns the weighting mode alongside the units — the two are only meaningful
+ * together, since scores computed under different weightings are not comparable.
  */
-export function extractAtomicUnits(root: Element): AtomicUnit[] {
+export function extractAtomicUnitSet(
+  root: Element,
+  options: AtomicUnitOptions = {},
+): AtomicUnitSet {
+  const weighting: WeightingMode =
+    options.weighting ?? (documentHasLayout(root) ? "pixel-area" : "text-length");
+
   const units: AtomicUnit[] = [];
   let nextId = 0;
+
+  /** Kiesel's weight when laid out; the text-length proxy otherwise. */
+  const weigh = (el: Element, textWeight: number): number =>
+    weighting === "pixel-area" ? renderedArea(el) : textWeight;
 
   const visit = (el: Element): void => {
     const tag = el.tagName.toLowerCase();
@@ -126,7 +206,11 @@ export function extractAtomicUnits(root: Element): AtomicUnit[] {
 
     if (MEDIA_TAGS.has(tag) || INTERACTIVE_LEAF.has(tag)) {
       const alt = el.getAttribute("alt") ?? el.getAttribute("aria-label") ?? "";
-      units.push({ id: nextId++, el, weight: Math.max(alt.trim().length, 12) });
+      units.push({
+        id: nextId++,
+        el,
+        weight: weigh(el, Math.max(alt.trim().length, 12)),
+      });
       return;
     }
 
@@ -137,7 +221,7 @@ export function extractAtomicUnits(root: Element): AtomicUnit[] {
     // inline <a>), it is still atomic — inline children are not descended into
     // for atomicity, but we DO recurse to catch block children carrying text.
     if (own > 0) {
-      units.push({ id: nextId++, el, weight: own });
+      units.push({ id: nextId++, el, weight: weigh(el, own) });
     }
     if (hasElementChildren) {
       for (const child of Array.from(el.children)) visit(child);
@@ -145,7 +229,20 @@ export function extractAtomicUnits(root: Element): AtomicUnit[] {
   };
 
   for (const child of Array.from(root.children)) visit(child);
-  return units;
+  return { units, weighting };
+}
+
+/**
+ * Units only, for callers that already know their weighting mode.
+ *
+ * Prefer `extractAtomicUnitSet` when the result is going into a report — it
+ * carries the weighting mode that the numbers depend on.
+ */
+export function extractAtomicUnits(
+  root: Element,
+  options: AtomicUnitOptions = {},
+): AtomicUnit[] {
+  return extractAtomicUnitSet(root, options).units;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -302,12 +399,80 @@ export function segHeadingBounded(units: AtomicUnit[]): Segmentation {
 }
 
 /**
- * VIPS-DIRECT — a rendering-free port of the DOC (Degree-of-Coherence)
- * recursion from Cai et al. 2003, producing a block partition *directly* (no
- * parsePageToIR). Each visual leaf block becomes one segment; atomic units
- * inherit the id of the nearest ancestor block the recursion emitted.
+ * VIPS — Cai et al. 2003, run at whatever fidelity the environment allows.
+ *
+ * When the document is laid out (browser), this delegates to the real algorithm
+ * in `ir/vips-visual.ts`: visual block extraction, separator detection and
+ * weighting over actual rendered geometry. When it is not (jsdom, offline
+ * harness), it falls back to the rendering-free DOC recursion below.
+ *
+ * The distinction matters for anything that reads the score. VIPS is explicitly
+ * a *tag-tree independent* algorithm; scoring the tag-tree approximation and
+ * labelling the row "VIPS" understates it. `scoreSegmentation` reports which
+ * mode ran via `SegmentationRunInfo.vipsMode`.
  */
 export function segVips(units: AtomicUnit[], root: Element): Segmentation {
+  if (documentHasLayout(root)) {
+    const visual = segVipsVisual(units, root);
+    if (visual) return visual;
+  }
+  return segVipsDomOnly(units, root);
+}
+
+/**
+ * Visual VIPS as a segmenter. Returns null if the algorithm produced nothing
+ * usable, so the caller can fall back rather than score an empty partition.
+ */
+function segVipsVisual(units: AtomicUnit[], root: Element): Segmentation | null {
+  const doc = root.ownerDocument;
+  const win = doc?.defaultView;
+  const body = doc?.body;
+  if (!doc || !win || !body) return null;
+
+  let blocks;
+  try {
+    const result = runVipsVisual(
+      { doc, win, bodyRect: body.getBoundingClientRect() },
+      root,
+    );
+    blocks = result.blocks;
+  } catch {
+    return null;
+  }
+  if (blocks.length === 0) return null;
+
+  // Map every source element of every block to that block's label, then assign
+  // each atomic unit the label of its nearest labelled ancestor.
+  const labelFor = new Map<Element, string>();
+  blocks.forEach((b, i) => {
+    for (const el of b.els) labelFor.set(el, `vips${i}`);
+  });
+
+  const seg: Segmentation = new Map();
+  for (const u of units) {
+    let cur: Element | null = u.el;
+    let label = "vips-root";
+    while (cur) {
+      const found = labelFor.get(cur);
+      if (found) {
+        label = found;
+        break;
+      }
+      cur = cur.parentElement;
+    }
+    seg.set(u.id, label);
+  }
+  return seg;
+}
+
+/**
+ * Rendering-free port of the DOC (Degree-of-Coherence) recursion, producing a
+ * block partition directly (no parsePageToIR). Each leaf block becomes one
+ * segment; atomic units inherit the id of the nearest ancestor block emitted.
+ *
+ * Substitutes DOM structure for every visual signal the real algorithm reads.
+ */
+function segVipsDomOnly(units: AtomicUnit[], root: Element): Segmentation {
   const BLOCK = new Set([
     "div", "section", "article", "main", "aside", "header", "footer", "nav",
     "form", "table", "ul", "ol", "dl", "blockquote", "pre", "figure", "details",
@@ -554,20 +719,58 @@ export const SEGMENTERS: Record<
 };
 
 /**
- * Score every segmenter on one page against the reference. `root` is typically
- * `document.body`. Returns a per-algorithm map of BCubed scores.
+ * Provenance for one page's segmentation run. Every number in `scores` depends
+ * on these, so they travel together and reports print them.
  */
+export interface SegmentationRunInfo {
+  /** Whether weights are Kiesel's pixel area or the text-length proxy. */
+  weighting: WeightingMode;
+  /** Whether VIPS ran as the real visual algorithm or the DOM-only stand-in. */
+  vipsMode: "visual" | "dom-only";
+  /** True when the reference is the proxy oracle rather than a gold annotation. */
+  proxyReference: boolean;
+}
+
+export interface SegmentationRun {
+  scores: Record<SegmenterId, SegmentationScore>;
+  info: SegmentationRunInfo;
+}
+
+/**
+ * Score every segmenter on one page against the reference. `root` is typically
+ * `document.body`.
+ *
+ * Returns provenance alongside the scores: a VIPS row produced without a layout
+ * engine is not the same measurement as one produced with it, and a report that
+ * prints only the number invites exactly the unfair comparison this reports
+ * against.
+ */
+export function scoreSegmentationRun(
+  root: Element,
+  annotation?: SegmentationAnnotation,
+): SegmentationRun {
+  const { units, weighting } = extractAtomicUnitSet(root);
+  const ref = proxyGroundTruth(units, root, annotation);
+  const scores = {} as Record<SegmenterId, SegmentationScore>;
+  for (const id of Object.keys(SEGMENTERS) as SegmenterId[]) {
+    scores[id] = bcubed(SEGMENTERS[id](units, root), ref, units);
+  }
+  return {
+    scores,
+    info: {
+      weighting,
+      vipsMode: documentHasLayout(root) ? "visual" : "dom-only",
+      proxyReference: !annotation,
+    },
+  };
+}
+
+/** Scores only. Prefer `scoreSegmentationRun` when the result goes in a report. */
 export function scoreSegmentation(
   root: Element,
   annotation?: SegmentationAnnotation,
 ): Record<SegmenterId, SegmentationScore> {
-  const units = extractAtomicUnits(root);
-  const ref = proxyGroundTruth(units, root, annotation);
-  const out = {} as Record<SegmenterId, SegmentationScore>;
-  for (const id of Object.keys(SEGMENTERS) as SegmenterId[]) {
-    out[id] = bcubed(SEGMENTERS[id](units, root), ref, units);
-  }
-  return out;
+  return scoreSegmentationRun(root, annotation).scores;
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -202,6 +202,46 @@ export const METRIC_DESCRIPTIONS: Record<string, string> = {
     "Number of distinct blocks this backend's scene grouped the aligned content into. Not better-or-worse on its own — read alongside precision/recall.",
   "Aligned units (of reference)":
     "How many of the reference's atomic content units were found in this backend's scene (text-matched). Lower means the backend dropped or transformed more content; the F-measure is computed over these matched units only.",
+
+  // CSSOM
+  "Reads rendered layout":
+    "Whether the backend consults the CSS Object Model — getBoundingClientRect() and getComputedStyle() over a laid-out page — at all. Custom, Readability and Naive work from the parsed DOM only; VIPS is defined over rendered geometry.",
+  "Path taken this run":
+    "What actually produced this column's numbers. VIPS renders the page in an off-screen iframe and segments real geometry; if that frame fails it falls back to a tag-tree approximation, which is a different and weaker algorithm. A ⚠ here means every other tab's VIPS numbers understate VIPS.",
+  "Frame status":
+    "Outcome of the off-screen render: 'rendered' means layout was readable. 'no-layout-engine' means the environment performs no CSS layout (jsdom in the offline harness). 'timeout' / 'frame-inaccessible' / 'error' each force the DOM-only fallback.",
+  "Frame total":
+    "Wall-clock time to fetch and inline external stylesheets, inject the HTML into a sandboxed iframe, and wait for it to lay out. This dominates VIPS's cost — the segmentation phases themselves run in single-digit milliseconds.",
+  "— to parsed + laid out":
+    "Time from injection until the frame had a parsed document with a layout box. The remainder of the frame total is spent waiting on fonts and images, which refine the geometry.",
+  "— stopped waiting on":
+    "'load event' means every image and font arrived. 'soft deadline' means the page was already laid out and readable but subresources were still in flight, so measurement proceeded — geometry may be slightly coarser where an unsized image had not arrived.",
+  "Stylesheets found":
+    "<link rel=stylesheet> elements in the source HTML. Cross-origin sheets cannot be loaded directly by the frame, so they are fetched through the dev proxy and inlined; the count that succeeded is below.",
+  "Inline <style> blocks":
+    "<style> elements already present in the source HTML. These need no fetching and apply directly, so a page with inline styles carries visual signal even when external stylesheets fail.",
+  "CSS rules applied":
+    "Total rules across the style sheets the frame actually applied, counted before the reader touches the document. Zero with a non-zero stylesheet count means the frame rendered unstyled — there are no gutters, background changes or font shifts to detect, and VIPS falls back rather than claim a visual result.",
+  "Rendered document height":
+    "Scroll height of the laid-out frame. A sanity signal that layout really ran: a page reporting the viewport height and nothing more did not lay out its content.",
+  "Visual block pool (phase 1)":
+    "Blocks produced by VIPS phase 1 (§3.1) — the recursive decision, per node, of whether it is one visual block or must be divided by rendered signal (background change, whitespace fill, font spread, explicit rules).",
+  "Leaf blocks (phase 3)":
+    "Blocks surviving phase 3 (§3.3), after the pool is cut along its strongest separators and each region is recursively subdivided until it meets the Permitted Degree of Coherence. These are what the segmentation is made of.",
+  "Top-level separators":
+    "Visual separators detected across the whole content region on both axes (§3.2.1) — the gaps left once every block's projection is removed. A page with many strong separators has visible structure to exploit.",
+  "Max separator weight":
+    "Strongest boundary found at the top level, on the paper's 1–10 scale (§3.2.2). Weight rises with gap width and with background, font-size, font-weight and tag changes across the gap. Phase 3 cuts along the separators at this weight first.",
+  "Mean Degree of Coherence":
+    "Average DoC across emitted leaf blocks, 1–10 — how much each reads as a single visual thing. Driven by page coverage, internal whitespace, and typographic and background uniformity.",
+  "Permitted DoC (subdivide below)":
+    "The PDoC threshold: any region scoring below it is subdivided further, so a higher PDoC yields finer segmentation. Default 7, following Akpınar & Yeşilada (ICWE 2013), who found users prefer higher-granularity segmentation regardless of page complexity.",
+  "Style resolves issued":
+    "getComputedStyle() calls made during block extraction, after caching. Roughly one per element is the floor; the walk would otherwise resolve each element once as its parent's child, once as itself, and once per ancestor hop while resolving effective background colour.",
+  "Phase 1 — block extraction":
+    "Time spent walking the rendered tree and deciding what is one visual block (§3.1). Includes all geometry and style reads.",
+  "Phases 2–3 — separators + structure":
+    "Time spent detecting and weighting visual separators (§3.2) and recursively building the content structure (§3.3), over the block pool alone — no further DOM access.",
 };
 
 // ─────────────────────────────────────────────────────────────

@@ -7,10 +7,15 @@
  * without pulling in the whole primitive library.
  */
 
-import { createContext, useContext } from "react";
+import { createContext, useContext, useMemo } from "react";
 import * as THREE from "three";
 
 import type { RenderMetrics } from "../../layout/types";
+import { useTheme } from "../theme";
+import { ensureContrast } from "../scene/section-tint";
+
+/** WCAG AA minimum contrast for normal-size body text. */
+export const WCAG_AA_TEXT = 4.5;
 
 // ─────────────────────────────────────────────────────────────
 // Panel clipping context
@@ -55,6 +60,60 @@ export const PanelOriginYContext = createContext<number>(0);
  * the panel's own ClipPlanesContext bounds alone.
  */
 export const CardSelfClipContext = createContext<boolean>(true);
+
+/**
+ * True while rendering inside a list-item card, whose tile already painted an
+ * opaque fill behind everything that follows.
+ *
+ * A news card arrives as listitem → [link, image, section(kicker + headline +
+ * timestamp)], and each of those containers used to paint its own flat fill:
+ * the card in `listItemBg`, the section in `panelBg`. Stacked, they read as
+ * arbitrary alternating bands of grey and black across one story rather than
+ * as a single card. The card owns the surface; anything nested inside it draws
+ * its content straight onto that surface.
+ *
+ * Set by the XRListItem branches in scene/dispatcher.tsx — it has to wrap the
+ * WithSiblingChildren call, not live inside XRListItemMesh, because a card's
+ * block children are dispatched as SIBLINGS of the mesh (see the coordinate
+ * contract in CLAUDE.md), so a provider inside the mesh would never reach them.
+ */
+export const InsideCardContext = createContext<boolean>(false);
+
+/**
+ * The fill colour of the nearest surface text is being drawn onto, or null for
+ * the page/panel background.
+ *
+ * Text colours come from the theme, which tunes them against `panelBg` — but a
+ * list-item card is its own, distinctly lighter fill, and a colour that clears
+ * WCAG on the panel can fail badly on the card (the link blue measured ~2:1
+ * there). Anything picking a text colour reads this and corrects against the
+ * surface it will actually sit on; see useLinkColor and ensureContrast.
+ *
+ * Provided alongside InsideCardContext by the XRListItem branches in
+ * scene/dispatcher.tsx, for the same reason: a card's children are dispatched
+ * as siblings of its mesh, out of reach of any provider inside it.
+ */
+export const SurfaceBgContext = createContext<string | null>(null);
+
+/** The fill under the current text, resolving null to the panel background. */
+export function useSurfaceBg(): string {
+  const theme = useTheme();
+  return useContext(SurfaceBgContext) ?? theme.panelBg;
+}
+
+/**
+ * The theme accent, corrected to stay legible on whatever surface it lands on.
+ * Every link colour — inline runs and standalone link meshes alike — goes
+ * through this, so a link is never a low-contrast smudge on a card tile.
+ */
+export function useLinkColor(): string {
+  const theme = useTheme();
+  const bg = useSurfaceBg();
+  return useMemo(
+    () => ensureContrast(theme.accentCol, bg, WCAG_AA_TEXT),
+    [theme.accentCol, bg],
+  );
+}
 
 // ─────────────────────────────────────────────────────────────
 // Render metrics context

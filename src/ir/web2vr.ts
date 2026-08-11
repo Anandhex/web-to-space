@@ -1,17 +1,32 @@
 /**
  * Web2VR layout extraction — port of the kikoano/web2vr approach.
  *
- * Injects HTML into a hidden off-screen iframe, waits for layout, then
- * reads every visible element's position + styles via getBoundingClientRect()
- * and getComputedStyle().  The resulting data array is consumed by
- * Web2VRScene.tsx which maps DOM coordinates to 3D world space.
+ * Renders the HTML in an off-screen frame, then reads every visible element's
+ * position + styles via `getBoundingClientRect()` and `getComputedStyle()`. The
+ * resulting data array is consumed by Web2VRScene.tsx, which maps DOM
+ * coordinates to 3D world space.
  *
  * Scale invariant: SCALE = 600 (same as Web2VR default).
  * 1 CSS pixel = 1/600 world units.  A 1200×900 px viewport → 2.0×1.5 m.
  *
- * Limitation: external CSS/fonts cannot load inside the sandboxed iframe
- * (opaque origin), so computed styles reflect inline/default styles only.
+ * ── The frame is NOT set up here ────────────────────────────────────────────
+ *
+ * This module used to own its own iframe with `sandbox="allow-scripts"`, and
+ * that one attribute made the whole backend a no-op: a frame with
+ * `allow-scripts` but no `allow-same-origin` gets an **opaque origin**, so
+ * `iframe.contentDocument` reads back as `null` from the parent. Extraction
+ * therefore hit its own "no document" guard on every single run and resolved
+ * `[]` — the scene only ever drew "No visible elements extracted."
+ *
+ * Frame setup now lives in `render-frame.ts`, which inverts that choice
+ * (`allow-same-origin`, no `allow-scripts`), inlines external stylesheets
+ * through the dev proxy, and avoids the `about:blank` load race. See that
+ * module's docblock for why each of those is load-bearing. Everything below is
+ * pure measurement over a frame someone else rendered.
  */
+
+import { renderInFrame } from "./render-frame";
+import type { RenderFrameDiagnostics, RenderedFrame } from "./render-frame";
 
 export interface Web2VRElementData {
   id: string;
@@ -42,27 +57,97 @@ const IGNORE_TAGS = new Set([
   "template", "br", "wbr", "hr", "base", "title",
 ]);
 
-function cssToHexAlpha(cssColor: string): { hex: string; alpha: number } | null {
+interface HexAlpha {
+  hex: string;
+  alpha: number;
+}
+
+const MIN_ALPHA = 0.04;
+
+function hex2(n: number): string {
+  return Math.max(0, Math.min(255, Math.round(n)))
+    .toString(16)
+    .padStart(2, "0");
+}
+
+/** Fast path: the legacy `rgb()` / `rgba()` form, which is most of the corpus. */
+function parseLegacyRgb(value: string): HexAlpha | null {
+  const m = value.match(
+    /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+)\s*)?\)$/,
+  );
+  if (!m) return null;
+  const alpha = m[4] === undefined ? 1 : parseFloat(m[4]);
+  if (!(alpha >= MIN_ALPHA)) return null;
+  return { hex: `#${hex2(+m[1])}${hex2(+m[2])}${hex2(+m[3])}`, alpha };
+}
+
+/**
+ * Slow path: rasterise one pixel and read the bytes back.
+ *
+ * `getComputedStyle` does not promise legacy `rgb()` output. A stylesheet
+ * authored in `oklch()`, `lab()` or `color(srgb …)` computes to *that same
+ * syntax*, and those fall straight through an `rgba()` regex as "unparseable",
+ * so the element silently loses its background — on a modern site that is most
+ * of the page.
+ *
+ * Round-tripping through `ctx.fillStyle` is not enough either: the canvas
+ * accepts a wide-gamut colour but hands it back in the syntax it was given
+ * (`oklch(0.25 0.03 250)` in, the same string out), so the regex fails again.
+ * Painting the colour and calling `getImageData` is what forces the browser to
+ * actually resolve it to sRGB bytes — and it yields the alpha in the same read.
+ */
+let pixelCtx: CanvasRenderingContext2D | null | undefined;
+
+function parseByRasterising(cssColor: string): HexAlpha | null {
+  if (pixelCtx === undefined) {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      pixelCtx = canvas.getContext("2d", { willReadFrequently: true });
+    } catch {
+      pixelCtx = null;
+    }
+  }
+  if (!pixelCtx) return null;
+
+  try {
+    // A rejected `fillStyle` assignment leaves the previous value untouched, so
+    // seed a sentinel and treat "unchanged" as a parse failure — otherwise an
+    // invalid colour silently paints whatever the last element used.
+    pixelCtx.fillStyle = "#000000";
+    pixelCtx.fillStyle = cssColor;
+    if (pixelCtx.fillStyle === "#000000") {
+      pixelCtx.fillStyle = "#ffffff";
+      pixelCtx.fillStyle = cssColor;
+      if (pixelCtx.fillStyle === "#ffffff") return null; // rejected twice
+      pixelCtx.fillStyle = cssColor;
+    }
+
+    pixelCtx.clearRect(0, 0, 1, 1);
+    pixelCtx.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = pixelCtx.getImageData(0, 0, 1, 1).data;
+
+    const alpha = a / 255;
+    if (!(alpha >= MIN_ALPHA)) return null;
+    return { hex: `#${hex2(r)}${hex2(g)}${hex2(b)}`, alpha };
+  } catch {
+    return null;
+  }
+}
+
+/** Memoised — a page reuses the same handful of colours across many elements. */
+const colorCache = new Map<string, HexAlpha | null>();
+
+function cssToHexAlpha(cssColor: string): HexAlpha | null {
   if (!cssColor || cssColor === "transparent") return null;
 
-  const rgba = cssColor.match(
-    /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/,
-  );
-  if (rgba) {
-    const alpha = rgba[4] !== undefined ? parseFloat(rgba[4]) : 1;
-    if (alpha < 0.04) return null;
-    const r = parseInt(rgba[1]).toString(16).padStart(2, "0");
-    const g = parseInt(rgba[2]).toString(16).padStart(2, "0");
-    const b = parseInt(rgba[3]).toString(16).padStart(2, "0");
-    return { hex: `#${r}${g}${b}`, alpha };
-  }
+  const cached = colorCache.get(cssColor);
+  if (cached !== undefined) return cached;
 
-  // Named colour or hex literal — pass through, alpha = 1
-  if (cssColor.startsWith("#") || /^[a-z]+$/i.test(cssColor)) {
-    return { hex: cssColor, alpha: 1 };
-  }
-
-  return null;
+  const parsed = parseLegacyRgb(cssColor) ?? parseByRasterising(cssColor);
+  colorCache.set(cssColor, parsed);
+  return parsed;
 }
 
 function getDirectText(el: Element): string {
@@ -152,70 +237,78 @@ function traverseElement(
   }
 }
 
+/** Virtual screen the extraction measures against, in CSS px. */
+export const VIEWPORT_W = 1200;
+export const VIEWPORT_H = 900;
+
 /**
- * Inject HTML into a hidden off-screen iframe, wait for layout, then read
- * getBoundingClientRect() + getComputedStyle() for every visible element.
+ * The colour the browser paints behind the whole document.
+ *
+ * Not the same thing as `<body>`'s background. Per CSS backgrounds §2.11 the
+ * canvas takes its background from `<html>`, or from `<body>` when `<html>`'s
+ * is transparent — and when neither sets one it is the browser's default
+ * white, even though *both* elements compute to `rgba(0, 0, 0, 0)`.
+ *
+ * Reading only the computed values therefore yields "transparent" for the very
+ * common case of a page that never styles its background, and the page ends up
+ * drawn as its default black text over whatever the 3D scene's backdrop is —
+ * i.e. invisible in a dark scene. A browser would have shown black on white.
+ */
+function canvasBackground(doc: Document, win: Window): string {
+  for (const el of [doc.documentElement, doc.body]) {
+    if (!el) continue;
+    const parsed = cssToHexAlpha(win.getComputedStyle(el).backgroundColor);
+    if (parsed && parsed.alpha >= 0.5) return parsed.hex;
+  }
+  return "#ffffff";
+}
+
+export interface Web2VRResult {
+  elements: Web2VRElementData[];
+  /** Colour behind the page — see `canvasBackground`. */
+  background: string;
+  /**
+   * How the underlying render went. Surfaced by the scene so a frame that
+   * never rendered reads as a failure rather than as an empty page — the two
+   * were indistinguishable before, which is how the dead sandbox survived.
+   */
+  render: RenderFrameDiagnostics;
+}
+
+/**
+ * Render `html` off-screen, then read `getBoundingClientRect()` +
+ * `getComputedStyle()` for every visible element.
  *
  * This is the Web2VR approach: CSS layout → array of positioned element data.
+ * `url` is the page's absolute address; it becomes the frame's `<base href>` so
+ * relative stylesheets, fonts and images resolve against the real origin
+ * instead of ours.
  */
-export function extractWeb2VRLayout(html: string): Promise<Web2VRElementData[]> {
-  return new Promise((resolve) => {
-    const iframe = document.createElement("iframe");
-    iframe.style.cssText = [
-      "position:fixed",
-      "top:0",
-      "left:-1300px", // off-screen but rendered
-      "width:1200px",
-      "height:900px",
-      "visibility:hidden",
-      "pointer-events:none",
-      "z-index:-9999",
-    ].join(";");
+export async function extractWeb2VRLayout(
+  html: string,
+  url?: string | null,
+): Promise<Web2VRResult> {
+  interface Extraction {
+    elements: Web2VRElementData[];
+    background: string;
+  }
 
-    // allow-scripts: inline JS can apply styles; without allow-same-origin
-    // the iframe has an opaque origin so external resources won't load.
-    iframe.setAttribute("sandbox", "allow-scripts");
+  const { value, diagnostics } = await renderInFrame(
+    html,
+    { baseHref: url ?? null, width: VIEWPORT_W, height: VIEWPORT_H },
+    (frame: RenderedFrame): Extraction => {
+      const elements: Web2VRElementData[] = [];
+      traverseElement(frame.doc.body, 0, frame.win, elements, frame.bodyRect);
+      return {
+        elements,
+        background: canvasBackground(frame.doc, frame.win),
+      };
+    },
+  );
 
-    const cleanup = () => {
-      try {
-        document.body.removeChild(iframe);
-      } catch {
-        /* already removed */
-      }
-    };
-
-    const timeout = setTimeout(() => {
-      cleanup();
-      resolve([]);
-    }, 10_000);
-
-    iframe.addEventListener(
-      "load",
-      () => {
-        // 150 ms: enough for synchronous JS to apply inline styles
-        setTimeout(() => {
-          clearTimeout(timeout);
-
-          const doc = iframe.contentDocument;
-          const win = iframe.contentWindow;
-          if (!doc || !win || !doc.body) {
-            cleanup();
-            resolve([]);
-            return;
-          }
-
-          const bodyRect = doc.body.getBoundingClientRect();
-          const results: Web2VRElementData[] = [];
-          traverseElement(doc.body, 0, win, results, bodyRect);
-
-          cleanup();
-          resolve(results);
-        }, 150);
-      },
-      { once: true },
-    );
-
-    document.body.appendChild(iframe);
-    iframe.srcdoc = html;
-  });
+  return {
+    elements: value?.elements ?? [],
+    background: value?.background ?? "#ffffff",
+    render: diagnostics,
+  };
 }

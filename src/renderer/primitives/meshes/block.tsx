@@ -29,7 +29,11 @@ import {
   headingWeight,
   resolveHeadingMetric,
 } from "../surface";
-import { useClipPlanes, useRenderMetrics } from "../contexts";
+import {
+  InsideCardContext,
+  useClipPlanes,
+  useRenderMetrics,
+} from "../contexts";
 import { usePanelCurve } from "../curve";
 import { ClippedText, buildInlineRows, InlineProseRows } from "../inline";
 
@@ -322,6 +326,10 @@ export function XRSectionMesh({
 
   const h = safeDim(visibleHeight);
 
+  // Inside a card the tile already painted the surface — a second fill in a
+  // different shade just bands the card. See InsideCardContext.
+  const insideCard = React.useContext(InsideCardContext);
+
   return (
     <group position={pos} rotation={rot}>
       {/* Section backing — a single flat fill. Sections nest inside the main
@@ -332,7 +340,9 @@ export function XRSectionMesh({
           identical 4-layer glass slabs at nearly the same Z depth, reading
           as a solid "brick" when viewed edge-on. One flat layer per section
           keeps nested containers visually quiet and avoids that compounding. */}
-      <Surface width={w} height={h} color={theme.panelBg} clips={clips} />
+      {!insideCard && (
+        <Surface width={w} height={h} color={theme.panelBg} clips={clips} />
+      )}
 
       {/* "Continued from previous page" top edge indicator */}
       {isContinuation && (

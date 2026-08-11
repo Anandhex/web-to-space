@@ -63,6 +63,35 @@ interface TOCPanelProps {
  * leaves world-Y aligned with the panel's vertical axis); a pitched/rolled
  * panel would need panel-local planes instead.
  */
+/**
+ * Mean glyph advance as a fraction of font size, for the UI face. Only ever used
+ * to place an ellipsis — the hard guarantee that a row stays inside its box is
+ * `whiteSpace="nowrap"` plus the per-row `clipRect`, neither of which depends on
+ * this being accurate.
+ */
+const CHAR_ADVANCE_EM = 0.52;
+
+/**
+ * Collapse a label to one line that fits `maxW`, ending in an ellipsis if cut.
+ *
+ * Whitespace is collapsed first: a label lifted from body text carries the
+ * source HTML's newlines, and a single-line row would otherwise render the
+ * break as a gap in the middle of the row.
+ *
+ * The width estimate is deliberately crude — the row's `clipRect` is what
+ * actually guarantees the text stays in its box. This just tries to make the cut
+ * land on an ellipsis rather than mid-word.
+ */
+function ellipsise(raw: string, maxW: number, fontSize: number): string {
+  const text = raw.replace(/\s+/g, " ").trim();
+  const maxChars = Math.max(4, Math.floor(maxW / (fontSize * CHAR_ADVANCE_EM)));
+  if (text.length <= maxChars) return text;
+  // Prefer breaking at a word boundary when one is close to the limit.
+  const cut = text.slice(0, maxChars - 1);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd() + "…";
+}
+
 function TOCPanel({
   items,
   w,
@@ -276,6 +305,7 @@ function TOCPanel({
             const indent = PADDING + (item.depth ?? 0) * INDENT_STEP;
             const isCurrent = item.isCurrent;
             const itemW = w - indent - PADDING;
+            const fontSize = item.depth === 0 ? 0.022 : 0.018;
             const itemPlace = place(indent, itemY, Z_LAYER_INLINE_TEXT);
 
             return (
@@ -322,7 +352,7 @@ function TOCPanel({
                   anchorX="left"
                   anchorY="top"
                   position={[0, 0, 0.002]}
-                  fontSize={item.depth === 0 ? 0.022 : 0.018}
+                  fontSize={fontSize}
                   color={
                     isCurrent
                       ? theme.panelBg
@@ -335,8 +365,21 @@ function TOCPanel({
                   }
                   maxWidth={itemW}
                   lineHeight={1.3}
+                  // Rows sit on a FIXED pitch (`step`), which the scroll extent,
+                  // the clip viewport and the scrollbar thumb are all derived
+                  // from. A wrapping label breaks that contract silently: nothing
+                  // reserves the extra lines, so a two-line entry runs straight
+                  // through the entry below it and a paragraph-length one buries
+                  // several. TOC labels are not guaranteed to be short — a
+                  // section with no heading can be labelled with its own body
+                  // text — so the row, not the data, has to hold the line.
+                  whiteSpace="nowrap"
+                  // Belt and braces: hard-clip to the row box so an
+                  // under-estimated ellipsis budget still cannot bleed past the
+                  // row's width or height.
+                  clipRect={[0, -ITEM_H, itemW, 0]}
                 >
-                  {item.label ?? ""}
+                  {ellipsise(item.label ?? "", itemW, fontSize)}
                 </ClippedText>
               </group>
             );

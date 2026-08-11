@@ -106,7 +106,13 @@ function synthesiseTOC(
         !!n &&
         n.role === "region" &&
         typeof n.label === "string" &&
-        n.label.trim().length > 0,
+        n.label.trim().length > 0 &&
+        // A heading-bounded section with no heading — a page's lead, typically —
+        // gets labelled with its own node id. That is a placeholder, not a
+        // title: it reads as "main-node-4-node-12-node-14-section-1" in the TOC
+        // rail and navigates to a section the reader was given no name for.
+        // Drop the row rather than show it; the section itself still renders.
+        n.label.trim() !== n.id,
     );
 
   if (sectionNodes.length === 0) return null;

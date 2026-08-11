@@ -24,7 +24,13 @@ import {
 // so the panel reads as five focused views instead of one wall of numbers.
 // ─────────────────────────────────────────────────────────────
 
-type TabId = "overview" | "semantic" | "xr" | "segmentation" | "diagnostics";
+type TabId =
+  | "overview"
+  | "semantic"
+  | "xr"
+  | "segmentation"
+  | "cssom"
+  | "diagnostics";
 
 const TABS: { id: TabId; label: string; blurb: string }[] = [
   {
@@ -52,6 +58,12 @@ const TABS: { id: TabId; label: string; blurb: string }[] = [
       "How well each backend's produced scene groups the page into blocks, scored with size-weighted BCubed (Kiesel CIKM'20) against the page's semantic sectioning. ▲ higher F is better; 'aligned units' shows how much content matched the reference.",
   },
   {
+    id: "cssom",
+    label: "CSSOM",
+    blurb:
+      "What each backend saw of the RENDERED page rather than the markup. Only VIPS reads the CSSOM: it renders the page in an off-screen frame and segments it from real geometry (Cai et al. 2003, §3.1–3.3). If that frame fails, VIPS silently becomes a tag-tree approximation — this tab is where you check which one produced the numbers in every other tab.",
+  },
+  {
     id: "diagnostics",
     label: "Diagnostics",
     blurb:
@@ -60,6 +72,54 @@ const TABS: { id: TabId; label: string; blurb: string }[] = [
 ];
 
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
+
+// ─────────────────────────────────────────────────────────────
+// CSSOM tab helpers
+// ─────────────────────────────────────────────────────────────
+
+/** Shown where a backend has no value for a CSSOM row at all. */
+const NA = "—";
+
+/** Value from the off-screen frame's diagnostics, or `—` if no frame ran. */
+function fromRender(
+  s: BackendStats,
+  pick: (r: NonNullable<BackendStats["cssom"]["render"]>) => number | string,
+): number | string {
+  return s.cssom.render ? pick(s.cssom.render) : NA;
+}
+
+/** Value from the visual-segmentation diagnostics, or `—` if it did not run. */
+function fromVisual(
+  s: BackendStats,
+  pick: (v: NonNullable<BackendStats["cssom"]["visual"]>) => number | string,
+): number | string {
+  return s.cssom.visual ? pick(s.cssom.visual) : NA;
+}
+
+const FALLBACK_TEXT: Record<string, string> = {
+  "no-layout-engine": "no layout engine",
+  "render-failed": "frame render failed",
+  "no-blocks": "no visual blocks found",
+  "no-css": "no CSS applied",
+  disabled: "forced off by caller",
+};
+
+/** One-phrase answer to "what actually produced this column's numbers?". */
+function describePath(s: BackendStats): string {
+  if (!s.cssom.usesCssom) return "DOM only (by design)";
+  if (s.cssom.mode === "visual") return "✓ rendered CSSOM";
+  return `⚠ fell back to DOM${
+    s.cssom.fallbackReason
+      ? ` — ${FALLBACK_TEXT[s.cssom.fallbackReason] ?? s.cssom.fallbackReason}`
+      : ""
+  }`;
+}
+
+const SETTLE_TEXT: Record<string, string> = {
+  load: "load event",
+  "subresource-deadline": "soft deadline (images pending)",
+  "not-reached": NA,
+};
 
 /** Backend label with the best (numerically max/min) value of a selector. */
 function winnerBy(
@@ -77,6 +137,41 @@ function winnerBy(
 }
 
 /** Persistent summary: the "so what" of the run, above the tabs. */
+/**
+ * Sits directly under the verdict cards, which is the one place in the app that
+ * declares a winner. If any baseline ran degraded, the declaration is not a fair
+ * result and the reader has to be told at the same moment they read it — not in
+ * a tooltip they may never open.
+ */
+function DegradedBackendNotice({ stats }: { stats: BackendStats[] }) {
+  const degraded = stats.filter((s) => s.caveat);
+  if (degraded.length === 0) return null;
+
+  return (
+    <div
+      role="note"
+      style={{
+        marginBottom: 18,
+        padding: "10px 14px",
+        background: "#fffbeb",
+        border: "1px solid #fcd34d",
+        borderLeft: "3px solid #f59e0b",
+        borderRadius: 8,
+        fontSize: 12.5,
+        lineHeight: 1.55,
+        color: "#78350f",
+      }}
+    >
+      <strong>Comparison is not head-to-head.</strong>{" "}
+      {degraded.map((s) => (
+        <span key={s.label}>
+          <em>{s.label}</em> — {s.caveat}{" "}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function VerdictBar({ stats }: { stats: BackendStats[] }) {
   const overall = winnerBy(stats, (s) => s.composite.semanticRichness);
   const readable = winnerBy(stats, (s) =>
@@ -365,6 +460,7 @@ export function ComparePanel({
         {stats && gt && (
           <>
             <VerdictBar stats={stats} />
+            <DegradedBackendNotice stats={stats} />
             <TabBar active={tab} onChange={setTab} />
             <div
               style={{
@@ -412,10 +508,23 @@ export function ComparePanel({
                           borderBottom: `2px solid ${isWinner ? "#16a34a" : "#e6e8ec"}`,
                           whiteSpace: "nowrap",
                         }}
-                        title={isWinner ? "Highest semantic richness" : undefined}
+                        title={
+                          s.caveat ??
+                          (isWinner ? "Highest semantic richness" : undefined)
+                        }
                       >
                         {isWinner ? "★ " : ""}
                         {s.label}
+                        {/* A degraded backend's column is marked in place, so
+                            the warning cannot be separated from its numbers. */}
+                        {s.caveat && (
+                          <span
+                            style={{ color: "#b45309", marginLeft: 4 }}
+                            aria-label={s.caveat}
+                          >
+                            ⚠
+                          </span>
+                        )}
                       </th>
                     );
                   })}
@@ -923,6 +1032,164 @@ export function ComparePanel({
                     <Row
                       label="Aligned units (of reference)"
                       values={stats.map((s) => String(s.segmentation.coveredUnits))}
+                    />
+                  </>
+                )}
+
+                {tab === "cssom" && (
+                  <>
+                    <SectionHeader
+                      label="Rendering path — which signal produced this column"
+                      colCount={stats.length}
+                    />
+                    <BoolRow
+                      label="Reads rendered layout"
+                      values={stats.map((s) => s.cssom.usesCssom)}
+                    />
+                    <Row
+                      label="Path taken this run"
+                      values={stats.map(describePath)}
+                      neutral
+                    />
+
+                    <SectionHeader
+                      label="Off-screen frame (CSSOM acquisition)"
+                      colCount={stats.length}
+                    />
+                    <Row
+                      label="Frame status"
+                      values={stats.map((s) =>
+                        fromRender(s, (r) => r.status),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      label="Frame total"
+                      values={stats.map((s) => fromRender(s, (r) => r.elapsedMs))}
+                      suffix=" ms"
+                      neutral
+                    />
+                    <Row
+                      indent
+                      dim
+                      label="— to parsed + laid out"
+                      values={stats.map((s) => fromRender(s, (r) => r.domReadyMs))}
+                      suffix=" ms"
+                      neutral
+                    />
+                    <Row
+                      indent
+                      dim
+                      label="— stopped waiting on"
+                      values={stats.map((s) =>
+                        fromRender(
+                          s,
+                          (r) => SETTLE_TEXT[r.settleReason] ?? r.settleReason,
+                        ),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      label="Stylesheets found"
+                      values={stats.map((s) =>
+                        fromRender(s, (r) => r.stylesheetsFound),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      indent
+                      dim
+                      label="— fetched and inlined"
+                      values={stats.map((s) =>
+                        fromRender(s, (r) => r.stylesheetsInlined),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      label="Inline <style> blocks"
+                      values={stats.map((s) =>
+                        fromRender(s, (r) => r.inlineStyleBlocks),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      label="CSS rules applied"
+                      values={stats.map((s) =>
+                        fromRender(s, (r) => r.cssRulesApplied),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      label="Rendered document height"
+                      values={stats.map((s) =>
+                        fromRender(s, (r) => r.documentHeightPx),
+                      )}
+                      suffix=" px"
+                      neutral
+                    />
+
+                    <SectionHeader
+                      label="Visual segmentation over the CSSOM (Cai et al. §3.1–3.3)"
+                      colCount={stats.length}
+                    />
+                    <Row
+                      label="Visual block pool (phase 1)"
+                      values={stats.map((s) => fromVisual(s, (v) => v.poolSize))}
+                      neutral
+                    />
+                    <Row
+                      label="Leaf blocks (phase 3)"
+                      values={stats.map((s) => fromVisual(s, (v) => v.leafCount))}
+                      neutral
+                    />
+                    <Row
+                      label="Top-level separators"
+                      values={stats.map((s) =>
+                        fromVisual(s, (v) => v.topLevelSeparators),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      label="Max separator weight"
+                      values={stats.map((s) =>
+                        fromVisual(s, (v) => `${v.maxSeparatorWeight} / 10`),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      label="Mean Degree of Coherence"
+                      values={stats.map((s) =>
+                        fromVisual(s, (v) => `${v.meanDoc} / 10`),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      label="Permitted DoC (subdivide below)"
+                      values={stats.map((s) =>
+                        fromVisual(s, (v) => `${v.pdoc} / 10`),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      label="Style resolves issued"
+                      values={stats.map((s) =>
+                        fromVisual(s, (v) => v.styleReads),
+                      )}
+                      neutral
+                    />
+                    <Row
+                      label="Phase 1 — block extraction"
+                      values={stats.map((s) => fromVisual(s, (v) => v.extractMs))}
+                      suffix=" ms"
+                      neutral
+                    />
+                    <Row
+                      label="Phases 2–3 — separators + structure"
+                      values={stats.map((s) =>
+                        fromVisual(s, (v) => v.structureMs),
+                      )}
+                      suffix=" ms"
+                      neutral
                     />
                   </>
                 )}

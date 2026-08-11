@@ -6,7 +6,7 @@
  * usable from the React panel.
  */
 import { parsePageToIR } from "../ir/parser";
-import { parsePageWithVIPS } from "../ir/vips";
+import { parsePageWithVIPSDetailed } from "../ir/vips";
 import { applyParserBackend } from "../ir/backends";
 import { DEFAULT_CONFIG } from "../ir/defaults";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../mapper/mapper";
@@ -23,7 +23,12 @@ import {
   countPrimitiveTypes,
 } from "../components/compare/metrics";
 import { computeXRQuality, type XRSpatialQuality } from "./xr-quality";
-import { scoreSegmentation, type SegmenterId, type SegmentationScore } from "./segmentation";
+import {
+  scoreSegmentationRun,
+  type SegmenterId,
+  type SegmentationScore,
+  type SegmentationRunInfo,
+} from "./segmentation";
 
 /** Pipeline backends we can run headlessly (web2vr needs a real iframe). */
 export const PIPELINE_BACKENDS = [
@@ -59,6 +64,8 @@ export interface BackendBenchmark {
   mediaPreservation: number;
   readingOrderFidelity: number;
   xr: XRSpatialQuality | null;
+  /** Set when this backend ran degraded, making its row unfair to compare. */
+  caveat?: string;
   error?: string;
 }
 
@@ -67,6 +74,8 @@ export interface PageBenchmark {
   htmlSizeKb: number;
   /** Algorithm-level segmentation quality (BCubed vs reference). */
   segmentation: Record<SegmenterId, SegmentationScore>;
+  /** Weighting mode + VIPS fidelity these scores were produced under. */
+  segmentationInfo: SegmentationRunInfo;
   backends: BackendBenchmark[];
 }
 
@@ -80,8 +89,15 @@ async function runOneBackend(
   const t0 = performance.now();
   try {
     let ir;
+    let caveat: string | undefined;
     if (id === "vips") {
-      ir = await parsePageWithVIPS(html, url);
+      const vips = await parsePageWithVIPSDetailed(html, url);
+      ir = vips.ir;
+      if (vips.diagnostics.mode === "dom-only") {
+        // Expected in the offline runner — jsdom has no layout engine. Recorded
+        // so the report never presents this row as the real algorithm.
+        caveat = `DOM-only (${vips.diagnostics.fallbackReason ?? "unknown"})`;
+      }
     } else {
       const transform = applyParserBackend(html, id, {});
       const cfg = { ...DEFAULT_CONFIG, ...transform.configOverride };
@@ -124,6 +140,7 @@ async function runOneBackend(
       mediaPreservation: structural.mediaPreservation,
       readingOrderFidelity: structural.readingOrderFidelity,
       xr: computeXRQuality(plan, QUEST_3_PROFILE, scene),
+      caveat,
     };
   } catch (err) {
     return {
@@ -166,10 +183,16 @@ export async function benchmarkPage(
   doc: Document,
 ): Promise<PageBenchmark> {
   const htmlSizeKb = Math.round((new Blob([html]).size / 1024) * 10) / 10;
-  const segmentation = scoreSegmentation(doc.body);
+  const { scores, info } = scoreSegmentationRun(doc.body);
   const backends: BackendBenchmark[] = [];
   for (const b of PIPELINE_BACKENDS) {
     backends.push(await runOneBackend(b.id, b.label, html, url));
   }
-  return { page, htmlSizeKb, segmentation, backends };
+  return {
+    page,
+    htmlSizeKb,
+    segmentation: scores,
+    segmentationInfo: info,
+    backends,
+  };
 }

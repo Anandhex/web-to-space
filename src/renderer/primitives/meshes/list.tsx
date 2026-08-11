@@ -13,7 +13,7 @@ import {
   isInlinePrimitive,
   flattenInlineWrappers,
 } from "../../../layout/utils";
-import { useTheme } from "../../theme";
+import { useTheme, type XRTheme } from "../../theme";
 import { PANEL_DEPTH } from "../constants";
 import { Surface, safeDim, entryTransform } from "../surface";
 import {
@@ -23,6 +23,7 @@ import {
   CardSelfClipContext,
   useRenderMetrics,
 } from "../contexts";
+import { isDarkTheme, shade } from "../../scene/section-tint";
 import { ClippedText, buildInlineRows, InlineProseRows } from "../inline";
 
 export interface XRListItemMeshProps {
@@ -39,6 +40,27 @@ export interface XRListItemMeshProps {
    * un-zeroed panel-relative Y explicitly.
    */
   panelRelativeY: number;
+  /**
+   * True when this card sits inside another card. Passed in rather than read
+   * from InsideCardContext: the dispatcher renders this mesh INSIDE the
+   * provider it sets for the card's children, so reading the context here
+   * would report "nested" for every card, including top-level ones.
+   */
+  nested?: boolean;
+}
+
+/**
+ * Fill for a list-item tile. A card nested inside another card (a news card's
+ * "related story" row) painting the identical listItemBg over its parent's
+ * merged the two tiles into one slab with an invisible seam — step the shade
+ * away from the page background instead, so the inner tile reads as a separate
+ * object. Shared with the dispatcher, which publishes the resulting colour on
+ * SurfaceBgContext so text drawn on this tile can measure against it.
+ */
+export function cardTileColor(theme: XRTheme, nested?: boolean): string {
+  return nested
+    ? shade(theme.listItemBg, isDarkTheme(theme) ? 0.05 : -0.05)
+    : theme.listItemBg;
 }
 
 export function XRListItemMesh({
@@ -46,6 +68,7 @@ export function XRListItemMesh({
   entry,
   renderChild,
   panelRelativeY,
+  nested,
 }: XRListItemMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const pageClips = useClipPlanes();
@@ -121,10 +144,12 @@ export function XRListItemMesh({
   // rounded matte tile (Meta Horizon "card" list variant), so every list
   // item reads as a distinct grabbable surface against its container.
 
+  const tileBg = cardTileColor(theme, nested);
+
   return (
     <group position={pos} rotation={rot}>
       <ClipPlanesContext.Provider value={clips}>
-        <Surface width={w} height={h} color={theme.listItemBg} clips={clips} />
+        <Surface width={w} height={h} color={tileBg} clips={clips} />
 
         {/* Plain-text list items (no child elements): label rendered below the top padding. */}
         {displayText && (

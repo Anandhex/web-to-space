@@ -3,7 +3,7 @@
  * pipeline and assembles its BackendStats via the metrics derivations.
  */
 import { parsePageToIR } from "../../ir/parser";
-import { parsePageWithVIPS } from "../../ir/vips";
+import { parsePageWithVIPSDetailed } from "../../ir/vips";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../../mapper/mapper";
 import { computeLayoutPlan } from "../../layout/engine";
 import { DEFAULT_CONFIG } from "../../ir/defaults";
@@ -23,9 +23,11 @@ import {
   countPrimitiveTypes,
   buildPrimitiveTypeIndex,
 } from "./metrics";
+import { DOM_ONLY_BY_DESIGN } from "./types";
 import type { IRAnalytics } from "../../ir/types";
 import type {
   BackendStats,
+  CssomUsage,
   HTMLGroundTruth,
   IRQuality,
   PrecisionRecall,
@@ -53,9 +55,29 @@ export async function runBackend(
   const t0 = performance.now();
   try {
     let ir;
+    let resolvedLabel = label;
+    let caveat: string | undefined;
+    let cssom: CssomUsage = DOM_ONLY_BY_DESIGN;
 
     if (backendId === "vips") {
-      ir = await parsePageWithVIPS(html, url);
+      // Take the label from the run, not the static table: VIPS may have fallen
+      // back to its rendering-free approximation, and a row labelled plain
+      // "VIPS" would misattribute the approximation's numbers to the algorithm.
+      const vips = await parsePageWithVIPSDetailed(html, url);
+      ir = vips.ir;
+      resolvedLabel = vips.diagnostics.label;
+      cssom = {
+        usesCssom: true,
+        mode: vips.diagnostics.mode,
+        fallbackReason: vips.diagnostics.fallbackReason,
+        render: vips.diagnostics.render,
+        visual: vips.diagnostics.visual,
+      };
+      if (vips.diagnostics.mode === "dom-only") {
+        caveat =
+          "Rendering-free approximation — VIPS segments from rendered CSS layout, " +
+          "which was unavailable here, so these numbers understate the algorithm.";
+      }
     } else {
       const transform = applyParserBackend(html, backendId, {});
       const cfg = { ...DEFAULT_CONFIG, ...transform.configOverride };
@@ -119,7 +141,8 @@ export async function runBackend(
     );
 
     return {
-      label,
+      label: resolvedLabel,
+      caveat,
       timing: { parseMs, mapMs, layoutMs, totalMs },
       htmlSizeKb,
       irNodeCount: nodes.length,
@@ -141,6 +164,7 @@ export async function runBackend(
       layoutTemplate: plan.template,
       xr: computeXRQuality(plan, QUEST_3_PROFILE, scene),
       segmentation: scoreSceneSegmentation(scene.root, refBody),
+      cssom,
     };
   } catch (err) {
     const totalMs = Math.round(performance.now() - t0);
@@ -226,6 +250,7 @@ export async function runBackend(
         segmentCount: 0,
         coveredUnits: 0,
       },
+      cssom: DOM_ONLY_BY_DESIGN,
       error: err instanceof Error ? err.message : "Unknown error",
     };
   }

@@ -154,6 +154,7 @@ export function Row({
   suffix = "",
   dim,
   indent,
+  neutral,
 }: {
   label: string;
   values: (number | string)[];
@@ -161,8 +162,19 @@ export function Row({
   suffix?: string;
   dim?: boolean;
   indent?: boolean;
+  /**
+   * Report the numbers without ranking them.
+   *
+   * Some rows are descriptive rather than competitive — a frame render time or a
+   * CSS rule count is not a score, and on a row where only one backend has a
+   * number at all, the usual "best in row" green would award a win to the only
+   * entrant.
+   */
+  neutral?: boolean;
 }) {
-  const nums = values.filter((v): v is number => typeof v === "number");
+  const nums = neutral
+    ? []
+    : values.filter((v): v is number => typeof v === "number");
   const allSame = nums.length > 1 && nums.every((n) => n === nums[0]);
   const best =
     !allSame && nums.length > 0

@@ -270,6 +270,30 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
     };
   }, [proxiedSrc]);
 
+  // Cover-fit the texture to the reserved box (CSS `object-fit: cover`).
+  //
+  // The engine sizes the box from the image's intrinsic dimensions when the
+  // markup declares them — then this is a no-op. When it doesn't (a news-site
+  // <img> with the size only in a CDN query string), resolveImageDisplaySize
+  // falls back to full-width × the profile's max image height, which for a
+  // card-wide box is a ~4:1 letterbox: a 5:4 press photo drawn into it was
+  // squashed to a smear. Crop the texture to the box's aspect instead of
+  // stretching it, so the photo keeps its proportions and reads as the banner
+  // the source page shows.
+  React.useEffect(() => {
+    const img = texture?.image as { width?: number; height?: number } | undefined;
+    if (!texture || !img?.width || !img?.height) return;
+    const boxAspect = w / imgH;
+    const imgAspect = img.width / img.height;
+    const [rx, ry] =
+      imgAspect > boxAspect
+        ? [boxAspect / imgAspect, 1] // source wider than the box → crop sides
+        : [1, imgAspect / boxAspect]; // source taller → crop top/bottom
+    texture.repeat.set(rx, ry);
+    texture.offset.set((1 - rx) / 2, (1 - ry) / 2);
+    texture.needsUpdate = true;
+  }, [texture, w, imgH]);
+
   return (
     <group position={pos} rotation={rot}>
       <Surface width={w} height={imgH} color={IMG_BG} clips={clips} />

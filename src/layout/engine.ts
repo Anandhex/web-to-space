@@ -10,6 +10,7 @@ import type {
 import {
   _estimateTextBearingItemHeight,
   estimateHeight,
+  isEmptyContainerNode,
   isIconSizedImage,
   PRIMITIVE_CONFIG,
   resolveImageDisplaySize,
@@ -30,7 +31,9 @@ import type {
   SimpleStackResult,
 } from "./types";
 import {
+  cardGridGap,
   containerInsetX,
+  isDecorativeGlyphItem,
   resolveListColumns,
   resolveTableStrategy,
   zeroRotation,
@@ -83,12 +86,19 @@ export function stackChildrenSimple(
   // and supplies a resolved column count.
   if (parentType === "XRList" && listColumns && listColumns > 1) {
     const columns = listColumns;
+    // Card gutter, not childGapY — see cardGridGap. placeListGrid and
+    // _estimateListHeight lay the same grid out with this value.
+    const gutter = cardGridGap(metrics);
     const cardWidth = Math.max(
       0.025,
-      (childWidth - config.childGapY * (columns - 1)) / columns,
+      (childWidth - gutter * (columns - 1)) / columns,
     );
-    const rowCount = Math.ceil(children.length / columns);
-    const childEntries: LayoutEntry[] = [];
+    // Decoration-only items (a card's lone "…") take no column — see
+    // isDecorativeGlyphItem. They still get an entry, sized to nothing, so
+    // callers that index childEntries against `children` stay aligned.
+    const gridItems = children.filter((c) => !isDecorativeGlyphItem(c));
+    const rowCount = Math.ceil(gridItems.length / columns);
+    const entryById = new Map<string, LayoutEntry>();
     // cursorY starts at 0 (no internal top padding): the XRList container's
     // own position already accounts for padding contributed by its parent's
     // stackChildrenSimple call. Adding panelPaddingTop here again would push
@@ -98,14 +108,22 @@ export function stackChildrenSimple(
 
     for (let row = 0; row < rowCount; row++) {
       const rowStart = row * columns;
-      const rowEnd = Math.min(rowStart + columns, children.length);
+      const rowEnd = Math.min(rowStart + columns, gridItems.length);
+      const inRow = rowEnd - rowStart;
+
+      // A short last row stretches to fill the width rather than leaving a
+      // stranded narrow card beside dead space — same rule as placeListGrid.
+      const rowCardWidth =
+        inRow < columns
+          ? Math.max(0.025, (childWidth - gutter * (inRow - 1)) / inRow)
+          : cardWidth;
 
       // Measure all cards in this row to find the row height.
       const rowHeights: number[] = [];
       for (let col = rowStart; col < rowEnd; col++) {
         const h = estimateHeight(
-          children[col],
-          cardWidth,
+          gridItems[col],
+          rowCardWidth,
           metrics,
           config,
           new Set(),
@@ -116,22 +134,22 @@ export function stackChildrenSimple(
       }
       const rowH = Math.max(...rowHeights);
 
-      const rowGap = row === 0 ? 0 : config.childGapY;
+      const rowGap = row === 0 ? 0 : gutter;
       const rowY = cursorY - rowGap;
 
       // Place each card in this row at its column offset.
       for (let col = rowStart; col < rowEnd; col++) {
         const colIdx = col - rowStart;
-        const card = children[col];
+        const card = gridItems[col];
         const entry: LayoutEntry = {
           id: card.id,
           position: {
-            x: insetX + colIdx * (cardWidth + config.childGapY),
+            x: insetX + colIdx * (rowCardWidth + gutter),
             y: rowY,
             z: 0,
           },
           rotation: zeroRotation(),
-          size: { width: cardWidth, height: rowHeights[colIdx] ?? rowH },
+          size: { width: rowCardWidth, height: rowHeights[colIdx] ?? rowH },
           curveRadius: 0,
           worldLocked: true,
           // Stamped on each item (not just the XRList container) so
@@ -139,8 +157,8 @@ export function stackChildrenSimple(
           // without needing to look up its parent.
           listColumns: columns,
         };
-        attachResolvedStrategies(entry, card, cardWidth, metrics);
-        childEntries.push(entry);
+        attachResolvedStrategies(entry, card, rowCardWidth, metrics);
+        entryById.set(card.id, entry);
       }
 
       cursorY -= rowGap + rowH;
@@ -149,6 +167,17 @@ export function stackChildrenSimple(
     // No extra panelPaddingTop added here: the list container's height
     // already includes surrounding padding from its parent's estimateHeight.
 
+    const childEntries: LayoutEntry[] = children.map(
+      (c) =>
+        entryById.get(c.id) ?? {
+          id: c.id,
+          position: { x: insetX, y: cursorY, z: 0 },
+          rotation: zeroRotation(),
+          size: { width: cardWidth, height: 0 },
+          curveRadius: 0,
+          worldLocked: true,
+        },
+    );
     return { childEntries, totalHeight };
   }
 
@@ -205,10 +234,32 @@ export function stackChildrenSimple(
   const startY = ownsTopPadding ? -topOffset : 0;
   const childX = ownsXPadding ? insetX : 0;
   let cursorY = startY;
+  // `true` once a child that actually occupies space has been placed — the
+  // first such child gets no leading gap, and skipped empty wrappers must not
+  // count as "the first child" or the real first row inherits a stray gap.
+  let placedAny = false;
   const childEntries: LayoutEntry[] = [];
 
-  for (let i = 0; i < children.length; i++) {
-    const child = children[i];
+  for (const child of children) {
+    // Textless, childless wrapper divs (XRGenericPanel and friends) draw
+    // nothing and are dropped by flattenAndMerge before the height estimate
+    // ever sees them — see isEmptyContainerNode. Charging them
+    // fallbackElementHeight here would spend vertical space the parent never
+    // reserved, pushing every later sibling past the parent's own height and
+    // straight over the content below it. Keep a zero-height entry (callers
+    // index childEntries against `children`) but don't advance the cursor.
+    if (isEmptyContainerNode(child) || isDecorativeGlyphItem(child)) {
+      childEntries.push({
+        id: child.id,
+        position: { x: childX, y: cursorY, z: 0 },
+        rotation: zeroRotation(),
+        size: { width: childWidth, height: 0 },
+        curveRadius: 0,
+        worldLocked: true,
+      });
+      continue;
+    }
+
     let h = estimateHeight(child, panelUsableWidth, metrics, config, new Set());
 
     if (!h || h <= 0 || !isFinite(h)) {
@@ -216,7 +267,7 @@ export function stackChildrenSimple(
       console.warn(`Child ${child.id} had zero height, using fallback`, child);
     }
 
-    const gap = i === 0 ? 0 : config.childGapY;
+    const gap = placedAny ? config.childGapY : 0;
 
     const entry: LayoutEntry = {
       id: child.id,
@@ -233,16 +284,18 @@ export function stackChildrenSimple(
     attachResolvedStrategies(entry, child, panelUsableWidth, metrics);
     childEntries.push(entry);
     cursorY -= gap + h;
+    placedAny = true;
   }
 
   // paddingContrib mirrors startY's reservation plus a matching bottom gap.
   // Containers that own top padding reserve panelPaddingTop at both top and
   // bottom symmetrically. Types with ownsTopPadding: false contribute nothing.
+  //
+  // The consumed span is read off the cursor rather than re-summed from the
+  // entries: skipped empty wrappers contribute neither height nor gap, so a
+  // `childGapY * (children.length - 1)` term would over-count them.
   const paddingContrib = ownsTopPadding ? topOffset * 2 : 0;
-  const totalHeight =
-    paddingContrib +
-    childEntries.reduce((s, e) => s + e.size.height, 0) +
-    config.childGapY * Math.max(0, children.length - 1);
+  const totalHeight = paddingContrib + (startY - cursorY);
 
   return { childEntries, totalHeight };
 }
@@ -263,7 +316,11 @@ export function attachResolvedStrategies(
     );
   }
   if (primitive.type === "XRList") {
-    entry.listColumns = resolveListColumns(panelUsableWidth, metrics);
+    entry.listColumns = resolveListColumns(
+      panelUsableWidth,
+      metrics,
+      primitive.children.length,
+    );
   }
   if (primitive.type === "XRImage") {
     // Size the image from its intrinsic dimensions (aspect-preserving), instead

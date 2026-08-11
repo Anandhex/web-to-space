@@ -6,7 +6,7 @@
  */
 import { useState, useEffect, useMemo } from "react";
 import { parsePageToIR } from "../../ir/parser";
-import { parsePageWithVIPS } from "../../ir/vips";
+import { parsePageWithVIPSDetailed } from "../../ir/vips";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../../mapper/mapper";
 import { computeLayoutPlan } from "../../layout/engine";
 import { foldSceneContentOnly } from "../../layout/content-only";
@@ -98,8 +98,13 @@ export function usePipeline(
           let label: string;
 
           if (parserBackend === "vips") {
-            ir = await parsePageWithVIPS(html, url!);
-            label = "VIPS (Visual Blocks)";
+            // The label comes from the run itself: VIPS reports whether it got
+            // a rendered frame (the real algorithm) or fell back to the
+            // rendering-free approximation, and the diagnostics bar must not
+            // claim the former when it did the latter.
+            const vips = await parsePageWithVIPSDetailed(html, url!);
+            ir = vips.ir;
+            label = vips.diagnostics.label;
           } else {
             // Layer 3 is a per-parse provider, not global state: the reader
             // can change key or model between loads and the next parse picks

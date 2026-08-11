@@ -112,8 +112,8 @@ export function estimateTextBearingHeight(
 ): number {
   const minHeight = Math.max(tb.minHeight, fallback);
 
-  const wordCount = countWords(label ?? "");
-  if (wordCount === 0) {
+  const text = (label ?? "").trim();
+  if (text === "") {
     return minHeight;
   }
 
@@ -122,8 +122,7 @@ export function estimateTextBearingHeight(
     return minHeight;
   }
 
-  const wordsPerLine = computeWordsPerLine(panelUsableWidth, tb.font);
-  const lineCount = Math.max(1, Math.ceil(wordCount / wordsPerLine));
+  const lineCount = estimateTextLineCount(text, panelUsableWidth, tb.font);
 
   if (lineCount <= 1) {
     return minHeight;
@@ -268,14 +267,38 @@ export function listItemLabelBlockHeight(
 /**
  * Decide the column count for an XRList given the available panel width.
  *
- * floor(panelUsableWidth / minCardWidth), clamped to [1, maxCardColumns].
+ * floor(panelUsableWidth / minCardWidth), clamped to [1, maxCardColumns] and —
+ * when the caller knows it — to the number of items in the list.
+ *
+ * The item-count clamp is what stops a one- or two-item list from being laid
+ * out on a four-column grid: the lone card kept a quarter-width column with
+ * three empty columns beside it, so its headline wrapped into a tall ragged
+ * stack while the rest of the row sat empty. Two adjacent lists on the same
+ * page — one with a single item, one with four — then rendered at completely
+ * different widths for no reason the reader can see. Every call site must pass
+ * the same count, or the placer and the estimate disagree about card width.
  */
 export function resolveListColumns(
   panelUsableWidth: number,
   metrics: RenderMetrics,
+  itemCount?: number,
 ): number {
   const fromWidth = Math.floor(panelUsableWidth / metrics.minCardWidth);
-  return Math.max(1, Math.min(fromWidth, metrics.maxCardColumns));
+  const capped = Math.max(1, Math.min(fromWidth, metrics.maxCardColumns));
+  return itemCount && itemCount > 0 ? Math.min(capped, itemCount) : capped;
+}
+
+/**
+ * Gutter between cards in an XRList grid, horizontally and between rows.
+ *
+ * Deliberately larger than config.childGapY (10 mm), which is the gap between
+ * stacked blocks INSIDE one container: at that size, two cards side by side
+ * read as one continuous slab with a hairline seam, and their text columns
+ * appear to run into each other. Cards are separate objects and need a gutter
+ * that says so. Scaled off minCardWidth so it tracks the device profile.
+ */
+export function cardGridGap(metrics: RenderMetrics): number {
+  return metrics.minCardWidth * 0.08;
 }
 
 /**
@@ -342,6 +365,23 @@ export function linkHasBlockChildren(
 }
 
 /**
+ * The text a CHILDLESS node draws on its own, exactly as the renderer resolves
+ * it (`content ?? label` — see the XRGenericPanel leaf branch in
+ * scene/dispatcher.tsx). A node whose `content` is the empty string draws
+ * nothing even when it carries a `label`: that is the Wikipedia Z3988 COinS
+ * span, whose label is an OpenURL metadata blob that must never be shown.
+ *
+ * Every place that decides whether a childless node occupies space must ask
+ * this same question, or the space reserved and the pixels drawn disagree.
+ */
+export function leafNodeText(p: {
+  content?: string | null;
+  label?: string | null;
+}): string {
+  return (p.content ?? p.label ?? "").trim();
+}
+
+/**
  * Flatten XRGenericPanel wrappers that contain only inline children.
  *
  * The parser wraps Korean-romanisation spans, citation superscripts, and
@@ -363,16 +403,55 @@ export function linkHasBlockChildren(
  * primitives (XRText, XRLink, XRButton). Wrappers with block children
  * (XRImage, sub-lists) are left in place.
  */
-// REPLACE the existing flattenInlineWrappers in utils.ts with:
+/**
+ * A list item whose entire content is one or two punctuation glyphs — no
+ * letters, no digits.
+ *
+ * The Guardian's cards each carry a pair of bare `<div>`s holding a single "…",
+ * a CSS-driven flourish in their kicker line (46 of them on the front page).
+ * Nothing in the markup marks them as decoration: they parse into ordinary list
+ * items, so each one claimed a full card tile and a whole grid column, and the
+ * reader got a card containing nothing but an ellipsis next to the real
+ * stories. Layout gives these no space and the renderer draws nothing for them.
+ *
+ * Deliberately narrow — list items only, two characters at most, and only when
+ * there is not a single alphanumeric — so it can never swallow real content
+ * like a "1." marker or a lone initial.
+ */
+export function isDecorativeGlyphItem(p: {
+  type: string;
+  content?: string | null;
+  label?: string | null;
+  text?: string;
+  children?: unknown[];
+}): boolean {
+  if (p.type !== "XRListItem") return false;
+  const collect = (n: any, depth: number): string => {
+    if (depth > 3) return "";
+    let out = String(n.text ?? n.content ?? n.label ?? "");
+    for (const c of n.children ?? []) out += collect(c, depth + 1);
+    return out;
+  };
+  const text = collect(p, 0).trim();
+  return text.length > 0 && text.length <= 2 && !/[\p{L}\p{N}]/u.test(text);
+}
+
 export function flattenInlineWrappers<
   T extends { type: string; children?: T[] },
 >(children: T[]): T[] {
-  // An empty XRGenericPanel (no children) is a metadata-only node (e.g. the
-  // Wikipedia Z3988 COinS span). It is transparent — drop it entirely and do
-  // not let it block the "are all siblings inline?" check on the parent.
+  // A childless, textless XRGenericPanel is a metadata-only node (e.g. the
+  // Wikipedia Z3988 COinS span) or a bare structural <div>. It draws nothing —
+  // drop it entirely and do not let it block the "are all siblings inline?"
+  // check on the parent.
+  //
+  // A childless panel that DOES carry text (an unmapped <time>: "11m ago") is
+  // NOT dropped: the renderer draws that text, so hiding the node here would
+  // both lose the text from the prose flow and leave its height unreserved,
+  // letting the sibling below it render on top.
   const isEmptyPanel = (c: T) =>
     c.type === "XRGenericPanel" &&
-    (!Array.isArray((c as any).children) || (c as any).children.length === 0);
+    (!Array.isArray((c as any).children) || (c as any).children.length === 0) &&
+    leafNodeText(c as any) === "";
 
   return children
     .filter((child) => !isEmptyPanel(child)) // drop empty metadata panels
@@ -542,6 +621,28 @@ export function countWrappedLines(text: string, charsPerLine: number): number {
     }
   }
   return lines;
+}
+
+/**
+ * Line count for one string laid out at `usableWidth`, using each token's real
+ * length (countWrappedLines) instead of `ceil(words / avgWordsPerLine)`.
+ *
+ * The averaged model is only defensible for a wide column of ordinary prose.
+ * In a narrow grid card it under-counts badly — a news headline prefixed with
+ * its kicker ("TechnologySpotify to distinguish AI artists…") is one 17-char
+ * token followed by short words, which the average scores as two lines and
+ * troika wraps to six. The card was then sized for two, and the headline ran
+ * out through the timestamp below it. Anything measuring a single run of text
+ * should use this; `estimateInlineFlowHeight` already does the same thing for
+ * multi-child inline runs.
+ */
+export function estimateTextLineCount(
+  text: string,
+  usableWidth: number,
+  m: PrimitiveFontMetrics,
+): number {
+  const charsPerLine = usableWidth / (m.fontSize * m.charWidthRatio);
+  return Math.max(1, countWrappedLines(text, charsPerLine));
 }
 
 export function estimateInlineFlowHeight(

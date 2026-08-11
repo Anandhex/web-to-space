@@ -123,27 +123,48 @@ segmentation as a partition over **atomic elements** and compare two segmentatio
 with **size-weighted BCubed** precision/recall/F. Merges depress precision, splits
 depress recall.
 
-**Comparison.** This is the strongest part of the repo's existing grounding.
-`ir/vips.ts` implements a documented, deliberately-simplified VIPS: a DOM-only DoC
-heuristic (text length, link density, block-child count) with `DOC_THRESHOLD = 0.68`
-and `MAX_DEPTH = 7`, recursively subdividing and wrapping leaf blocks in
-`<section>` before feeding them through `parsePageToIR`. `eval/segmentation.ts`
-implements Kiesel's BCubed methodology with one **explicitly documented deviation**
-— weighting atomic elements by text length instead of rendered pixel area, because
-the harness runs DOM-only under jsdom without CSSOM.
+**Comparison.** This is the strongest part of the repo's grounding, and it was
+rebuilt after the first draft of this survey identified it as the weakest claim in
+the eval.
 
-**Honest assessment.** Both the VIPS port and the BCubed weighting are compromised
-by the same root cause: **no CSSOM.** Original VIPS's entire premise is that
-rendered visual separators carry information the tag tree does not; a DOM-only port
-discards exactly the signal that makes VIPS VIPS. So the comparison "custom parser
-beats VIPS" is currently a comparison against a handicapped VIPS, and should be
-framed that way. **Gap:** run the VIPS backend inside a real rendered iframe (the
-infrastructure already exists for Web2VR) and re-weight BCubed by pixel area. That
-converts the weakest claim in the eval into the strongest.
+`ir/vips-visual.ts` now implements the algorithm as the paper describes it, over a
+genuinely rendered page: all three phases (visual block extraction, the separator
+sweep with the paper's split/update/remove rules, and weighting by gap width,
+`<hr>` coincidence, background change, font shift and tag change), driven by real
+`getBoundingClientRect()` / `getComputedStyle()` data. `ir/render-frame.ts` supplies
+the rendered document via an off-screen frame sandboxed `allow-same-origin` without
+`allow-scripts` — same-origin so the layout is readable, script-free so arbitrary
+remote HTML cannot execute — with external stylesheets fetched through the dev
+proxy and inlined, since a frame with no CSS has no visual signal to read.
 
-**Second gap:** `eval/README.md` notes the proxy ground-truth oracle "degenerates
-to one segment on div-soup pages," which inflates means on exactly the pages where
-segmentation matters most. Gold annotations for the div-soup corpus would fix this.
+`eval/segmentation.ts` weights atomic elements by **rendered pixel area** (Kiesel's
+definition) whenever layout is available, falling back to text length only where it
+is not.
+
+**What remains, and why.** The offline benchmark runs under jsdom, which implements
+the DOM but performs no layout, so *there* both fallbacks still engage. That is now
+a reported condition rather than a silent one: `parsePageWithVIPSDetailed` returns
+`mode` and `fallbackReason`, `scoreSegmentationRun` returns the weighting and VIPS
+fidelity actually used, the generated `report.md` opens with a "Run environment"
+table and marks every affected row, and the in-app comparison panel shows a banner
+directly beneath the verdict cards when any baseline ran degraded. The claim
+"custom parser beats VIPS" can now only be made where it is true — in the browser,
+against the real algorithm.
+
+**Verification without a browser.** `npm run verify:vips` drives the unmodified
+visual algorithm with synthetic geometry (jsdom hosting the DOM; `getBoundingClientRect`
+and `getComputedStyle` stubbed with authored boxes). Fixtures are constructed so
+a tag-tree reading and a visual reading disagree — identical markup that must split
+on a 40px gutter, must split on a background change alone, and must **not** split
+when columns are flush with no colour change. The negative controls matter: the
+DOM-only fallback is a legitimate path, so "it returned blocks" would not have
+shown that the visual one ran. Writing them caught a real bug — phase 1 was
+refusing to divide single-child containers, collapsing every page to one block.
+
+**Remaining gap:** `eval/README.md` notes the proxy ground-truth oracle
+"degenerates to one segment on div-soup pages," which inflates means on exactly the
+pages where segmentation matters most. Gold annotations for the div-soup corpus
+would fix this.
 
 **A directly transferable finding.** Akpınar and Yeşilada (ICWE 2013) re-implemented
 and extended VIPS in Java and ran an online user evaluation on *perceived*
@@ -382,7 +403,7 @@ literature-supported rather than ad hoc.
 | 1 | **No user study.** All computational metrics, no human validation. | BTW (15 participants), SemanticAdapt, Lindlbauer et al. | High, unavoidable for publication |
 | 2 | **Layout is rule-based, not optimised.** The cost terms already exist in `xr-quality.ts` but only score, never drive. | FLARE, Lindlbauer '19, SemanticAdapt, Active Follow | Medium — highest ratio of novelty to work |
 | 3 | **AI fallback layer is a stub.** Third classification layer unexercised; div-soup pages are where it matters and where the corpus is weakest. | SituationAdapt (LLM-in-the-loop) | Medium |
-| 4 | **VIPS baseline is handicapped (no CSSOM).** Comparison currently unfair to the baseline; fixable with the iframe infra already built for Web2VR. | Cai et al. 2003; Kiesel et al. 2020 | Low — pure credibility win |
+| ~~4~~ | ~~**VIPS baseline is handicapped (no CSSOM).**~~ **Done** — `ir/vips-visual.ts` implements the full algorithm over a rendered frame; BCubed weights by pixel area when layout exists; degraded runs are reported in the report, the CSV rows and the in-app panel. | Cai et al. 2003; Kiesel et al. 2020 | — |
 | 5 | **Nothing is user-movable or persistent.** BTW's core finding is that spatial meaning-making requires re-arrangement. | BTW, Documents in Your Hands, Ethereal Planes | Medium |
 | 6 | **No physical-environment awareness.** No plane detection, no surface anchoring; placement is purely egocentric. | FLARE, SemanticAdapt, BTW | Medium |
 | 7 | **No authoring escape hatch.** Inference is all-or-nothing; a site author cannot correct it. | VRIA declarative spec; semantic meta-scenes | Low |

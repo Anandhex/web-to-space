@@ -15,7 +15,9 @@ import {
 import { useTheme } from "../../theme";
 import { safeDim, entryTransform, useHoverScale } from "../surface";
 import {
+  useClipPlanes,
   useRenderMetrics,
+  useLinkColor,
   TextStyleContext,
   NavigateContext,
 } from "../contexts";
@@ -23,6 +25,9 @@ import {
   ClippedText,
   buildInlineRows,
   InlineProseRows,
+  useLinkRects,
+  LINK_UNDERLINE_RISE,
+  LINK_UNDERLINE_THICKNESS,
 } from "../inline";
 
 export interface XRTextMeshProps {
@@ -135,11 +140,34 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
   const w = safeDim(entry.size.width);
   const metrics = useRenderMetrics();
   const theme = useTheme();
-  const accentHex = parseInt(theme.accentCol.replace("#", ""), 16);
+  // Contrast-corrected against the surface this link sits on — the raw theme
+  // accent measures ~2:1 on a list-item card. See useLinkColor.
+  const linkCol = useLinkColor();
+  const accentHex = parseInt(linkCol.replace("#", ""), 16);
   const styleOverride = useContext(TextStyleContext);
   const linkMetric = styleOverride ?? metrics.link.font;
   const { ref, handlers } = useHoverScale(1.0, 1.02);
   const navigate = useContext(NavigateContext);
+
+  // The whole label is one link run: one range covering the string troika is
+  // handed, which useLinkRects turns into per-line rects for the underline.
+  const linkText = primitive.label ?? primitive.href ?? "";
+  const linkRanges = React.useMemo(
+    () =>
+      primitive.href
+        ? [
+            {
+              start: 0,
+              end: linkText.length,
+              href: primitive.href,
+              label: linkText,
+            },
+          ]
+        : [],
+    [primitive.href, linkText],
+  );
+  const { handleSync, hitQuads } = useLinkRects(linkRanges, 0, 0);
+  const clips = useClipPlanes();
 
   const flatChildren = flattenInlineWrappers(primitive.children ?? []);
   const hasInlineChildren = flatChildren.some((c) => isInlinePrimitive(c.type));
@@ -177,18 +205,45 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
           forceColor={accentHex}
         />
       ) : (
-        <ClippedText
-          anchorX="left"
-          anchorY="top"
-          position={[0, 0, 0.002]}
-          fontSize={linkMetric.fontSize}
-          color={primitive.isCurrent ? theme.headingCol : theme.accentCol}
-          fontWeight={primitive.isCurrent ? "700" : "500"}
-          maxWidth={w}
-          lineHeight={linkMetric.lineHeightRatio}
-        >
-          {primitive.label ?? primitive.href ?? ""}
-        </ClippedText>
+        <>
+          <ClippedText
+            anchorX="left"
+            anchorY="top"
+            position={[0, 0, 0.002]}
+            fontSize={linkMetric.fontSize}
+            color={primitive.isCurrent ? theme.headingCol : linkCol}
+            fontWeight={primitive.isCurrent ? "700" : "500"}
+            maxWidth={w}
+            lineHeight={linkMetric.lineHeightRatio}
+            onSync={linkText ? handleSync : undefined}
+          >
+            {linkText}
+          </ClippedText>
+          {/* Underline, for the same reason as the inline runs: on a card the
+              accent must be lightened to stay legible and stops reading as a
+              link on colour alone. Same rects as the prose flow uses. */}
+          {!primitive.isCurrent &&
+            hitQuads.map((r) => (
+              <mesh
+                key={`ul-${r.key}`}
+                position={[
+                  r.position[0],
+                  r.position[1] - r.h / 2 + LINK_UNDERLINE_RISE,
+                  r.position[2],
+                ]}
+                rotation={[0, r.yaw, 0]}
+              >
+                <planeGeometry args={[r.w, LINK_UNDERLINE_THICKNESS]} />
+                <meshBasicMaterial
+                  color={linkCol}
+                  transparent
+                  opacity={0.75}
+                  clippingPlanes={clips}
+                  depthWrite={false}
+                />
+              </mesh>
+            ))}
+        </>
       )}
     </group>
   );

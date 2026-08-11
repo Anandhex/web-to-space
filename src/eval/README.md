@@ -7,7 +7,15 @@ self-referential DOM recall.
 ```bash
 npm run benchmark                 # runs src/eval/corpus/*.html
 npm run benchmark -- some/dir     # runs *.html under a custom directory
+npm run verify:vips               # visual-VIPS checks on synthetic geometry
 ```
+
+> **Read the report's "Run environment" table first.** The offline runner has no
+> layout engine, which changes two things: BCubed weights fall back from pixel
+> area to text length, and VIPS runs its rendering-free approximation instead of
+> the real algorithm. Both are stated in the report and marked on the affected
+> rows. For a fair head-to-head against VIPS, use the in-app comparison panel,
+> which runs in a real browser.
 
 Outputs land in `eval-out/`:
 
@@ -26,9 +34,13 @@ partition of the page's **atomic elements**; two segmentations are compared with
 **size-weighted BCubed** precision/recall/F. Merges depress precision, splits
 depress recall.
 
-- **Deviation from the paper:** Kiesel weights atomic elements by *rendered pixel
-  area*. We run DOM-only (no CSSOM), so we weight by **text length** as a
-  rendering-free proxy for visual mass. This is the single documented deviation.
+- **Weighting:** Kiesel weights atomic elements by *rendered pixel area*, and
+  `extractAtomicUnitSet` does exactly that **whenever the document is laid out**
+  (the in-app panel). The offline runner uses jsdom, which performs no layout, so
+  there it falls back to **text length** as a rendering-free proxy for visual
+  mass. The mode is auto-detected by probing for non-zero geometry and reported
+  as `SegmentationRunInfo.weighting` — scores computed under different weightings
+  are not comparable, so the report prints which one it used.
 - **Chrome excluded:** `<header>`/`<footer>` (banner/contentinfo) subtrees are
   dropped from the atomic units, because the XR scene does not render that page
   chrome — so scores reflect main content only. (Div-soup pages that fake a
@@ -43,6 +55,25 @@ depress recall.
   `vips`, `readability`) is an **independent `Element → Segmentation` function**.
   None routes through `parsePageToIR`, so scores are attributable to the algorithm
   itself — unlike the pipeline backends, which share the semantic parser.
+- **VIPS fidelity:** `segVips` runs the real algorithm (`ir/vips-visual.ts` —
+  visual block extraction, separator detection and weighting over rendered
+  geometry) when layout is available, and the rendering-free DOC recursion when
+  it is not. VIPS is explicitly a *tag-tree independent* algorithm, so scoring
+  the tag-tree stand-in and labelling the row "VIPS" understates it; the mode is
+  reported as `SegmentationRunInfo.vipsMode` and marked on the row.
+
+### Verifying the visual path — `verify-vips-visual.ts`
+`npm run verify:vips` exercises `runVipsVisual` against **synthetic rendered
+geometry**: jsdom hosts the DOM while `getBoundingClientRect` and
+`getComputedStyle` are stubbed with hand-authored boxes. The algorithm under
+test is unmodified, so the visual path stays covered without requiring a
+headless browser.
+
+Each fixture is built so a tag-tree reading and a visual reading *disagree* —
+identical markup that must split one way and not the other. Two are negative
+controls (no gutter, no colour change ⇒ must **not** split), because the DOM-only
+fallback is a legitimate code path and "it returned some blocks" is not evidence
+that the visual one ran.
 
 ### 2. XR spatial quality — `xr-quality.ts`
 Judges the *placed* `LayoutPlan`, not just the IR. Metres throughout; head modelled

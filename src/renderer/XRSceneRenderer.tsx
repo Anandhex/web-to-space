@@ -817,7 +817,11 @@ export function XRSceneRenderer({
                   <FontContext.Provider value={fontType}>
                     {/* Web2VR backend: CSS layout extracted from hidden iframe → 3D */}
                     {parserBackend === "web2vr" && html && (
-                      <Web2VRScene html={html} />
+                      <Web2VRScene
+                        html={html}
+                        url={url}
+                        layoutConfig={deviceProfile.layoutConfig}
+                      />
                     )}
 
                     {parserBackend !== "web2vr" && scene && plan && (

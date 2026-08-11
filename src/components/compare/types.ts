@@ -5,6 +5,9 @@ import type { IRAnalytics } from "../../ir/types";
 import type { LayoutTemplate } from "../../layout/types";
 import type { XRSpatialQuality } from "../../eval/xr-quality";
 import type { SegmentationScore } from "../../eval/segmentation";
+import type { VipsMode, VipsFallbackReason } from "../../ir/vips";
+import type { RenderFrameDiagnostics } from "../../ir/render-frame";
+import type { VipsVisualDiagnostics } from "../../ir/vips-visual";
 
 export interface StageTiming {
   parseMs: number;
@@ -71,6 +74,46 @@ export interface PrimitiveBreakdown {
   [type: string]: number;
 }
 
+// ─────────────────────────────────────────────────────────────
+// CSSOM usage
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * What a backend saw of the *rendered* page, as opposed to the markup.
+ *
+ * Every other section of this panel compares backends on DOM-derived output, and
+ * that quietly hides the single biggest difference between them: only VIPS reads
+ * the CSSOM at all, and whether it *got* the CSSOM on this particular run
+ * decides whether the row is Cai et al.'s algorithm or a tag-tree approximation
+ * wearing its name. The reader needs both facts side by side — "does this
+ * backend use rendered layout" and "did it have any on this page" — otherwise a
+ * VIPS row is uninterpretable.
+ *
+ * `usesCssom: false` is a statement about the algorithm; `mode: "dom-only"` with
+ * `usesCssom: true` is a statement about this run.
+ */
+export interface CssomUsage {
+  /** Does this backend consult rendered layout by design? */
+  usesCssom: boolean;
+  /** What it actually ran as this time. */
+  mode: VipsMode;
+  /** Why the rendered path was not used, when it was not. */
+  fallbackReason: VipsFallbackReason;
+  /** Off-screen frame render stats — null when no frame was rendered. */
+  render: RenderFrameDiagnostics | null;
+  /** Visual block / separator stats — null when the visual path did not run. */
+  visual: VipsVisualDiagnostics | null;
+}
+
+/** A backend that never renders: its CSSOM column is "not applicable". */
+export const DOM_ONLY_BY_DESIGN: CssomUsage = {
+  usesCssom: false,
+  mode: "dom-only",
+  fallbackReason: null,
+  render: null,
+  visual: null,
+};
+
 export interface HTMLGroundTruth {
   headingCount: number;
   navCount: number;
@@ -105,6 +148,16 @@ export interface HTMLGroundTruth {
 
 export interface BackendStats {
   label: string;
+  /**
+   * A caveat that must travel with this row's numbers.
+   *
+   * Set when a backend ran in a degraded mode that makes a head-to-head
+   * comparison unfair to it — currently only VIPS, which falls back to a
+   * rendering-free approximation when no layout engine is available. A win over
+   * a degraded baseline is not a win over the algorithm, and the panel says so
+   * rather than leaving the reader to assume otherwise.
+   */
+  caveat?: string;
   timing: StageTiming;
   htmlSizeKb: number;
   irNodeCount: number;
@@ -128,6 +181,8 @@ export interface BackendStats {
   xr: XRSpatialQuality | null;
   /** BCubed segmentation quality of THIS backend's produced scene vs reference. */
   segmentation: SegmentationScore;
+  /** Whether this backend used the rendered page, and what it got. */
+  cssom: CssomUsage;
   error?: string;
 }
 

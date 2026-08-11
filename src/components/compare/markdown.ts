@@ -208,6 +208,60 @@ export function buildMarkdownTable(
       "Fallback height estimates",
       stats.map((s) => s.fallbackHeightCount),
     ),
+    // Travels with the table by design: every number above depends on whether
+    // VIPS had the rendered page, and a pasted table that omits that reads as a
+    // fair head-to-head when it may not be one.
+    "**CSSOM (rendered layout)** | " + stats.map(() => "").join(" | "),
+    row(
+      "Reads rendered layout",
+      stats.map((s) => (s.cssom.usesCssom ? "yes" : "no")),
+    ),
+    row(
+      "Path taken this run",
+      stats.map((s) =>
+        !s.cssom.usesCssom
+          ? "DOM only (by design)"
+          : s.cssom.mode === "visual"
+            ? "rendered CSSOM"
+            : `fell back to DOM — ${s.cssom.fallbackReason ?? "unknown"}`,
+      ),
+    ),
+    row(
+      "Frame status",
+      stats.map((s) => s.cssom.render?.status ?? "—"),
+    ),
+    row(
+      "Frame total (ms)",
+      stats.map((s) => s.cssom.render?.elapsedMs ?? "—"),
+    ),
+    row(
+      "Stylesheets inlined / found",
+      stats.map((s) =>
+        s.cssom.render
+          ? `${s.cssom.render.stylesheetsInlined} / ${s.cssom.render.stylesheetsFound}`
+          : "—",
+      ),
+    ),
+    row(
+      "CSS rules applied",
+      stats.map((s) => s.cssom.render?.cssRulesApplied ?? "—"),
+    ),
+    row(
+      "Visual block pool (phase 1)",
+      stats.map((s) => s.cssom.visual?.poolSize ?? "—"),
+    ),
+    row(
+      "Leaf blocks (phase 3)",
+      stats.map((s) => s.cssom.visual?.leafCount ?? "—"),
+    ),
+    row(
+      "Max separator weight",
+      stats.map((s) => s.cssom.visual?.maxSeparatorWeight ?? "—"),
+    ),
+    row(
+      "Mean Degree of Coherence",
+      stats.map((s) => s.cssom.visual?.meanDoc ?? "—"),
+    ),
   ].join("\n");
 }
 

@@ -20,12 +20,15 @@ import type {
 import {
   computeWordsPerLine,
   containerInsetX,
-  countWords,
   estimateInlineFlowHeight,
+  isDecorativeGlyphItem,
   estimateTextBearingHeight,
+  estimateTextLineCount,
+  cardGridGap,
   FIXED_HEIGHT_LOOKUP,
   flattenInlineWrappers,
   isInlinePrimitive,
+  leafNodeText,
   listItemLabelBlockHeight,
   mergeAdjacentTextRuns,
   resolveListColumns,
@@ -60,11 +63,10 @@ function _estimateHeadingHeight(
       ),
     );
   }
-  const wordCount = countWords(primitive.content ?? primitive.label ?? "");
-  const wpl = computeWordsPerLine(panelUsableWidth, m);
+  const text = (primitive.content ?? primitive.label ?? "").trim();
   return Math.max(
     minH,
-    Math.ceil(Math.max(1, wordCount) / wpl) * lineH + m.verticalPadding,
+    estimateTextLineCount(text, panelUsableWidth, m) * lineH + m.verticalPadding,
   );
 }
 
@@ -446,14 +448,11 @@ function _estimateFigureHeight(
   const captionLabel = (primitive.label ?? "").trim();
   if (!captionLabel) return imageH;
   const m = metrics.figureCaption;
-  const wordCount = countWords(captionLabel);
   const captionH =
-    wordCount === 0
-      ? 0
-      : Math.ceil(wordCount / computeWordsPerLine(panelUsableWidth, m)) *
-          m.fontSize *
-          m.lineHeightRatio +
-        m.verticalPadding;
+    estimateTextLineCount(captionLabel, panelUsableWidth, m) *
+      m.fontSize *
+      m.lineHeightRatio +
+    m.verticalPadding;
   return imageH + config.childGapY + captionH;
 }
 
@@ -575,13 +574,11 @@ export function estimateHeight(
           return cfg.minHeight ? Math.max(cfg.minHeight(metrics), h) : h;
         }
         // Fallback: no children — estimate from label text.
-        const wordCount = countWords(
-          primitive.content ?? primitive.label ?? "",
-        );
-        const wpl = computeWordsPerLine(panelUsableWidth, m);
+        const labelText = (primitive.content ?? primitive.label ?? "").trim();
         const lineH = m.fontSize * m.lineHeightRatio;
         const fromLabel =
-          Math.ceil(Math.max(1, wordCount) / wpl) * lineH + m.verticalPadding;
+          estimateTextLineCount(labelText, panelUsableWidth, m) * lineH +
+          m.verticalPadding;
         const floor = cfg.minHeight
           ? cfg.minHeight(metrics)
           : lineH + m.verticalPadding;
@@ -592,14 +589,12 @@ export function estimateHeight(
         // XRText: synthetic nodes carry __fm with the right font metrics.
         if (primitive.type === "XRText") {
           const text = (primitive as XRText).text || "";
-          const wordCount = countWords(text);
           const m: PrimitiveFontMetrics =
             (primitive as unknown as { __fm?: PrimitiveFontMetrics }).__fm ??
             metrics.paragraph;
           const lineH = m.fontSize * m.lineHeightRatio;
-          if (wordCount === 0) return lineH + m.verticalPadding;
-          const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
-          const lineCount = Math.ceil(wordCount / Math.max(1, wordsPerLine));
+          if (text.trim() === "") return lineH + m.verticalPadding;
+          const lineCount = estimateTextLineCount(text, panelUsableWidth, m);
           return Math.max(
             lineH + m.verticalPadding,
             lineCount * lineH + m.verticalPadding,
@@ -651,7 +646,6 @@ export function estimateHeight(
         }
         const labelText = primitive.content ?? primitive.label ?? "";
         if (labelText.trim() !== "") {
-          const wordCount = countWords(labelText);
           const m = metrics.paragraph;
           const lineH = m.fontSize * m.lineHeightRatio;
           // No m.verticalPadding here: that constant represents a real
@@ -661,10 +655,7 @@ export function estimateHeight(
           // siblings. Including it double-counted spacing and left a dead
           // gap around short captions like "3 weeks ago".
           const fromLabel =
-            Math.max(
-              1,
-              Math.ceil(wordCount / computeWordsPerLine(panelUsableWidth, m)),
-            ) * lineH;
+            estimateTextLineCount(labelText, panelUsableWidth, m) * lineH;
           return fixedFloor !== undefined
             ? Math.max(fixedFloor, fromLabel)
             : fromLabel;
@@ -702,15 +693,10 @@ export function estimateHeight(
 
   const labelText = primitive.content ?? primitive.label ?? "";
   if (labelText.trim() !== "") {
-    const wordCount = countWords(labelText);
     const m = metrics.paragraph;
     const lineH = m.fontSize * m.lineHeightRatio;
     const fromLabel =
-      Math.max(
-        1,
-        Math.ceil(wordCount / computeWordsPerLine(panelUsableWidth, m)),
-      ) *
-        lineH +
+      estimateTextLineCount(labelText, panelUsableWidth, m) * lineH +
       m.verticalPadding;
     return fixedFloor !== undefined
       ? Math.max(fixedFloor, fromLabel)
@@ -718,6 +704,44 @@ export function estimateHeight(
   }
 
   return fixedFloor ?? metrics.fallbackElementHeight;
+}
+
+/**
+ * Text carried directly on a node (not in a child XRText). An unmapped
+ * <label>/<address>/<time> becomes a CHILDLESS XRGenericPanel whose only
+ * content is this string — it still renders and must be placed, not skipped
+ * as "empty". Resolved exactly the way the renderer resolves it, via
+ * leafNodeText — see the note there about empty content plus a metadata label.
+ */
+export function nodeHasText(p: XRPrimitive): boolean {
+  return leafNodeText(p) !== "";
+}
+
+/**
+ * A container-typed node whose whole purpose is to group children — when
+ * childless AND textless it draws nothing at all (XRGenericPanel is a
+ * transparent wrapper in the renderer) and must reserve no space.
+ *
+ * Leaf VISUAL primitives (XRImage, XRMediaPlayer, XRSeparator, XRProgressBar,
+ * form controls, …) are paginate:"atomic" and draw themselves with no children
+ * or text, so they must NEVER be treated as empty.
+ *
+ * This is the single definition shared by the three places that must agree on
+ * which nodes occupy vertical space, or content lands on top of other content:
+ *   - the paginator's own flow loops (engine/pagination.ts),
+ *   - the height estimate (sumChildrenHeights below, via flattenAndMerge,
+ *     which drops exactly these wrappers),
+ *   - the placer (stackChildrenSimple in engine.ts).
+ * Markup like the Guardian's front-page cards nests five or six of these empty
+ * divs around every card: when the placer charged each one a
+ * fallbackElementHeight the estimate had not reserved, the card's image and
+ * headline were pushed ~0.3 m below the space their parent had budgeted and
+ * rendered on top of the following siblings.
+ */
+export function isEmptyContainerNode(p: XRPrimitive): boolean {
+  if (p.children.length > 0 || nodeHasText(p)) return false;
+  const cfg = PRIMITIVE_CONFIG[p.type];
+  return cfg?.paginate === "recursive" || cfg?.forceNewPage === true;
 }
 
 export function sumChildrenHeights(
@@ -798,12 +822,23 @@ function _estimateListHeight(
     panelUsableWidth -
       containerInsetX(panelUsableWidth, config.panelPaddingX) * 2,
   );
-  const columns = resolveListColumns(childEstimateWidth, metrics);
+  // Decoration-only items reserve nothing — see isDecorativeGlyphItem, and
+  // placeListGrid, which excludes the same items from the grid it places.
+  const items = primitive.children.filter((c) => !isDecorativeGlyphItem(c));
+  // Column count comes from the list's OWN width, not the inset-reduced child
+  // width, because that is the basis both placers use (stackChildrenSimple is
+  // handed the list width; placeListGrid the panel's). Measuring it here at the
+  // narrower width put a 1.18 m list one column below the 1.28 m the placer
+  // resolved — three columns instead of four — so a single row of four cards
+  // was budgeted as two rows. That phantom row added ~0.32 m to every card
+  // holding a related-links grid.
+  const columns = resolveListColumns(panelUsableWidth, metrics, items.length);
+  const gutter = cardGridGap(metrics);
   const cardWidth = Math.max(
     0.025,
-    (childEstimateWidth - config.childGapY * (columns - 1)) / columns,
+    (childEstimateWidth - gutter * (columns - 1)) / columns,
   );
-  const itemHeights = primitive.children.map((child) =>
+  const itemHeights = items.map((child) =>
     estimateHeight(child, cardWidth, metrics, config, new Set(ancestors), scene),
   );
 
@@ -814,7 +849,7 @@ function _estimateListHeight(
     totalRowHeight += Math.max(...rowItems);
     rowCount += 1;
   }
-  const gapTotal = config.childGapY * Math.max(0, rowCount - 1);
+  const gapTotal = gutter * Math.max(0, rowCount - 1);
   return paddingContrib + totalRowHeight + gapTotal;
 }
 
@@ -1174,11 +1209,16 @@ export const PRIMITIVE_CONFIG: Partial<
   XRGenericPanel: {
     heightStrategy: "children",
     paginate: "recursive",
-    ownsXPadding: true,
-    // Same reasoning as XRSection/XRArticle: XRGenericPanel never forces its
-    // own page (paginate: "recursive"), so — as the catch-all wrapper for any
-    // unmapped/structurally-inferred grouping — it's always nested inside a
-    // panel or card that already provides edge padding.
+    // The renderer draws NO surface for an XRGenericPanel (dispatcher.tsx's
+    // default branch treats it as a transparent wrapper), so there is no edge
+    // for an inset to hold content away from — and, being the catch-all for
+    // every unmapped <div>/<span>, it nests deeply: a news-site card sits
+    // inside five or six of them, each charging another panelPaddingX. That
+    // compounded to ~0.26 m of phantom indent, squeezing the card's real
+    // content into the middle of its tile. Padding is the job of whichever
+    // ancestor actually draws a surface. Same reasoning as ownsTopPadding
+    // below (and XRSection/XRArticle).
+    ownsXPadding: false,
     ownsTopPadding: false,
     slot: "main",
   },

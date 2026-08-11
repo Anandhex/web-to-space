@@ -15,7 +15,7 @@ import * as THREE from "three";
 import { isInlinePrimitive } from "../../layout/utils";
 import { useTheme, type XRTheme } from "../theme";
 import { FontContext } from "../XRSceneRenderer";
-import { useClipPlanes, NavigateContext } from "./contexts";
+import { useClipPlanes, useLinkColor, NavigateContext } from "./contexts";
 import { LinkPreviewContext } from "../scene/link-preview";
 import {
   usePanelCurve,
@@ -224,6 +224,13 @@ export function buildRowMeta(
   segments: InlineSeg[],
   theme: XRTheme,
   forceColor?: number,
+  /**
+   * Link colour for the surface these rows sit on. The theme accent is tuned
+   * against the panel background and measures barely 2:1 on a list-item card,
+   * so callers pass the corrected colour from useLinkColor(); omitted, this
+   * falls back to the raw accent.
+   */
+  linkColor?: string,
 ): {
   text: string;
   colorRanges: Record<number, number> | null;
@@ -232,7 +239,10 @@ export function buildRowMeta(
   const colorRanges: Record<number, number> = {};
   let hasColor = false;
 
-  const accentHex = parseInt(theme.accentCol.replace("#", ""), 16);
+  const accentHex = parseInt(
+    (linkColor ?? theme.accentCol).replace("#", ""),
+    16,
+  );
   const bodyHex = parseInt(theme.bodyCol.replace("#", ""), 16);
   const emphasisHex = parseInt(theme.emphasisCol.replace("#", ""), 16);
 
@@ -344,6 +354,10 @@ export function InlineProseRows({
 
 // Transparent click target for one contiguous run of a link's glyphs on a
 // single visual line, in the ProseRow group's local coordinate space.
+/** Underline thickness (metres) and how far above the glyph box bottom it sits. */
+export const LINK_UNDERLINE_THICKNESS = 0.0012;
+export const LINK_UNDERLINE_RISE = 0.0015;
+
 interface LinkHitRect {
   cx: number;
   cy: number;
@@ -381,55 +395,23 @@ interface ProseRowProps {
   clearCurvedBacking?: boolean;
 }
 
+
 /**
- * One inline prose row: a single troika <Text> mesh plus transparent click
- * targets for any link segments.
+ * Glyph-accurate rects for a row's link runs, as both click targets and
+ * underline geometry.
  *
- * The click targets are derived from troika's actual per-character
- * `caretPositions` (read after layout via onSync) rather than a fixed
- * average-glyph-width estimate. troika wraps on word boundaries with
- * proportional glyph widths, so a guessed (charOffset × avgWidth) box drifts
- * off the visible link — especially once the merged row text wraps. Reading
- * the real caret bounds keeps the hit area locked to the glyphs the user
- * sees, and a link that wraps across lines produces one rect per line.
+ * Shared by the inline prose flow and the standalone XRLinkMesh so a link is
+ * decorated and clickable the same way wherever it is drawn. `linkRanges` are
+ * character ranges into the exact string handed to troika.
  */
-function ProseRow({
-  segments,
-  rowY,
-  xInset,
-  usableWidth,
-  fontSize,
-  lineHeightRatio,
-  forceColor,
-  clearCurvedBacking,
-}: ProseRowProps) {
-  const navigate = useContext(NavigateContext);
-  const linkPreview = useContext(LinkPreviewContext);
+export function useLinkRects(
+  linkRanges: { start: number; end: number; href: string; label: string }[],
+  xInset: number,
+  rowY: number,
+) {
   const curve = usePanelCurve();
-  const theme = useTheme();
-  const { text, colorRanges } = buildRowMeta(segments, theme, forceColor);
   const [hitRects, setHitRects] = React.useState<LinkHitRect[]>([]);
 
-  // Char ranges (start inclusive, end exclusive) of each link segment within
-  // the merged row string. Offsets match the string handed to troika, so they
-  // index directly into caretPositions.
-  const linkRanges = React.useMemo(() => {
-    const ranges: { start: number; end: number; href: string; label: string }[] =
-      [];
-    let offset = 0;
-    for (const seg of segments) {
-      if (seg.kind === "link" && seg.href) {
-        ranges.push({
-          start: offset,
-          end: offset + seg.text.length,
-          href: seg.href,
-          label: seg.text,
-        });
-      }
-      offset += seg.text.length;
-    }
-    return ranges;
-  }, [segments]);
 
   const handleSync = React.useCallback(
     (mesh: THREE.Mesh) => {
@@ -553,6 +535,65 @@ function ProseRow({
       });
     });
   }, [hitRects, curve, xInset]);
+  return { handleSync, hitQuads };
+}
+
+/**
+ * One inline prose row: a single troika <Text> mesh plus transparent click
+ * targets for any link segments.
+ *
+ * The click targets are derived from troika's actual per-character
+ * `caretPositions` (read after layout via onSync) rather than a fixed
+ * average-glyph-width estimate. troika wraps on word boundaries with
+ * proportional glyph widths, so a guessed (charOffset × avgWidth) box drifts
+ * off the visible link — especially once the merged row text wraps. Reading
+ * the real caret bounds keeps the hit area locked to the glyphs the user
+ * sees, and a link that wraps across lines produces one rect per line.
+ */
+function ProseRow({
+  segments,
+  rowY,
+  xInset,
+  usableWidth,
+  fontSize,
+  lineHeightRatio,
+  forceColor,
+  clearCurvedBacking,
+}: ProseRowProps) {
+  const navigate = useContext(NavigateContext);
+  const linkPreview = useContext(LinkPreviewContext);
+  const clips = useClipPlanes();
+  const theme = useTheme();
+  const linkColor = useLinkColor();
+  const { text, colorRanges } = buildRowMeta(
+    segments,
+    theme,
+    forceColor,
+    linkColor,
+  );
+
+  // Char ranges (start inclusive, end exclusive) of each link segment within
+  // the merged row string. Offsets match the string handed to troika, so they
+  // index directly into caretPositions.
+  const linkRanges = React.useMemo(() => {
+    const ranges: { start: number; end: number; href: string; label: string }[] =
+      [];
+    let offset = 0;
+    for (const seg of segments) {
+      if (seg.kind === "link" && seg.href) {
+        ranges.push({
+          start: offset,
+          end: offset + seg.text.length,
+          href: seg.href,
+          label: seg.text,
+        });
+      }
+      offset += seg.text.length;
+    }
+    return ranges;
+  }, [segments]);
+
+  const { handleSync, hitQuads } = useLinkRects(linkRanges, xInset, rowY);
 
   return (
     <group>
@@ -569,10 +610,38 @@ function ProseRow({
         letterSpacing={0.005}
         overflowWrap="break-word"
         clearCurvedBacking={clearCurvedBacking}
-        onSync={navigate ? handleSync : undefined}
+        onSync={linkRanges.length > 0 ? handleSync : undefined}
       >
         {text}
       </ClippedText>
+      {/* Link underline. Colour alone can't carry "this is a link": on a card
+          tile the accent has to be lightened so far to stay legible (see
+          useLinkColor) that it reads as plain light text next to the heading
+          beside it. The rule is the same one the web settled on — don't signal
+          with hue only. Drawn from the very rects the click targets use, so the
+          line tracks the real glyphs, wraps line by line, and follows the panel
+          curve. */}
+      {hitQuads.map((r) => (
+        <mesh
+          key={`ul-${r.key}`}
+          position={[
+            r.position[0],
+            r.position[1] - r.h / 2 + LINK_UNDERLINE_RISE,
+            r.position[2],
+          ]}
+          rotation={[0, r.yaw, 0]}
+          renderOrder={RENDER_ORDER_TEXT}
+        >
+          <planeGeometry args={[r.w, LINK_UNDERLINE_THICKNESS]} />
+          <meshBasicMaterial
+            color={linkColor}
+            transparent
+            opacity={0.75}
+            clippingPlanes={clips}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
       {navigate &&
         hitQuads.map((r) => (
           <mesh
