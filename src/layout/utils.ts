@@ -71,6 +71,31 @@ export function containerInsetX(
 }
 
 /** Compute words-per-line for a given panel width and font metrics. */
+/**
+ * Safety factor on the wrap width used by every line-count estimate.
+ *
+ * `charWidthRatio` is one AVERAGE advance for a whole font size, so a run whose
+ * last line lands near the column limit can wrap one line later than predicted
+ * — and an under-estimate is not symmetric with an over-estimate: the block is
+ * drawn taller than the space reserved for it and runs straight through the
+ * timestamp and the card below (a headline + kicker measured at 34 columns
+ * wrapped to 4 lines where the estimate said 3). Measuring at a slightly
+ * narrower width biases the count upward only for runs actually near a
+ * boundary; a short heading with a half-empty last line is unaffected.
+ *
+ * This is the same trade list items already make with `listItemWrapCushion`,
+ * applied at the wrap step so every text-bearing primitive gets it.
+ */
+export const WRAP_SAFETY = 0.94;
+
+/** Columns available for wrapping `width` metres of `m`-sized text. */
+export function charsPerLineFor(
+  width: number,
+  m: PrimitiveFontMetrics,
+): number {
+  return Math.max(1, Math.floor((width * WRAP_SAFETY) / (m.fontSize * m.charWidthRatio)));
+}
+
 export function computeWordsPerLine(
   panelUsableWidth: number,
   m: PrimitiveFontMetrics,
@@ -539,11 +564,21 @@ export function mergeAdjacentTextRuns<
         // Nothing to merge
         result.push(child);
       } else {
-        // Produce a single fused node (shallow-clone the first node)
+        // Produce a single fused node (shallow-clone the first node).
+        // Fusing happens BEFORE buildInlineRows sees the runs, so the
+        // element-boundary space has to be restored here too — otherwise the
+        // renderer's own join rule has no boundary left to act on and two
+        // separate elements read as one word.
+        let fused = parts[0];
+        for (let k = 1; k < parts.length; k++) {
+          if (fused !== "" && needsInlineSeparator(fused, parts[k]))
+            fused += " ";
+          fused += parts[k];
+        }
         const merged: T = {
           ...child,
           id: child.id, // keep the first node's id for map lookups
-          text: parts.join(""),
+          text: fused,
         } as T;
         result.push(merged);
       }
@@ -641,8 +676,35 @@ export function estimateTextLineCount(
   usableWidth: number,
   m: PrimitiveFontMetrics,
 ): number {
-  const charsPerLine = usableWidth / (m.fontSize * m.charWidthRatio);
-  return Math.max(1, countWrappedLines(text, charsPerLine));
+  return Math.max(1, countWrappedLines(text, charsPerLineFor(usableWidth, m)));
+}
+
+/**
+ * Does the join between two adjacent inline runs need a space inserted?
+ *
+ * Segments come from adjacent ELEMENTS, and the browser almost always puts
+ * something between them — a news card's kicker is a block `<div>` rendered on
+ * its own line above the headline `<span>`, with no whitespace between the tags
+ * for the parser to keep. Concatenating the runs therefore produced one word:
+ * "ReviewI Give You My Silence…", "UK weatherAndy Burnham…".
+ *
+ * A space everywhere would be wrong too — runs also split mid-phrase around a
+ * symbol ("£" + "4.4bn"), where the browser shows no gap. So add one only where
+ * the join runs a word straight into the start of the next phrase.
+ *
+ * SHARED so the renderer and the height estimate cannot drift: buildInlineRows
+ * (renderer/primitives/inline.tsx) inserts the space into the drawn segments,
+ * and estimateInlineFlowHeight below inserts it into the string it measures. If
+ * only one side did, a join that adds a wrap line would be drawn taller than
+ * the space reserved for it and would overrun the block below.
+ */
+export function needsInlineSeparator(prev: string, next: string): boolean {
+  return /[\w)\]]$/.test(prev) && /^[A-Z0-9(['"\u2018\u201c]/.test(next);
+}
+
+/** Collapse an inline run's whitespace the way a browser does (see below). */
+export function collapseInlineWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ");
 }
 
 export function estimateInlineFlowHeight(
@@ -690,12 +752,21 @@ export function estimateInlineFlowHeight(
 
   for (const child of children) {
     if (isInlinePrimitive(child.type)) {
-      const t =
+      // Mirror buildInlineRows exactly: collapse each run's whitespace the way
+      // a browser does (the parser keeps HTML source newlines + indentation,
+      // which troika would render as HARD breaks), then restore the boundary
+      // the markup dropped between adjacent element runs. Measuring the raw
+      // concatenation instead reserves height for a different string than the
+      // one that actually gets drawn.
+      const t = collapseInlineWhitespace(
         (child as { text?: string }).text ??
-        (child as { label?: string }).label ??
-        "";
-      if (t) runText += t;
-      else if (child.wordCount != null && child.wordCount > 0)
+          (child as { label?: string }).label ??
+          "",
+      );
+      if (t) {
+        if (runText !== "" && needsInlineSeparator(runText, t)) runText += " ";
+        runText += t;
+      } else if (child.wordCount != null && child.wordCount > 0)
         fallbackWords += child.wordCount;
     } else {
       // Block element — flush inline first, then account for the block

@@ -12,11 +12,16 @@ import React, { useContext } from "react";
 import { Text } from "@react-three/drei";
 import * as THREE from "three";
 
-import { isInlinePrimitive } from "../../layout/utils";
+import {
+  isInlinePrimitive,
+  needsInlineSeparator,
+  collapseInlineWhitespace,
+} from "../../layout/utils";
 import { useTheme, type XRTheme } from "../theme";
 import { FontContext } from "../XRSceneRenderer";
 import { useClipPlanes, useLinkColor, NavigateContext } from "./contexts";
 import { LinkPreviewContext } from "../scene/link-preview";
+import { useConsumeScrollDrag } from "./scroll-viewport";
 import {
   usePanelCurve,
   curveLift,
@@ -160,6 +165,21 @@ export function buildInlineRows(children: any[]): InlineRow[] {
     currentSegs = [];
   };
 
+  /**
+   * Restore the boundary the markup dropped before appending a segment.
+   *
+   * The rule itself lives in needsInlineSeparator (layout/utils) because the
+   * layout engine's estimateInlineFlowHeight has to measure the SAME string
+   * this draws — see the note there. The space is appended to the PREVIOUS
+   * segment so a link segment's own text (and therefore its glyph range and
+   * underline) never gains a leading space.
+   */
+  const push = (seg: InlineSeg): void => {
+    const prev = currentSegs[currentSegs.length - 1];
+    if (prev && needsInlineSeparator(prev.text, seg.text)) prev.text += " ";
+    currentSegs.push(seg);
+  };
+
   for (const child of children) {
     if (isInlinePrimitive(child.type)) {
       // Collapse HTML inline whitespace: the parser keeps source newlines and
@@ -169,14 +189,11 @@ export function buildInlineRows(children: any[]): InlineRow[] {
       // so it overlaps the next block. Browsers collapse any run of whitespace
       // in inline flow to a single space; do the same here so wrapping is
       // driven only by maxWidth and matches the height estimate.
-      const text: string = (
-        child.text ??
-        child.label ??
-        child.content ??
-        ""
-      ).replace(/\s+/g, " ");
+      const text: string = collapseInlineWhitespace(
+        child.text ?? child.label ?? child.content ?? "",
+      );
       if (child.type === "XRLink") {
-        currentSegs.push({ kind: "link", text, href: child.href ?? null });
+        push({ kind: "link", text, href: child.href ?? null });
       } else {
         // Bold/italic can come from a single componentType ("b"/"strong"/
         // "i"/"em") or from an accumulated styleTags stack (e.g. ["i","b"]
@@ -194,7 +211,7 @@ export function buildInlineRows(children: any[]): InlineRow[] {
           componentType === "i" ||
           styleTags.includes("em") ||
           styleTags.includes("i");
-        currentSegs.push({
+        push({
           kind: "text",
           text,
           ...(bold ? { bold: true } : {}),
@@ -562,6 +579,10 @@ function ProseRow({
 }: ProseRowProps) {
   const navigate = useContext(NavigateContext);
   const linkPreview = useContext(LinkPreviewContext);
+  // A drag that scrolls a panel must not also follow the link it started
+  // on. Returns true (and clears the flag) when this click is the tail of
+  // a scroll gesture — see ScrollViewport.
+  const consumeScrollDrag = useConsumeScrollDrag();
   const clips = useClipPlanes();
   const theme = useTheme();
   const linkColor = useLinkColor();
@@ -651,6 +672,7 @@ function ProseRow({
             onClick={(e) => {
               e.stopPropagation();
               linkPreview?.clear();
+              if (consumeScrollDrag()) return;
               navigate(r.href);
             }}
             onPointerOver={(e) => {

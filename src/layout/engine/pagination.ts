@@ -230,6 +230,29 @@ export function paginateContentPanel(
     return false;
   }
 
+  /**
+   * May this normally-atomic node be flowed as a container instead?
+   *
+   * An atomic node is stamped to exactly one page and clipped to the viewport
+   * there. It carries no pageEndIndex, so whatever falls past the page
+   * boundary is never drawn on the following page — the tail is lost, not
+   * continued. Tolerable for a node that merely overshoots; not for one taller
+   * than an entire empty page, which a news front's lead card routinely is
+   * (image + headline + standfirst + a row of sublinks).
+   *
+   * Such a node is a container in all but classification, so the fix is to flow
+   * it through placeRecursiveContainer like any other. The one thing that must
+   * not happen is flowing a node whose children its own mesh draws as prose:
+   * inline children (and wrappers that flatten to inline) are rendered by the
+   * parent, so placing them here as well would draw them twice. The check
+   * mirrors the renderer's `hasOnlyBlockChildren` exactly.
+   */
+  function canFlowAsContainer(p: XRPrimitive): boolean {
+    if (p.children.length === 0) return false;
+    const flat = flattenInlineWrappers(p.children);
+    return flat.length > 0 && flat.every((c) => !isInlinePrimitive(c.type));
+  }
+
   // Core continuation loop shared by createParagraphContinuations and
   // createSyntheticTextContinuations. Handles first-page word counting, the
   // wordOffset=0 fast path, and the per-overflow-page iteration. Callers
@@ -629,13 +652,81 @@ export function paginateContentPanel(
   // Both splitSection and the main pagination loop need the same register-recurse-
   // setHeight logic. Function declarations hoist so mutual recursion works fine.
 
+  /**
+   * The first page any of `node`'s descendants was actually PLACED on, and the
+   * topmost panel-relative y they occupy there. Used to detect a container
+   * whose whole subtree flowed onto a later page than the container itself.
+   * Returns null when nothing in the subtree was placed.
+   */
+  function firstPlacedDescendant(
+    node: XRPrimitive,
+  ): { page: number; y: number } | null {
+    let best: { page: number; y: number } | null = null;
+    const walk = (n: XRPrimitive): void => {
+      for (const c of n.children) {
+        const page = pageIndexMap[c.id];
+        const pos = positionMap.get(c.id);
+        if (page !== undefined && pos !== undefined) {
+          if (best === null || page < best.page || (page === best.page && pos.y > best.y))
+            best = { page, y: pos.y };
+        }
+        walk(c);
+      }
+    };
+    walk(node);
+    return best;
+  }
+
+  /**
+   * Re-home a container that reserved space on a page none of its content
+   * occupies.
+   *
+   * Both placers below capture the container's page + y BEFORE recursing, then
+   * size it from how far the cursor moved. When the recursion's first act is to
+   * start a fresh page — or when the container opened at the very bottom of the
+   * current one — every child lands on a later page while the container's own
+   * entry stays behind, claiming the rest of the abandoned page. The renderer
+   * then draws an empty backing there and the paginator counts the page as
+   * full, which is what left a card's image alone above a tall dead gap. The
+   * same arithmetic could also run the "remaining space" negative, and a
+   * negative height makes the next sibling stack backwards into this one.
+   */
+  function homeContainer(
+    node: XRPrimitive,
+    startPage: number,
+    startY: number,
+    heightOnStartPage: () => number,
+  ): void {
+    const firstContent = firstPlacedDescendant(node);
+    if (firstContent !== null && firstContent.page > startPage) {
+      pageIndexMap[node.id] = firstContent.page;
+      positionMap.set(node.id, {
+        x: config.panelPaddingX,
+        y: firstContent.y,
+        z: 0,
+      });
+      heightMap.set(
+        node.id,
+        Math.max(
+          0,
+          pageIdx === firstContent.page
+            ? firstContent.y - cursorY
+            : firstContent.y - (-VIEWPORT + config.panelPaddingTop),
+        ),
+      );
+      return;
+    }
+    pageIndexMap[node.id] = startPage;
+    positionMap.set(node.id, { x: config.panelPaddingX, y: startY, z: 0 });
+    heightMap.set(node.id, Math.max(0, heightOnStartPage()));
+  }
+
   function placeSectionNode(node: XRPrimitive, initialY: number): void {
     const pageBeforeRecursion = pageIdx;
     pageIndexMap[node.id] = pageIdx;
     positionMap.set(node.id, { x: config.panelPaddingX, y: initialY, z: 0 });
     splitSection(node);
-    heightMap.set(
-      node.id,
+    homeContainer(node, pageBeforeRecursion, initialY, () =>
       pageIdx === pageBeforeRecursion
         ? pageHeight - config.panelPaddingTop
         : VIEWPORT - config.panelPaddingTop,
@@ -820,6 +911,15 @@ export function paginateContentPanel(
         // other grid rows scheduled on it, scrambling the reading order.
         // Use the shared itemsOnPage-based check instead, which has no such
         // exemption for an item this size.
+        //
+        // Full width was not enough: this card is taller than an entire empty
+        // page, so placing it atomically clips its tail away for good. Flow it
+        // instead (see the matching escalation in splitSection's leaf path).
+        if (h > emptyPageBudget && canFlowAsContainer(item)) {
+          placeRecursiveContainer(item, h);
+          i += 1;
+          continue;
+        }
         if (breakIfDoesNotFit(h)) rowsOnPage = 0;
         placeRow([item], [usableW], [h]);
         i += 1;
@@ -914,8 +1014,7 @@ export function paginateContentPanel(
     } else {
       splitSection(node);
     }
-    heightMap.set(
-      node.id,
+    homeContainer(node, wrapperPage, wrapperY, () =>
       pageIdx === wrapperPage
         ? wrapperY - cursorY
         : wrapperY - (-VIEWPORT + config.panelPaddingTop),
@@ -960,10 +1059,30 @@ export function paginateContentPanel(
         const wouldStrandHeading =
           lastPlacedType === "XRHeading" && itemsOnPage === 1;
 
+        // A section reached through splitSection is NESTED inside another
+        // container — a teaser card inside a feed list, a sub-section inside
+        // its parent section — not a top-level chapter. Breaking the page
+        // unconditionally for it (which is what the main loop does, correctly,
+        // for the panel's own flow children) is what shredded a news feed into
+        // near-empty pages: every card carries a headline, so isSectionLike's
+        // "has a title" test passes and each one demanded a fresh page. Pages
+        // went out at a third full, and a card's image was left stranded above
+        // the gap while its headline started the next page.
+        //
+        // So nested sections break only when they genuinely do not fit, the
+        // same rule every other flowed child obeys. Top-level sections keep
+        // their clean-start behaviour in the main loop below.
+        const nestedFits =
+          pageHeight +
+            (itemsOnPage > 0 ? config.childGapY : 0) +
+            estimateHeight(sc, childWidth, metrics, config, new Set(), scene) <=
+          VIEWPORT;
+
         if (
           config.sectionStartsOnNewPage !== false &&
           itemsOnPage > 0 &&
-          !wouldStrandHeading
+          !wouldStrandHeading &&
+          !nestedFits
         ) {
           const absOffsetBase = pageYOffsets[pageIdx] ?? 0;
           pageYOffsets.push(absOffsetBase + VIEWPORT);
@@ -1000,6 +1119,16 @@ export function paginateContentPanel(
         new Set(),
         scene,
       );
+
+      // Taller than an entire empty page: no page break can rescue it, and the
+      // continuation logic below only covers text. Flow it as a container so
+      // its parts paginate instead of its tail being clipped away for good —
+      // see canFlowAsContainer.
+      if (sch > VIEWPORT - config.panelPaddingTop && canFlowAsContainer(sc)) {
+        placeRecursiveContainer(sc, sch);
+        lastPlacedType = sc.type;
+        continue;
+      }
 
       // Unlike the main pagination loop, this path previously placed leaves
       // wherever the cursor happened to be with no "does it fit?" pre-check —

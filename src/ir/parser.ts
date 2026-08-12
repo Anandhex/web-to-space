@@ -26,6 +26,7 @@ import {
   readNodeAttributes,
   assignIfDefined,
   directTextContent,
+  renderedTextContent,
   resolveRoleFromElement,
   resolveNodeLabel,
   confidenceForSource,
@@ -404,7 +405,7 @@ async function createNode(
     isGenericWrapper && hasOnlyText && resolvedRole === "generic";
 
   if (isPureTextWrapper) {
-    const text = element.textContent?.trim() || "";
+    const text = renderedTextContent(element);
     if (text) {
       const textId = `${parentId}-text-${ctx.counters.node++}`;
       ctx.nodes[textId] = createBaseNode(textId, "text", parentId, ctx, {
@@ -592,7 +593,7 @@ async function createNode(
     textBearingRoles.has(resolvedRole) &&
     resolvedRole !== "text" // don't create a child for a text node itself
   ) {
-    const rawText = element.textContent?.trim() || "";
+    const rawText = renderedTextContent(element);
     if (rawText) {
       const textId = `${id}-synth-text-${ctx.counters.node++}`;
       ctx.nodes[textId] = createBaseNode(textId, "text", id, ctx, {
@@ -619,7 +620,7 @@ async function createNode(
       return !hasBlockChild
         ? textNodes.length > 0
           ? textNodes.join(" ")
-          : (element.textContent?.trim() ?? null)
+          : (renderedTextContent(element) || null)
         : null;
     })(),
     source: resolvedSource,
@@ -690,7 +691,7 @@ function resolveNodeLabelSmart(
       for (const heading of Array.from(
         element.querySelectorAll("h1, h2, h3, h4, h5, h6"),
       )) {
-        const headingText = heading.textContent?.trim();
+        const headingText = renderedTextContent(heading);
         if (headingText) return headingText.slice(0, config.labelMaxChars);
       }
     }
@@ -1015,7 +1016,7 @@ async function handleHeadingSection(
 
   const label =
     resolveNodeLabel(child, ctx.config, ctx.doc) ??
-    child.textContent?.trim() ??
+    (renderedTextContent(child) || null) ??
     sectionId;
   ctx.landmarkRecords.push({
     id: sectionId,
@@ -1236,7 +1237,7 @@ async function createListItem(
   // so XRListItem always has children and the engine can treat it uniformly.
   let hasSynthTextChild = false;
   if (childIds.length === 0) {
-    const rawText = contentEl.textContent?.trim() ?? "";
+    const rawText = renderedTextContent(contentEl);
     if (rawText) {
       const textId = `${id}-synth-text-${ctx.counters.node++}`;
       ctx.nodes[textId] = createBaseNode(textId, "text", id, ctx, {
@@ -1265,7 +1266,7 @@ async function createListItem(
     label:
       resolveNodeLabel(contentEl, ctx.config, ctx.doc) ||
       resolveNodeLabel(element, ctx.config, ctx.doc),
-    content: hasSynthTextChild ? null : contentEl.textContent?.trim() || null,
+    content: hasSynthTextChild ? null : renderedTextContent(contentEl) || null,
     children: childIds,
     state: readNodeState(contentEl),
     attributes: mergedAttrs,
@@ -1640,7 +1641,11 @@ export function collectLandmarkIds(tree: LandmarkTOCNode): string[] {
   return ids;
 }
 
-function pruneUIChrome(doc: Document): void {
+function pruneUIChrome(
+  doc: Document,
+  includeSvg: boolean,
+  includeCanvas: boolean,
+): void {
   const PRUNE_SELECTORS = [
     ".mw-editsection",
     ".mw-editsection-bracket",
@@ -1668,6 +1673,15 @@ function pruneUIChrome(doc: Document): void {
     "span[aria-hidden='true']:empty",
     ".Z3988",
     "span[title^='ctx_ver=']",
+    // Deferred-hydration skeletons. A site that renders islands client-side
+    // (the Guardian's <gu-island deferUntil="visible">, and the same pattern
+    // under other names) ships a placeholder subtree that its own JS swaps for
+    // the real content. We parse static HTML and never run that JS, so all
+    // that survives is a set of contentless boxes — which still reserve height
+    // and paginate, reading as empty tiles where "most viewed" or the comment
+    // thread should be.
+    '[data-name="placeholder"]',
+    '[data-testid="placeholder"]',
     "style",
     "script",
   ];
@@ -1675,6 +1689,109 @@ function pruneUIChrome(doc: Document): void {
     try {
       doc.querySelectorAll(sel).forEach((el) => el.parentNode?.removeChild(el));
     } catch {}
+  }
+
+  pruneResponsiveDuplicates(doc);
+  pruneEmptyContainers(doc, includeSvg, includeCanvas);
+}
+
+/** An element's text, whitespace-collapsed, for structural comparison. */
+function comparableText(el: Element): string {
+  return (el.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The nearest enclosing "one piece of content" boundary. Duplicate detection is
+ * scoped to it so that a headline legitimately appearing in two different parts
+ * of a page (a feed and a "most viewed" rail) is never mistaken for a
+ * responsive duplicate.
+ */
+const DUPLICATE_SCOPE = "li, article, section, [data-link-name]";
+
+/**
+ * Drop breakpoint duplicates.
+ *
+ * Responsive sites routinely emit the same content once per breakpoint and hide
+ * all but one copy with a media query — the Guardian ships every card's
+ * `<ul class="sublinks">` twice, in two differently-classed wrappers. A browser
+ * shows one; we have no CSSOM, so both reach the IR. The cost is not only the
+ * visible double: each duplicate doubles its card's estimated height, which is
+ * what pushes a card past the page box and inflates the page count.
+ *
+ * Rule: within one content boundary, if two subtrees carry identical text and
+ * neither contains the other, the later one is a duplicate. The length floor
+ * keeps short repeats that are genuinely meant to appear twice ("Read more",
+ * a byline echoed in a caption) out of scope.
+ */
+function pruneResponsiveDuplicates(doc: Document): void {
+  const MIN_TEXT_LEN = 30;
+  const seen = new Map<string, Element>();
+
+  for (const el of Array.from(doc.body?.querySelectorAll("*") ?? [])) {
+    // Removing a subtree disconnects its descendants; they are still in this
+    // snapshot, so skip anything already detached.
+    if (!el.isConnected) continue;
+
+    const text = comparableText(el);
+    if (text.length < MIN_TEXT_LEN) continue;
+
+    const first = seen.get(text);
+    if (!first || !first.isConnected) {
+      seen.set(text, el);
+      continue;
+    }
+    // A wrapper always repeats its own child's text — never a duplicate.
+    if (first.contains(el) || el.contains(first)) continue;
+
+    const scope = el.closest(DUPLICATE_SCOPE);
+    if (!scope || scope !== first.closest(DUPLICATE_SCOPE)) continue;
+
+    el.parentNode?.removeChild(el);
+  }
+}
+
+/**
+ * Drop containers that carry nothing renderable.
+ *
+ * Layout reserves height for every node it is given, so a contentless box is
+ * not free: it becomes a blank tile, a dead gap in a section, or — when enough
+ * of them land together — an entirely blank page. Elements are visited
+ * deepest-first so a container emptied by this pass is reconsidered in the same
+ * sweep rather than surviving as a wrapper around nothing.
+ *
+ * `svg`/`canvas` count as content only when the parser is configured to keep
+ * them; otherwise the walk would drop them later anyway and leave the wrapper
+ * behind as an empty box.
+ */
+function pruneEmptyContainers(
+  doc: Document,
+  includeSvg: boolean,
+  includeCanvas: boolean,
+): void {
+  // Structural elements that carry meaning while empty: table geometry (an
+  // empty cell still holds a column open), explicit separators, and the
+  // document/landmark roots the walk needs to find.
+  const KEEP_TAGS = new Set([
+    "HTML", "HEAD", "BODY", "MAIN", "TEMPLATE",
+    "TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TD", "TH", "COL", "COLGROUP",
+    "HR", "BR",
+  ]);
+
+  const CONTENTFUL =
+    "img, picture, video, audio, iframe, embed, object, " +
+    "input, select, textarea, button, [aria-label], [aria-labelledby]" +
+    (includeSvg ? ", svg" : "") +
+    (includeCanvas ? ", canvas" : "");
+
+  // Document order reversed puts descendants ahead of their ancestors.
+  const all = Array.from(doc.body?.querySelectorAll("*") ?? []).reverse();
+  for (const el of all) {
+    if (!el.isConnected) continue;
+    if (KEEP_TAGS.has(el.tagName)) continue;
+    if (el.getAttribute("role") === "main") continue;
+    if ((el.textContent ?? "").trim().length > 0) continue;
+    if (el.matches(CONTENTFUL) || el.querySelector(CONTENTFUL)) continue;
+    el.parentNode?.removeChild(el);
   }
 }
 
@@ -1771,7 +1888,7 @@ export const parsePageToIR = async (
   const parser = new DOMParser();
   const parsedDoc = parser.parseFromString(htmlString, "text/html");
 
-  pruneUIChrome(parsedDoc);
+  pruneUIChrome(parsedDoc, config.includeSvg, config.includeCanvas);
 
   const skipTags = new Set(SKIP_TAGS);
   if (config.includeSvg) skipTags.delete("svg");

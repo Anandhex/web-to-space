@@ -42,7 +42,10 @@
 import React from "react";
 import { Text } from "@react-three/drei";
 
-import type { LandmarkSlot, SlotName } from "../../layout/types";
+import type { LandmarkSlot, LayoutPlan, SlotName } from "../../layout/types";
+import type { SemanticScene, XRPrimitive } from "../../mapper/types";
+import { classifyLandmark } from "../../layout/engine/classify";
+import { entryOnPage } from "./contexts";
 import { useTheme, type XRTheme } from "../theme";
 import { Surface } from "../primitives/surface";
 import { Z_LAYER_ACCENT, Z_LAYER_OVERLAY_TEXT } from "../primitives/constants";
@@ -430,16 +433,107 @@ function DeskPlate({
   );
 }
 
+// ── Which rails are actually in use ──────────────────────────
+
+/** Types that put something on screen by themselves rather than via children. */
+const SELF_DRAWING_TYPES = new Set([
+  "XRImage",
+  "XRMediaPlayer",
+  "XRSeparator",
+  "XRProgressBar",
+  "XRToggle",
+  "XRSlider",
+  "XRComboBox",
+  "XRSearchBox",
+  "XRFormField",
+  "XRButton",
+]);
+
+/**
+ * Does any part of this subtree draw something on `page`?
+ *
+ * `inheritedOnPage` carries the parent's answer down to nodes that have no
+ * LayoutEntry of their own — the inline children an ancestor draws as prose.
+ * Defaulting those to visible would report an aside as occupied on the very
+ * pages the mutual-exclusion pass gated it off, since only entries carry the
+ * page window.
+ */
+function drawsOnPage(
+  node: XRPrimitive,
+  plan: LayoutPlan,
+  page: number,
+  inheritedOnPage = true,
+): boolean {
+  const entry = plan.entries[node.id];
+  if (entry?.suppressed) return false;
+
+  const onPage = entry ? entryOnPage(entry, page) : inheritedOnPage;
+  if (onPage) {
+    if (SELF_DRAWING_TYPES.has(node.type)) return true;
+    if ((node.content ?? node.label ?? "").trim().length > 0) return true;
+  }
+  return node.children.some((child) =>
+    drawsOnPage(child, plan, page, onPage),
+  );
+}
+
+/**
+ * The slots that have something visible in them on this page.
+ *
+ * `LayoutPlan.occupiedSlots` cannot answer this: it is filled when a landmark
+ * is *classified* to a slot, before pagination and before the mutual-exclusion
+ * pass decides which pages that landmark is actually shown on. Mounting rails
+ * from it therefore hangs an empty slab beside the reading panel on every page
+ * where the aside is gated off — or where the landmark routed there turned out
+ * to hold nothing renderable at all (a deferred-hydration shell, a wrapper the
+ * source page fills with JS we never run).
+ *
+ * A rail is furniture for content. With no content there is nothing to mount.
+ */
+export function slotsWithVisibleContent(
+  scene: SemanticScene,
+  plan: LayoutPlan,
+  page: number,
+): Set<SlotName> {
+  const occupied = new Set<SlotName>();
+
+  const consider = (primitive: XRPrimitive): void => {
+    const slot = classifyLandmark(primitive);
+    if (occupied.has(slot)) return;
+    if (!plan.slots?.[slot]) return;
+    if (drawsOnPage(primitive, plan, page)) occupied.add(slot);
+  };
+
+  for (const child of scene.root.children) consider(child);
+
+  // Section-nested asides are re-homed to the complementary slot by the
+  // engine's extraction pass, so they never appear among the scene's top-level
+  // children — but they are exactly what fills that rail on most article pages.
+  if (!occupied.has("complementary")) {
+    for (const primitive of Object.values(scene.primitives)) {
+      if (primitive.type !== "XRComplementary") continue;
+      if (plan.entries[primitive.id]?.pageIndex === undefined) continue;
+      if (drawsOnPage(primitive, plan, page)) {
+        occupied.add("complementary");
+        break;
+      }
+    }
+  }
+
+  return occupied;
+}
+
 // ── The desk ─────────────────────────────────────────────────
 
 export interface DeskDecorProps {
   /** The plan's landmark slots — the desk is derived entirely from these. */
   slots: Partial<Record<SlotName, LandmarkSlot>>;
   /**
-   * The slots a landmark was actually placed into (`LayoutPlan.occupiedSlots`).
-   * A template offers a rail whether or not the document has anything for it,
-   * so mounting the roster rather than the occupancy hung an empty black slab
-   * beside the table of contents on every page without a `<nav>`.
+   * The slots that have visible content on the current page — see
+   * `slotsWithVisibleContent`. A template offers a rail whether or not the
+   * document has anything for it, and a landmark routed to a rail may be
+   * page-gated off or hold nothing at all, so mounting anything broader than
+   * this hangs an empty slab beside the reading panel.
    */
   occupied: ReadonlySet<SlotName>;
   pageCount: number;

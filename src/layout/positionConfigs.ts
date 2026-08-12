@@ -21,6 +21,7 @@ import {
   computeWordsPerLine,
   containerInsetX,
   estimateInlineFlowHeight,
+  charsPerLineFor,
   isDecorativeGlyphItem,
   estimateTextBearingHeight,
   estimateTextLineCount,
@@ -127,7 +128,30 @@ function _estimateLinkHeight(
       ),
     );
   }
-  return metrics.link.minHeight;
+  // A childless link still carries text — its accessible name, in `label` or
+  // `content`. Returning the flat one-line minHeight for it reserves one line
+  // no matter how long that text is, so a card-title link narrow enough to
+  // wrap (a four-up news grid puts each card at a quarter of the panel) draws
+  // over whatever the engine placed beneath it. Measure the wrap.
+  return estimateTextBearingHeight(
+    linkText(primitive),
+    panelUsableWidth,
+    metrics.link,
+    metrics.fallbackElementHeight,
+  );
+}
+
+/**
+ * The text a childless link/button draws: its own content, else its name.
+ *
+ * `??` is wrong here. A card-title anchor is parsed with `content: ""` and the
+ * headline in `label`, and an empty string is not nullish — so `content ?? label`
+ * yields "", the height estimate sees no text, and the link is given a single
+ * line to draw four in. Fall back on blank, not just on absent.
+ */
+function linkText(primitive: XRPrimitive): string {
+  const content = (primitive.content ?? "").trim();
+  return content || (primitive.label ?? "").trim();
 }
 
 function _estimateButtonHeight(
@@ -153,7 +177,13 @@ function _estimateButtonHeight(
       ),
     );
   }
-  return metrics.button.minHeight;
+  // Same as a childless link: measure the label rather than assuming one line.
+  return estimateTextBearingHeight(
+    linkText(primitive),
+    panelUsableWidth,
+    metrics.button,
+    metrics.fallbackElementHeight,
+  );
 }
 
 function _estimateListItemHeight(
@@ -488,10 +518,7 @@ function estimateMixedContentHeight(
   const m = fontMetrics ?? metrics.paragraph;
   const wordsPerLine = computeWordsPerLine(flowWidth, m);
   // Real columns per line — drives greedy token wrapping (long ISBNs/URLs).
-  const charsPerLine = Math.max(
-    1,
-    Math.floor(flowWidth / (m.fontSize * m.charWidthRatio)),
-  );
+  const charsPerLine = charsPerLineFor(flowWidth, m);
   const lineH = m.fontSize * m.lineHeightRatio;
 
   if (hasAnyInline) {

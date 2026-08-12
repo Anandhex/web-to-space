@@ -270,28 +270,30 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
     };
   }, [proxiedSrc]);
 
-  // Cover-fit the texture to the reserved box (CSS `object-fit: cover`).
+  // Contain-fit the texture in the reserved box (CSS `object-fit: contain`).
   //
   // The engine sizes the box from the image's intrinsic dimensions when the
   // markup declares them — then this is a no-op. When it doesn't (a news-site
   // <img> with the size only in a CDN query string), resolveImageDisplaySize
   // falls back to full-width × the profile's max image height, which for a
-  // card-wide box is a ~4:1 letterbox: a 5:4 press photo drawn into it was
-  // squashed to a smear. Crop the texture to the box's aspect instead of
-  // stretching it, so the photo keeps its proportions and reads as the banner
-  // the source page shows.
-  React.useEffect(() => {
-    const img = texture?.image as { width?: number; height?: number } | undefined;
-    if (!texture || !img?.width || !img?.height) return;
+  // card-wide box is a ~4:1 letterbox. Stretching a 5:4 press photo into that
+  // smears it, and CROPPING it to fill (the previous behaviour) silently threw
+  // away most of the frame — a photo would render as an unreadable detail with
+  // its subject sliced off the top.
+  //
+  // So shrink the drawn plane to the texture's own aspect and centre it,
+  // letterboxing against the backing Surface behind it. The whole image is
+  // always visible; the reserved box is unchanged, so layout is untouched.
+  const [fitW, fitH] = React.useMemo(() => {
+    const img = texture?.image as
+      | { width?: number; height?: number }
+      | undefined;
+    if (!texture || !img?.width || !img?.height) return [w, imgH];
     const boxAspect = w / imgH;
     const imgAspect = img.width / img.height;
-    const [rx, ry] =
-      imgAspect > boxAspect
-        ? [boxAspect / imgAspect, 1] // source wider than the box → crop sides
-        : [1, imgAspect / boxAspect]; // source taller → crop top/bottom
-    texture.repeat.set(rx, ry);
-    texture.offset.set((1 - rx) / 2, (1 - ry) / 2);
-    texture.needsUpdate = true;
+    return imgAspect > boxAspect
+      ? [w, w / imgAspect] // source wider than the box → bars top/bottom
+      : [imgH * imgAspect, imgH]; // source taller → bars left/right
   }, [texture, w, imgH]);
 
   return (
@@ -305,8 +307,8 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
           renders as meshBasicMaterial's plain white default forever. */}
       {texture && (
         <CurvedTexturePlane
-          width={w}
-          height={imgH}
+          width={fitW}
+          height={fitH}
           position={[w / 2, -imgH / 2, Z_LAYER_IMAGE]}
           renderOrder={RENDER_ORDER_IMAGE}
         >

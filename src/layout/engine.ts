@@ -496,8 +496,7 @@ export function layoutPrimitive(
           newPlacedHeightMap,
           newPlacedWidthMap,
         );
-      }
-    } else if (placedPositionMap && placedHeightMap) {
+      }    } else if (placedPositionMap && placedHeightMap) {
       // ── Inside a paginated panel ──────────────────────────────────────────────
       // paginateContentPanel's stampDescendants pass has written panel-absolute
       // positions for EVERY descendant into placedPositionMap. There is one

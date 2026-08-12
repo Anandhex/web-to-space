@@ -93,6 +93,7 @@ import {
 } from "./panels";
 import { NavigateContext } from "../primitives/contexts";
 import { safeDim, useHoverScale } from "../primitives/surface";
+import { ScrollViewport } from "../primitives/scroll-viewport";
 
 export interface DispatcherProps {
   primitive: XRPrimitive;
@@ -165,6 +166,10 @@ export function PrimitiveDispatcher({
   // Read BEFORE the XRListItem branches below install their own provider, so a
   // card sees whether its PARENT was a card — not its own value.
   const insideCard = React.useContext(InsideCardContext);
+  // World Y of the enclosing panel's top edge (0 at the top level). Used by the
+  // XRComplementary branch to turn a nested aside's parent-relative y into the
+  // world y that clip planes are evaluated in.
+  const parentPanelOriginY = React.useContext(PanelOriginYContext);
   const cardTile = cardTileColor(theme, insideCard);
 
   const renderChild = useCallback(
@@ -504,6 +509,26 @@ export function PrimitiveDispatcher({
       const compCurve: PanelCurve | null = compRadius
         ? { radius: compRadius, centerX: entry.size.width / 2 }
         : null;
+      // buildPanelClipPlanes takes a WORLD y — clip planes are evaluated in
+      // world space. `entry.position.y` is world-space only for a TOP-LEVEL
+      // landmark. An <aside> nested inside another one carries a
+      // parent-relative y (landmark slots stack their children with
+      // stackChildrenSimple), so passing it raw builds planes roughly a slot
+      // height below the geometry and clips the entire subtree away — the whole
+      // rail renders as an empty slab. Compose with the enclosing panel's world
+      // origin, which is 0 at the top level, so both cases give the true world y.
+      const compWorldTopY = parentPanelOriginY + entry.position.y;
+      // How far the aside's content actually reaches below its own top edge.
+      // A landmark slot is a fixed rectangle and stackChildrenSimple cannot
+      // paginate, so an aside taller than its slot had its tail clipped away
+      // with no way to reach it. Measuring the real extent lets ScrollViewport
+      // give that tail somewhere to go — the same affordance the TOC rail has.
+      const compContentHeight = primitive.children.reduce((deepest, child) => {
+        const childEntry = plan.entries[child.id];
+        if (!childEntry || childEntry.suppressed) return deepest;
+        const bottom = -(childEntry.position.y - childEntry.size.height);
+        return bottom > deepest ? bottom : deepest;
+      }, 0);
       return (
         <AtPos entry={entry}>
           <PanelCurveContext.Provider value={compCurve}>
@@ -514,17 +539,23 @@ export function PrimitiveDispatcher({
                 because items here carry parent-relative (not panel-absolute) Y
                 (see CardSelfClipContext). */}
             <ClipPlanesContext.Provider
-              value={buildPanelClipPlanes(entry.position.y, entry.size.height)}
+              value={buildPanelClipPlanes(compWorldTopY, entry.size.height)}
             >
-              <PanelOriginYContext.Provider value={entry.position.y}>
+              <PanelOriginYContext.Provider value={compWorldTopY}>
                 <CardSelfClipContext.Provider value={false}>
-                  <DispatchChildren
-                    primitives={primitive.children}
-                    plan={plan}
-                    pageState={pageState}
-                    setPage={setPage}
-                    primitiveMap={primitiveMap}
-                  />
+                  <ScrollViewport
+                    width={entry.size.width}
+                    height={entry.size.height}
+                    contentHeight={compContentHeight}
+                  >
+                    <DispatchChildren
+                      primitives={primitive.children}
+                      plan={plan}
+                      pageState={pageState}
+                      setPage={setPage}
+                      primitiveMap={primitiveMap}
+                    />
+                  </ScrollViewport>
                 </CardSelfClipContext.Provider>
               </PanelOriginYContext.Provider>
             </ClipPlanesContext.Provider>

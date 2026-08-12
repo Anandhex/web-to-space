@@ -56,15 +56,28 @@ export function PaginatingPanelRenderer({
   const depth = React.useContext(StackDepthContext);
 
   // Curve resolution. A top content panel carries its own authored curveRadius
-  // and becomes the cylinder origin (its group stays at the flat slot position).
-  // A NESTED paginating container (curveRadius 0) inherits the parent cylinder:
-  // its group is tangent-placed on that cylinder, and it re-centres a fresh
-  // curve on its own width so its panel-relative children bend correctly.
+  // and becomes the cylinder origin: its group stays at the flat slot position,
+  // so the surface is tangent at the panel's CENTRE and children bend about
+  // `width / 2`.
+  //
+  // A NESTED paginating container (curveRadius 0) inherits the parent cylinder
+  // and is tangent-placed on it by curvePoint below — which puts its group
+  // ORIGIN on the cylinder, already yawed to the tangent there. Its children
+  // must therefore bend about x = 0, not about its own half-width: re-centring
+  // on the half-width applies a second rotation on top of the tangent one, and
+  // the child surface peels off the cylinder it is supposed to lie on. Inside an
+  // <aside> that put the item tiles ~11 mm BEHIND the aside's own backing, so
+  // the opaque backing occluded most of each tile and the rail read as flat,
+  // clipped boxes.
   const inheritedCurve = usePanelCurve();
   const ownRadius = resolveCurveRadius(entry.curveRadius);
   const subtreeRadius = ownRadius ?? inheritedCurve?.radius ?? null;
+  const tangentPlaced = !!inheritedCurve && !ownRadius;
   const panelCurve: PanelCurve | null = subtreeRadius
-    ? { radius: subtreeRadius, centerX: entry.size.width / 2 }
+    ? {
+        radius: subtreeRadius,
+        centerX: tangentPlaced ? 0 : entry.size.width / 2,
+      }
     : null;
 
   const ex0 = entry.position.x;
@@ -74,7 +87,7 @@ export function PaginatingPanelRenderer({
   let ey = ey0;
   let ez = ez0;
   let yaw = entry.rotation.y;
-  if (inheritedCurve && !ownRadius) {
+  if (tangentPlaced && inheritedCurve) {
     const placed = curvePoint(
       ex0,
       ey0,
@@ -87,9 +100,20 @@ export function PaginatingPanelRenderer({
   }
   const rot: [number, number, number] = [entry.rotation.x, yaw, entry.rotation.z];
 
+  // Clip planes are evaluated in WORLD space, but `ey` is this group's position
+  // inside whatever group encloses it. Those coincide for a top-level content
+  // panel (PanelOriginYContext defaults to 0) and NOT for a paginating
+  // container nested in a landmark slot — an XRGenericPanel inside an <aside>
+  // is laid out by stackChildrenSimple, so its y is parent-relative (≈ −0.056,
+  // the panel's top padding). Passing that raw put the planes a whole slot
+  // height below the geometry and clipped the entire subtree away, which is why
+  // the complementary rail rendered as an empty slab with its content present
+  // in the scene but invisible. Compose with the enclosing panel's world origin.
+  const parentPanelOriginY = React.useContext(PanelOriginYContext);
+  const worldTopY = parentPanelOriginY + ey;
   const panelClipPlanes = useMemo(
-    () => buildPanelClipPlanes(ey, entry.size.height),
-    [ey, entry.size.height],
+    () => buildPanelClipPlanes(worldTopY, entry.size.height),
+    [worldTopY, entry.size.height],
   );
 
   // XRComplementary nodes extracted to the world-space slot by the engine.
@@ -125,7 +149,7 @@ export function PaginatingPanelRenderer({
         <PanelCurveContext.Provider value={panelCurve}>
           <PanelBacking entry={zeroedEntry(entry)} curve={panelCurve} />
           <ClipPlanesContext.Provider value={panelClipPlanes}>
-            <PanelOriginYContext.Provider value={ey}>
+            <PanelOriginYContext.Provider value={worldTopY}>
               <StackDepthContext.Provider value={depth + 1}>
                 {primitive.children
                   .filter((child) => !isExtractedComplementary(child, plan))
@@ -535,7 +559,14 @@ export function PaginationControls({
       {/* Previous */}
       <group
         position={[-btnX, 0, 0.006]}
-        onClick={() => onPageChange(Math.max(firstPage, currentPage - 1))}
+        onClick={(e) => {
+          // R3F delivers a pointer event to EVERY object the ray crosses, not
+          // just the nearest one. Without this the same click also lands on the
+          // card click-backing behind the bar and navigates away — pressing the
+          // pager read as clicking the story underneath it.
+          e.stopPropagation();
+          onPageChange(Math.max(firstPage, currentPage - 1));
+        }}
       >
         <Surface
           width={BTN_SIZE}
@@ -573,7 +604,10 @@ export function PaginationControls({
       {/* Next */}
       <group
         position={[btnX, 0, 0.006]}
-        onClick={() => onPageChange(Math.min(lastPage, currentPage + 1))}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPageChange(Math.min(lastPage, currentPage + 1));
+        }}
       >
         <Surface
           width={BTN_SIZE}

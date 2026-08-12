@@ -123,6 +123,90 @@ export function readNodeState(element: Element): IRNodeState {
   };
 }
 
+/**
+ * Intrinsic pixel dimensions recovered from an image URL.
+ *
+ * Modern news sites and image CDNs almost never put `width`/`height` on the
+ * `<img>` — on a Guardian front page 97 of 98 images carry no dimension
+ * attributes at all. Without an aspect ratio resolveImageDisplaySize falls back
+ * to (full column width x the profile's max image height), a ~4:1 letterbox
+ * that a 5:4 press photo can only be stretched or cropped into.
+ *
+ * The size is still there, just in the URL — as explicit `width`/`height` (or
+ * `w`/`h`) params, as an aspect `crop=5:4` / `ar=16:9`, or as the CDN's crop
+ * rectangle path segment (`.../845_0_4240_3392/master/4240.jpg` = x_y_w_h).
+ * Query params are the generic case and are tried first; the path rectangle is
+ * a guarded last resort (four ints in one segment, immediately before a
+ * `master`/`quality`-style segment) so it cannot fire on arbitrary paths.
+ *
+ * Only the ASPECT RATIO is trusted. A CDN's `width=465` is the size the page
+ * asked the CDN to encode for that breakpoint, NOT the size the image is drawn
+ * at — a "most viewed" thumbnail requested at width=120 is still rendered as a
+ * full card. Taking those numbers literally shrank images to 12cm stamps. So
+ * the ratio is normalised to a canonical height here, letting the layout's own
+ * `metrics.image.height` cap decide the size exactly as it did before, with
+ * only the width now corrected to the true aspect.
+ *
+ * Returns null when nothing usable is present — callers keep the old fallback.
+ */
+const CANONICAL_IMAGE_PX = 1000;
+export function intrinsicDimsFromUrl(
+  src: string | null,
+): { width: number; height: number } | null {
+  if (!src) return null;
+  let q: URLSearchParams;
+  let pathname: string;
+  try {
+    const u = new URL(src, "https://x.invalid");
+    q = u.searchParams;
+    pathname = u.pathname;
+  } catch {
+    return null;
+  }
+
+  const num = (...keys: string[]): number | null => {
+    for (const k of keys) {
+      const raw = q.get(k);
+      if (raw === null) continue;
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    return null;
+  };
+
+  const fromAspect = (a: number) => ({
+    width: Math.round(CANONICAL_IMAGE_PX * a),
+    height: CANONICAL_IMAGE_PX,
+  });
+
+  const w = num("width", "w");
+  const h = num("height", "h");
+  if (w !== null && h !== null) return fromAspect(w / h);
+
+  // Aspect params: "5:4", "16:9" (":" often arrives percent-encoded).
+  let aspect: number | null = null;
+  for (const k of ["crop", "ar", "aspect", "aspect_ratio"]) {
+    const raw = q.get(k);
+    const m = raw?.match(/^(\d{1,4})\s*[:x]\s*(\d{1,4})$/);
+    if (m) {
+      const a = parseInt(m[1], 10) / parseInt(m[2], 10);
+      if (Number.isFinite(a) && a > 0) { aspect = a; break; }
+    }
+  }
+
+  if (aspect === null) {
+    // CDN crop rectangle: /<x>_<y>_<w>_<h>/master/… — use the w/h of the crop.
+    const m = pathname.match(/\/(\d{1,5})_(\d{1,5})_(\d{2,5})_(\d{2,5})\/(?=[a-z]+\/)/);
+    if (m) {
+      const cw = parseInt(m[3], 10);
+      const ch = parseInt(m[4], 10);
+      if (cw > 0 && ch > 0) aspect = cw / ch;
+    }
+  }
+
+  return aspect === null ? null : fromAspect(aspect);
+}
+
 export function readNodeAttributes(
   element: Element,
   context?: ParseContext,
@@ -132,6 +216,14 @@ export function readNodeAttributes(
     if (!context?.sourceUrl) return url;
     return new URL(url, context.sourceUrl).href;
   };
+
+  // Fall back to dimensions encoded in the image URL when the markup omits
+  // width/height (see intrinsicDimsFromUrl) — without an aspect ratio the
+  // layout can only letterbox the image.
+  // Computed unconditionally: an element can carry width/height attributes
+  // that are present but unusable ("auto", "100%"), which readIntrinsicDim
+  // rejects — gating on attribute PRESENCE would skip the fallback there.
+  const urlDims = intrinsicDimsFromUrl(element.getAttribute("src"));
 
   const readIntrinsicDim = (
     attrName: string,
@@ -169,8 +261,10 @@ export function readNodeAttributes(
     alt: element.getAttribute("alt") ?? null,
     src: resolveUrl(element.getAttribute("src")),
     poster: resolveUrl(element.getAttribute("poster")),
-    intrinsicWidth: readIntrinsicDim("width", "data-file-width"),
-    intrinsicHeight: readIntrinsicDim("height", "data-file-height"),
+    intrinsicWidth:
+      readIntrinsicDim("width", "data-file-width") ?? urlDims?.width ?? null,
+    intrinsicHeight:
+      readIntrinsicDim("height", "data-file-height") ?? urlDims?.height ?? null,
     href: element.getAttribute("href"),
     live: element.getAttribute("aria-live") ?? null,
     rowspan: element.getAttribute("rowspan") ?? null,
@@ -394,6 +488,66 @@ export function mergeAttributes(
   return result;
 }
 
+/**
+ * Inline elements per HTML's default stylesheet. Everything else creates a
+ * line box, so a browser renders a visible break at its boundary even when the
+ * markup has no whitespace there.
+ */
+const INLINE_TEXT_TAGS = new Set([
+  "a", "abbr", "b", "bdi", "bdo", "cite", "code", "data", "dfn", "em", "i",
+  "kbd", "mark", "q", "rp", "rt", "ruby", "s", "samp", "small", "span",
+  "strong", "sub", "sup", "time", "u", "var", "wbr", "font", "big", "tt",
+  "nobr", "label", "output",
+]);
+
+/**
+ * An element's text as a browser would RENDER it, not as `textContent`
+ * concatenates it.
+ *
+ * `textContent` glues adjacent elements together with nothing between them, so
+ * a news card's kicker — a block `<div>Review</div>` sitting above the headline
+ * `<span>` with no whitespace in the source — comes out as "ReviewI Give You My
+ * Silence…". A browser puts those on separate lines because the div is a block.
+ *
+ * This walks the subtree, collapsing whitespace the way inline flow does and
+ * emitting a break at every block-level boundary and `<br>`. Use it anywhere a
+ * string is destined for a reader (labels, headings, node content); raw
+ * `textContent` is still correct for structural comparison, where only the
+ * character sequence matters.
+ */
+export function renderedTextContent(element: Element): string {
+  let out = "";
+  const BREAK = "\u0000"; // placeholder; collapsed to a single space at the end
+
+  const walk = (node: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += (node.textContent ?? "").replace(/\s+/g, " ");
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as Element;
+    const tag = el.tagName.toLowerCase();
+    if (SKIP_TAGS.has(tag)) return;
+    if (tag === "br") {
+      out += BREAK;
+      return;
+    }
+    const isBlock = !INLINE_TEXT_TAGS.has(tag);
+    if (isBlock) out += BREAK;
+    for (const child of Array.from(el.childNodes)) walk(child);
+    if (isBlock) out += BREAK;
+  };
+
+  for (const child of Array.from(element.childNodes)) walk(child);
+
+  // Block boundaries become a single space: these strings are drawn as one
+  // wrapped run, and a real newline would be a HARD break in troika.
+  return out
+    .replace(/\u0000+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function directTextContent(element: Element): string {
   let text = "";
   for (const node of Array.from(element.childNodes)) {
@@ -466,7 +620,7 @@ export function resolveNodeLabel(
     }
 
     if (tag === "button" || tag === "summary" || tag === "a") {
-      const text = element.textContent?.trim() ?? "";
+      const text = renderedTextContent(element);
       if (text) return cap(text);
     }
 
@@ -484,7 +638,7 @@ export function resolveNodeLabel(
   );
 
   if (!hasElementChildren) {
-    const text = element.textContent?.trim() ?? "";
+    const text = renderedTextContent(element);
     return text ? cap(text) : null;
   }
 

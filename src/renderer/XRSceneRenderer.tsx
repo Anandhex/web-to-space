@@ -87,7 +87,7 @@ import { usePipeline } from "./scene/use-pipeline";
 import type { AIProviderSettings } from "../ir/ai";
 import { XRViewerAnchor, PreviewFieldOfView, AxisLook } from "./scene/camera";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
-import { DeskDecor } from "./scene/desk-decor";
+import { DeskDecor, slotsWithVisibleContent } from "./scene/desk-decor";
 import { sectionRangesFor } from "./scene/page-ghosts";
 import { ROOM_EYE_HEIGHT } from "./page-placements";
 import { SR_ONLY } from "../components/a11y";
@@ -428,13 +428,22 @@ export function XRSceneRenderer({
     const e = plan.entries[mainPanelId];
     if (!e) return null;
     const pageCount = e.pagination?.pageCount ?? 1;
+    const page = Math.min(
+      pageState[mainPanelId] ?? 0,
+      Math.max(0, pageCount - 1),
+    );
     return {
       pageCount,
-      page: Math.min(pageState[mainPanelId] ?? 0, Math.max(0, pageCount - 1)),
+      page,
       sectionRanges: sectionRangesFor(plan, pageCount),
-      occupied: new Set(plan.occupiedSlots ?? []),
+      // Not plan.occupiedSlots: that records where landmarks were *routed*,
+      // which mounts a rail even on pages where the landmark is gated off or
+      // where it turned out to carry nothing. See slotsWithVisibleContent.
+      occupied: scene
+        ? slotsWithVisibleContent(scene, plan, page)
+        : new Set<SlotName>(),
     };
-  }, [viewMode, plan, mainPanelId, pageState]);
+  }, [viewMode, plan, scene, mainPanelId, pageState]);
 
   /** Accessible name for the scene region, and its live description. */
   const sceneLabel = useMemo(() => {

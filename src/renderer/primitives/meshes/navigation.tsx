@@ -313,7 +313,11 @@ function TOCPanel({
                 key={item.id}
                 position={itemPlace.position}
                 rotation={itemPlace.rotation}
-                onClick={() => {
+                onClick={(e) => {
+                  // R3F delivers the event to every object the ray crosses, so
+                  // an entry not stopping here also triggers whatever sits
+                  // behind the rail.
+                  e.stopPropagation();
                   // Suppress navigation if this "click" was the end of a drag.
                   if (didDrag.current) {
                     didDrag.current = false;
