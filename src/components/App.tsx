@@ -8,6 +8,7 @@ import {
 import { ComparePanel } from "./ComparePanel";
 import { type Tab, makeTabId, labelFromUrl } from "./viewTypes";
 import { proxyUrl } from "../proxy";
+import { DiagnosticsLog } from "../renderer/scene/chrome";
 
 function makeHomeTab(): Tab {
   return {
@@ -288,6 +289,23 @@ export default function App() {
           onClose={() => setShowCompare(false)}
         />
       )}
+
+      {/* Captured console, pinned to the bottom of every screen.
+          Global on purpose: the capture is global (see renderer/xr-diagnostics.ts),
+          and the errors worth reading here are as likely to happen while a page
+          is loading on the Home screen as inside the scene. Renders nothing
+          until something is actually logged. */}
+      <div
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 10001,
+        }}
+      >
+        <DiagnosticsLog />
+      </div>
 
       {/* Tab switcher is rendered in 3D on both screens now:
           XR3DTabBar inside the Home canvas and inside the XRSceneRenderer

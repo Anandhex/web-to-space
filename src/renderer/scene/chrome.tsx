@@ -5,6 +5,13 @@
  * style table.
  */
 import React from "react";
+import {
+  clearXRDiagnosticsLog,
+  formatXRDiagnosticsReport,
+  getXRDiagnostics,
+  subscribeXRDiagnostics,
+  type LogEntry,
+} from "../xr-diagnostics";
 
 export function VRButton({
   supported,
@@ -40,6 +47,92 @@ export function VRButton({
         </button>
       )}
       {error && <span style={styles.error}>{error}</span>}
+    </div>
+  );
+}
+
+/**
+ * The console, drawn back into the page.
+ *
+ * Everything this reader could have learned from devtools is unreachable in a
+ * headset: they take it off knowing only that nothing appeared. The capture in
+ * renderer/xr-diagnostics.ts mirrors console.error/warn and window.onerror into
+ * a buffer, and this is where it is read — a badge that only appears once
+ * something has gone wrong, and a panel that survives the session so it can be
+ * read afterwards.
+ *
+ * Deliberately DOM, not in-world: the case it exists for is the one where the
+ * scene never renders, so anything drawn in the scene would be invisible too.
+ */
+export function DiagnosticsLog() {
+  const d = React.useSyncExternalStore(
+    subscribeXRDiagnostics,
+    getXRDiagnostics,
+    getXRDiagnostics,
+  );
+  const [open, setOpen] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
+
+  if (d.logs.length === 0) return null;
+
+  const copy = async () => {
+    const text = formatXRDiagnosticsReport(d);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard permission is not a given in the Quest browser. Falling back
+      // to a selectable <textarea> beats failing silently: the reader can still
+      // select-all and copy by hand.
+      setOpen(true);
+    }
+  };
+
+  return (
+    <div style={styles.logBar}>
+      <button
+        style={{
+          ...styles.logToggle,
+          color: d.errorCount > 0 ? "#ff6b6b" : "#f6a623",
+          borderColor: d.errorCount > 0 ? "#ff6b6b55" : "#f6a62355",
+        }}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        {open ? "▾" : "▸"} {d.errorCount} error{d.errorCount === 1 ? "" : "s"} ·{" "}
+        {d.warnCount} warning{d.warnCount === 1 ? "" : "s"}
+      </button>
+      {open && (
+        <>
+          <button style={styles.logAction} onClick={copy}>
+            {copied ? "copied" : "copy all"}
+          </button>
+          <button style={styles.logAction} onClick={clearXRDiagnosticsLog}>
+            clear
+          </button>
+        </>
+      )}
+      {open && (
+        <div style={styles.logPanel}>
+          {d.logs.map((e: LogEntry, i: number) => (
+            <div
+              key={`${e.at}-${i}`}
+              style={{
+                ...styles.logRow,
+                color: e.level === "error" ? "#ff9d9d" : "#e3c07b",
+              }}
+            >
+              <span style={styles.logTime}>{(e.at / 1000).toFixed(2)}s</span>
+              {e.uncaught && <span style={styles.logTag}>uncaught</span>}
+              {e.repeats > 1 && (
+                <span style={styles.logTag}>×{e.repeats}</span>
+              )}
+              <span style={styles.logMessage}>{e.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -103,6 +196,65 @@ export const styles: Record<string, React.CSSProperties> = {
     fontFamily: "inherit",
     letterSpacing: "0.02em",
   },
+  logBar: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap" as const,
+    gap: "0.5rem",
+    padding: "0.3rem 1rem",
+    background: "#0d0608",
+    borderBottom: "1px solid #2a1417",
+    fontSize: "0.72rem",
+    fontFamily: "inherit",
+  },
+  logToggle: {
+    background: "transparent",
+    border: "1px solid",
+    borderRadius: 4,
+    padding: "0.15rem 0.5rem",
+    fontSize: "0.72rem",
+    fontFamily: "inherit",
+    cursor: "pointer",
+    letterSpacing: "0.02em",
+  },
+  logAction: {
+    background: "transparent",
+    border: "1px solid #2a3441",
+    borderRadius: 4,
+    padding: "0.15rem 0.5rem",
+    fontSize: "0.7rem",
+    fontFamily: "inherit",
+    color: "#7a8a9a",
+    cursor: "pointer",
+  },
+  logPanel: {
+    // Its own row under the buttons, and scrollable rather than tall: a page
+    // that errors every frame must not push the canvas off the screen.
+    flexBasis: "100%",
+    maxHeight: "9rem",
+    overflowY: "auto" as const,
+    background: "#080405",
+    border: "1px solid #2a1417",
+    borderRadius: 4,
+    padding: "0.35rem 0.5rem",
+  },
+  logRow: {
+    display: "flex",
+    gap: "0.4rem",
+    alignItems: "baseline",
+    padding: "0.1rem 0",
+    lineHeight: 1.45,
+  },
+  logTime: { color: "#4a5568", flexShrink: 0 },
+  logTag: {
+    color: "#8b949e",
+    background: "#1a1114",
+    borderRadius: 3,
+    padding: "0 0.25rem",
+    flexShrink: 0,
+    fontSize: "0.66rem",
+  },
+  logMessage: { wordBreak: "break-word" as const, whiteSpace: "pre-wrap" as const },
   flatOverlay: {
     position: "absolute" as const,
     inset: 0,

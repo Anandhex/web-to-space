@@ -37,6 +37,7 @@ import {
   markSessionFrame,
   markSessionStart,
 } from "./xr-diagnostics";
+import { xrSessionUsesLayers } from "./xr-render-path";
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -89,6 +90,12 @@ export function useXRSession(): UseXRSessionReturn {
       createXRStore({
         emulate: false,
         handTracking: true,
+        // Must match the render path picked in xr-render-path.ts. @pmndrs/xr
+        // asks for `layers` by default; once a runtime grants it, three's
+        // legacy `updateRenderState({ baseLayer })` is rejected outright
+        // ("Can't use baseLayer with layers feature requested") and the headset
+        // is left in the compositor's loading environment.
+        layers: xrSessionUsesLayers(),
       }),
     [],
   );
@@ -181,9 +188,15 @@ export function useXRSession(): UseXRSessionReturn {
     try {
       await store.enterVR();
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to start XR session.",
-      );
+      const message =
+        err instanceof Error ? err.message : "Failed to start XR session.";
+      setError(message);
+      // Also through the console, so it lands in the in-page log: this rejection
+      // is the stranding case — the session may already exist and be showing the
+      // headset its loading environment, and `error` here is a DOM string the
+      // reader cannot see from inside one. The watchdog installed in main.tsx
+      // ends that orphaned session; this is the record of why.
+      console.error("[xr] enterVR failed:", err);
     }
   }, [store]);
 

@@ -754,6 +754,20 @@ export function XRSceneRenderer({
           onCreated={({ gl }) => {
             gl.localClippingEnabled = true;
             gl.xr.enabled = true;
+            // A lost context is silent: three logs one line, every draw after it
+            // is a no-op, and an immersive session goes on requesting frames
+            // that can never be filled — which the headset shows as its own
+            // loading environment, indistinguishable from a hang. Seen on a
+            // Quest 3 with a second WebGL page open in another tab; the browser
+            // reclaims contexts and the background one loses. Record it and get
+            // the reader out rather than leaving them in a grey room.
+            gl.domElement.addEventListener("webglcontextlost", () => {
+              console.error(
+                "[xr] WebGL context lost — nothing can be drawn until it is " +
+                  "restored. Another WebGL page in a second tab is the usual cause.",
+              );
+              gl.xr.getSession()?.end().catch(() => {});
+            });
           }}
         >
           {/* <XR> binds the session to the renderer and mounts the

@@ -21,6 +21,7 @@ import { useThree } from "@react-three/fiber";
 import { useTheme } from "../theme";
 import { usePanelCurve, curvePoint } from "./curve";
 import { Z_LAYER_ACCENT, Z_LAYER_BODY_TEXT } from "./constants";
+import { capturePointer, releasePointer } from "./pointer-capture";
 
 /**
  * Set for the rest of the gesture once a drag actually moves, so a link under
@@ -89,6 +90,8 @@ export function ScrollViewport({
   const dragging = React.useRef(false);
   const lastPointerY = React.useRef(0);
   const didDrag = React.useRef(false);
+  /** The pointer id we hold capture on, or null. Only this one is released. */
+  const captured = React.useRef<number | null>(null);
 
   const handleDragStart = React.useCallback(
     (e: any) => {
@@ -97,7 +100,7 @@ export function ScrollViewport({
       dragging.current = true;
       didDrag.current = false;
       lastPointerY.current = e.clientY ?? e.nativeEvent?.clientY ?? 0;
-      gl.domElement.setPointerCapture?.(e.pointerId);
+      captured.current = capturePointer(gl.domElement, e.pointerId);
     },
     [scrollable, gl],
   );
@@ -112,13 +115,14 @@ export function ScrollViewport({
     },
     [maxScroll],
   );
-  const handleDragEnd = React.useCallback(
-    (e: any) => {
-      dragging.current = false;
-      gl.domElement.releasePointerCapture?.(e.pointerId);
-    },
-    [gl],
-  );
+  // Bound to onPointerUp AND onPointerLeave, so it runs for pointers that never
+  // pressed — see primitives/pointer-capture.ts for why releasing one of those
+  // used to kill the XR render loop outright.
+  const handleDragEnd = React.useCallback(() => {
+    dragging.current = false;
+    releasePointer(gl.domElement, captured.current);
+    captured.current = null;
+  }, [gl]);
 
   // The panel bends onto the reading cylinder, so anything drawn at a fixed
   // panel-local x must be tangent-placed on that arc. The scrollbar sits at the
