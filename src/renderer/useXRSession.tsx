@@ -30,6 +30,13 @@
 
 import { useEffect, useState, useCallback, useMemo, useSyncExternalStore } from "react";
 import { createXRStore, type XRStore } from "@react-three/xr";
+import {
+  installXRErrorCapture,
+  markEnterRequested,
+  markSessionEnd,
+  markSessionFrame,
+  markSessionStart,
+} from "./xr-diagnostics";
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -113,6 +120,40 @@ export function useXRSession(): UseXRSessionReturn {
     [store],
   );
 
+  // Instrumentation for "the headset is stuck in the loading environment".
+  //
+  // The compositor shows its own limbo until the page submits its first frame,
+  // and from inside a headset there is no way to tell a session that never
+  // started from one that started and never drew. This probe rides along on the
+  // session's own animation frames, so `sessionFrames` counts what the runtime
+  // asked for and `renderFrames` (marked from inside the R3F loop, see
+  // <XRFrameProbe>) counts what we actually drew. The gap between them is the
+  // whole diagnosis. See renderer/xr-diagnostics.ts.
+  useEffect(() => {
+    installXRErrorCapture();
+    if (session == null) return;
+    markSessionStart();
+    let stopped = false;
+    const tick = () => {
+      if (stopped) return;
+      markSessionFrame();
+      try {
+        session.requestAnimationFrame(tick);
+      } catch {
+        /* session ended between frames */
+      }
+    };
+    try {
+      session.requestAnimationFrame(tick);
+    } catch {
+      /* session already gone */
+    }
+    return () => {
+      stopped = true;
+      markSessionEnd();
+    };
+  }, [session]);
+
   const [vrSupported, setVRSupported] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -136,6 +177,7 @@ export function useXRSession(): UseXRSessionReturn {
 
   const enterVR = useCallback(async () => {
     setError(null);
+    markEnterRequested();
     try {
       await store.enterVR();
     } catch (err) {

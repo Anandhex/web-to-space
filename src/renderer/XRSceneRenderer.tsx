@@ -45,6 +45,7 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
+  useSyncExternalStore,
   Suspense,
 } from "react";
 import { Canvas } from "@react-three/fiber";
@@ -73,6 +74,12 @@ import type {
 import type { ParserConfig, ParserBackend } from "../ir/types";
 import type { ViewMode, Tab } from "../components/viewTypes";
 import { deckLookAt, DECK_STAGE_LIFT } from "./page-placements";
+import { XRFrameProbe } from "./scene/frame-probe";
+import {
+  formatXRDiagnostics,
+  getXRDiagnostics,
+  subscribeXRDiagnostics,
+} from "./xr-diagnostics";
 import { ThemeContext, LIGHT_THEME, type XRTheme } from "./theme";
 import { RenderMetricsContext } from "./primitives";
 import { useXRSession } from "./useXRSession";
@@ -304,6 +311,16 @@ export function XRSceneRenderer({
     exitVR,
     error: xrError,
   } = useXRSession();
+
+  // What happened the last time the reader pressed Enter VR. Nothing until they
+  // do; after that it stays on screen through the session and past its end,
+  // which is the only moment a headset reader can read it.
+  const xrDiag = useSyncExternalStore(
+    subscribeXRDiagnostics,
+    getXRDiagnostics,
+    getXRDiagnostics,
+  );
+  const xrDiagLine = formatXRDiagnostics(xrDiag);
 
   // Camera look target for the flat (non-immersive) preview. Panels are
   // top-left anchored, so a panel whose top sits at eyeY hangs *below* the eye
@@ -637,6 +654,17 @@ export function XRSceneRenderer({
             </span>
           </>
         )}
+        {xrDiagLine && (
+          <>
+            <span style={{ opacity: 0.4 }}> · </span>
+            <span
+              style={{ color: xrDiag.errorCount > 0 ? "#f6a623" : "#8b949e" }}
+              title="Frames the WebXR runtime asked for vs frames we drew. 0 drawn means the headset is holding a session it is never shown anything through."
+            >
+              {xrDiagLine}
+            </span>
+          </>
+        )}
         {parserBackend === "flat" && (
           <span style={{ marginLeft: "auto", opacity: 0.5 }}>
             browser iframe
@@ -728,11 +756,26 @@ export function XRSceneRenderer({
             gl.xr.enabled = true;
           }}
         >
-          <Suspense fallback={null}>
-            {/* <XR> binds the session to the renderer and mounts the
-                controllers/hands whose pointers drive the same onClick /
-                onPointerOver handlers the mouse uses in the flat preview. */}
-            <XR store={xrStore}>
+          {/* <XR> binds the session to the renderer and mounts the
+              controllers/hands whose pointers drive the same onClick /
+              onPointerOver handlers the mouse uses in the flat preview.
+
+              It sits ABOVE the scene's Suspense boundary, not inside it. <XR>
+              hands three's WebXRManager to the store during its own render, and
+              that binding is what a session is entered through — so with the
+              boundary on the outside, anything in the scene that suspends (the
+              environment map, a texture) took the session binding and the whole
+              render loop down with it. A reader who pressed Enter VR in that
+              window got a session the app then never drew a single frame for,
+              which is precisely the state the headset's loading environment
+              stays up for. Suspense now wraps only the content, so the session,
+              the controllers and the frame loop survive an asset that is slow
+              or never arrives. */}
+          <XR store={xrStore}>
+            {/* Outside the boundary below: counts frames we really rendered,
+                even while the content is suspended. */}
+            <XRFrameProbe />
+            <Suspense fallback={null}>
               {/* Level the headset with the content panel's centre. Only for the
                   "world" frame: body/head/hand frames already carry the scene
                   with the viewer, and their entries aren't world-space, so
@@ -815,7 +858,15 @@ export function XRSceneRenderer({
                     color="#9ec5ff"
                     distance={4}
                   />
-                  <Environment preset="city" />
+                  {/* Its own boundary: <Environment preset> suspends on an
+                      HDR fetched from a third-party CDN
+                      (raw.githack.com, via drei's useEnvironment), and on a
+                      headset that is a link the app cannot assume. Isolated
+                      here, a slow or dead CDN costs the reflections and
+                      nothing else; shared with the scene, it cost the scene. */}
+                  <Suspense fallback={null}>
+                    <Environment preset="city" />
+                  </Suspense>
                 </>
               )}
 
@@ -966,8 +1017,8 @@ export function XRSceneRenderer({
                   </FontContext.Provider>
                 </ThemeContext.Provider>
               </RenderMetricsContext.Provider>
-            </XR>
-          </Suspense>
+            </Suspense>
+          </XR>
         </Canvas>
       </div>
     </div>
