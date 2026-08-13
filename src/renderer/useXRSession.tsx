@@ -96,6 +96,31 @@ export function useXRSession(): UseXRSessionReturn {
         // ("Can't use baseLayer with layers feature requested") and the headset
         // is left in the compositor's loading environment.
         layers: xrSessionUsesLayers(),
+
+        // ── What the headset is asked to run at ──────────────────
+        //
+        // Both of these had been left at defaults that are wrong for a scene
+        // this size, and between them they are most of what "laggy and blurry"
+        // was.
+        //
+        // FOVEATION. three's own default is 1.0 — the MAXIMUM. Fixed foveated
+        // rendering drops the resolution of everything away from the centre of
+        // each eye, so at full strength the periphery is visibly smeared, and a
+        // reader who turns their head reads it as the world going soft. It buys
+        // real GPU time, so this does not switch it off; it turns it down to
+        // where the falloff stops being something you can see.
+        foveation: 0.3,
+
+        // FRAME RATE. @pmndrs/xr defaults to 'high', which is literally the
+        // highest rate the device offers — 120 Hz on a Quest 3. A frame budget
+        // of 8.3 ms for a whole gallery is not a target this scene can hit, and
+        // a target it misses is judder: the compositor reprojects, and the
+        // reader feels every dropped frame. 90 is a budget the scene can
+        // actually hold, and a held 90 is smoother than a missed 120.
+        frameRate: (supported: ArrayLike<number>) => {
+          const rates = Array.from(supported).filter((r) => r <= 90);
+          return rates.length > 0 ? Math.max(...rates) : false;
+        },
       }),
     [],
   );

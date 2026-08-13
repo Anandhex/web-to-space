@@ -27,6 +27,7 @@
  */
 import React from "react";
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 import {
   ROOM_SOFFIT_BAND,
@@ -284,6 +285,7 @@ function poolTexture(): THREE.Texture {
 interface RoomMaterials {
   floorMap: THREE.Texture;
   pool: THREE.Texture;
+  floor: THREE.Material;
   wall: THREE.Material;
   trim: THREE.Material;
   rail: THREE.Material;
@@ -310,9 +312,21 @@ function roomMaterials(): RoomMaterials {
   if (MATERIALS) return MATERIALS;
 
   const p = roomPalette();
+  const floorMap = floorTexture(p);
   const built: RoomMaterials = {
-    floorMap: floorTexture(p),
+    floorMap,
     pool: poolTexture(),
+    // Sealed boards: a shade glossier than plaster, so the luminaires above
+    // leave a soft sheen down the floor and the reader can see the light has a
+    // source. Not metallic — the old 0.06 metalness on a warm floor greyed it
+    // out. One material for every floor in the building: the per-slab tiling
+    // that used to need a cloned texture each is baked into the UVs instead
+    // (see `slabGeometry`).
+    floor: new THREE.MeshStandardMaterial({
+      map: floorMap,
+      roughness: 0.6,
+      metalness: 0,
+    }),
     wall: new THREE.MeshStandardMaterial({
       map: wallGradientTexture(p),
       side: THREE.DoubleSide,
@@ -361,6 +375,95 @@ function roomMaterials(): RoomMaterials {
 
 function useRoomMaterials(): RoomMaterials {
   return React.useMemo(() => roomMaterials(), []);
+}
+
+
+// ── One building, a handful of draw calls ────────────────────
+//
+// WHY THIS FILE BUILDS GEOMETRY INSTEAD OF WRITING <mesh> PER SURFACE.
+//
+// The building is big. Every section is a room, every room has four walls with
+// doorways cut in them, a floor, a ceiling with a dropped soffit round it, a
+// skirting board, a picture rail, and a file of luminaires; the corridor runs
+// the whole length of the document between them. Written out one <mesh> per
+// surface — which is how this started — a forty-page document is about 640
+// meshes and a long one is over 1600, and a mesh is a draw call. An immersive
+// session draws the scene once per eye, so those numbers double before the
+// headset has drawn a single page.
+//
+// That was the lag. Not the shaders, not the textures, not the number of
+// polygons — which is trivial, a few thousand triangles for the whole
+// building — but the per-object cost of having thousands of objects: a matrix
+// update, a frustum test and a draw call each, every frame, twice.
+//
+// Nothing about the building moves. The walls are a pure function of the plan,
+// and the plan does not change while the reader walks around inside it. So each
+// group of surfaces that shares a material is welded into ONE geometry, once,
+// and drawn as one object. Roughly ten draw calls now stand for six hundred, the
+// building looks pixel-for-pixel the same, and what is left on the frame budget
+// pays for the pages.
+//
+// The rule for anything added here: if it does not move relative to the
+// building, it belongs in a bucket. If it moves — the reader's lights, the
+// teleport reticle, a door's hover state — it stays its own object.
+
+/** A surface waiting to be welded: its geometry, and where it sits. */
+interface Part {
+  geom: THREE.BufferGeometry;
+  matrix: THREE.Matrix4;
+}
+
+/** Scratch for building part matrices — one, not one per surface. */
+const partQuat = new THREE.Quaternion();
+const partEuler = new THREE.Euler();
+const partPos = new THREE.Vector3();
+const partScale = new THREE.Vector3(1, 1, 1);
+
+/** Compose a part's placement the way a <group position rotation> would. */
+function at(
+  x: number,
+  y: number,
+  z: number,
+  rx = 0,
+  ry = 0,
+  rz = 0,
+): THREE.Matrix4 {
+  return new THREE.Matrix4().compose(
+    partPos.set(x, y, z),
+    partQuat.setFromEuler(partEuler.set(rx, ry, rz)),
+    partScale,
+  );
+}
+
+/**
+ * Weld a bucket into one geometry, or null if it is empty.
+ *
+ * The sources are disposed on the way out: they exist only to be copied into
+ * the merged buffer, and a few hundred orphaned BufferGeometries per rebuild is
+ * a leak the GPU notices.
+ */
+function weld(parts: Part[]): THREE.BufferGeometry | null {
+  if (parts.length === 0) return null;
+  const placed = parts.map((p) => p.geom.applyMatrix4(p.matrix));
+  const merged = mergeGeometries(placed);
+  for (const g of placed) g.dispose();
+  return merged;
+}
+
+/**
+ * One welded bucket, drawn. Scenery: it never eats a pointer, and it is
+ * disposed with the building it belongs to.
+ */
+function Welded({
+  geometry,
+  material,
+}: {
+  geometry: THREE.BufferGeometry | null;
+  material: THREE.Material;
+}) {
+  React.useEffect(() => () => geometry?.dispose(), [geometry]);
+  if (!geometry) return null;
+  return <mesh geometry={geometry} material={material} raycast={() => null} />;
 }
 
 // ── The shell ────────────────────────────────────────────────
@@ -420,109 +523,132 @@ export function RoomShell({
   railY: number;
 }) {
   const mats = useRoomMaterials();
+  const geom = React.useMemo(
+    () => buildShellGeometry(walls, floorY, railY),
+    [walls, floorY, railY],
+  );
+
   return (
-    <group raycast={() => null}>
-      {walls.map((w, i) => (
-        <group
-          key={`room-wall-${i}`}
-          position={[
-            anchor.x + w.centre.x,
-            anchor.y + w.centre.y,
-            anchor.z + w.centre.z,
-          ]}
-          rotation={[0, w.yaw, 0]}
-        >
-          {w.lintel ? (
-            /* The head over a doorway, a shade lighter than the wall it sits
-               in — the way a plastered reveal catches more light than the
-               wall around it. It used to carry a bright accent strip, which
-               read as a neon exit sign rather than as a gallery: the opening
-               is legible because the space beyond it is lit, and because the
-               section's name hangs above it. */
-            <>
-              <mesh material={mats.headMat}>
-                <planeGeometry args={[w.size.width, w.size.height]} />
-              </mesh>
-              {/* The lining round the opening below it. The lintel is the one
-                  piece that knows where a doorway IS — it is the piece that
-                  spans one — so the frame is drawn from it: a head band along
-                  its foot and a jamb down each side, reaching from there to
-                  the floor. Straddling boxes, like the skirting, so one set
-                  serves the space on either side of the wall. */}
-              <mesh
-                material={mats.jamb}
-                position={[0, -w.size.height / 2 + JAMB_W / 2, 0]}
-              >
-                <boxGeometry
-                  args={[
-                    w.size.width + 2 * JAMB_W,
-                    JAMB_W,
-                    JAMB_PROUD * 2,
-                  ]}
-                />
-              </mesh>
-              {(() => {
-                // The opening below this lintel: from the floor up to the
-                // lintel's own foot, which IS the door head.
-                const openH = Math.max(
-                  0.01,
-                  w.centre.y - w.size.height / 2 - floorY,
-                );
-                // The jamb runs the height of the opening plus the head band
-                // it dies into at the top.
-                const jambH = openH + JAMB_W;
-                const jambY = floorY + jambH / 2 - w.centre.y;
-                return [-1, 1].map((s) => (
-                  <mesh
-                    key={`jamb-${s}`}
-                    material={mats.jamb}
-                    position={[(s * (w.size.width + JAMB_W)) / 2, jambY, 0]}
-                  >
-                    <boxGeometry args={[JAMB_W, jambH, JAMB_PROUD * 2]} />
-                  </mesh>
-                ));
-              })()}
-            </>
-          ) : (
-            /* A link door's opening is filled by its own leaf (see
-               LinkDoors), which sits exactly on this piece — so the piece
-               drops a centimetre behind it rather than z-fighting with it,
-               and still closes the wall from the far side. */
-            <mesh material={mats.wall} position={[0, 0, w.portal ? -0.01 : 0]}>
-              <planeGeometry args={[w.size.width, w.size.height]} />
-            </mesh>
-          )}
-          {isFullHeight(w) && (
-            <>
-              {/* Skirting: a box, not a plane, so it has a top face for the
-                  ceiling light to catch. One box straddling the wall serves
-                  both of its sides — a wall piece is shared between two
-                  spaces, and two half-boxes would be two draw calls for the
-                  same board. Placed in the piece's own frame, where y is
-                  measured from its centre and +z is the face. */}
-              <mesh
-                material={mats.trim}
-                position={[0, floorY - w.centre.y + SKIRT_H / 2, 0]}
-              >
-                <boxGeometry args={[w.size.width, SKIRT_H, TRIM_PROUD * 2]} />
-              </mesh>
-              {/* The picture rail, level with the top edge of the pages —
-                  and only on the walls pages actually hang on. Run down the
-                  corridor as well it became a long horizontal edge at eye
-                  height, and every horizontal edge converges on eye height in
-                  the distance: it drew itself straight through the section
-                  sign over each far doorway. */}
-              {w.hangs && (
-                <mesh material={mats.rail} position={[0, railY - w.centre.y, 0]}>
-                  <boxGeometry args={[w.size.width, RAIL_H, TRIM_PROUD * 2]} />
-                </mesh>
-              )}
-            </>
-          )}
-        </group>
-      ))}
+    <group position={[anchor.x, anchor.y, anchor.z]} raycast={() => null}>
+      <Welded geometry={geom.wall} material={mats.wall} />
+      <Welded geometry={geom.head} material={mats.headMat} />
+      <Welded geometry={geom.jamb} material={mats.jamb} />
+      <Welded geometry={geom.trim} material={mats.trim} />
+      <Welded geometry={geom.rail} material={mats.rail} />
     </group>
   );
+}
+
+/**
+ * The shell's geometry, welded by material — the pure half of `RoomShell`, so
+ * the weld can be checked against the per-mesh building it replaced without a
+ * renderer. Built in ANCHOR-RELATIVE metres: moving the building is then moving
+ * one transform rather than rebuilding a thousand.
+ */
+export function buildShellGeometry(
+  walls: RoomWall[],
+  floorY: number,
+  railY: number,
+) {
+  {
+    const wall: Part[] = [];
+    const head: Part[] = [];
+    const jamb: Part[] = [];
+    const trim: Part[] = [];
+    const rail: Part[] = [];
+
+    for (const w of walls) {
+      const { width, height } = w.size;
+      const place = at(w.centre.x, w.centre.y, w.centre.z, 0, w.yaw, 0);
+      /** A part in the wall piece's own frame, lifted into the building's. */
+      const local = (
+        bucket: Part[],
+        geometry: THREE.BufferGeometry,
+        x: number,
+        y: number,
+        z: number,
+      ) => bucket.push({ geom: geometry, matrix: place.clone().multiply(at(x, y, z)) });
+
+      if (w.lintel) {
+        /* The head over a doorway, a shade lighter than the wall it sits in —
+           the way a plastered reveal catches more light than the wall around
+           it. It used to carry a bright accent strip, which read as a neon exit
+           sign rather than as a gallery: the opening is legible because the
+           space beyond it is lit, and because the section's name hangs above
+           it. */
+        local(head, new THREE.PlaneGeometry(width, height), 0, 0, 0);
+        /* The lining round the opening below it. The lintel is the one piece
+           that knows where a doorway IS — it is the piece that spans one — so
+           the frame is drawn from it: a head band along its foot and a jamb
+           down each side, reaching from there to the floor. Straddling boxes,
+           like the skirting, so one set serves the space on either side of the
+           wall. */
+        local(
+          jamb,
+          new THREE.BoxGeometry(width + 2 * JAMB_W, JAMB_W, JAMB_PROUD * 2),
+          0,
+          -height / 2 + JAMB_W / 2,
+          0,
+        );
+        // The opening below this lintel: from the floor up to the lintel's own
+        // foot, which IS the door head.
+        const openH = Math.max(0.01, w.centre.y - height / 2 - floorY);
+        // The jamb runs the height of the opening plus the head band it dies
+        // into at the top.
+        const jambH = openH + JAMB_W;
+        const jambY = floorY + jambH / 2 - w.centre.y;
+        for (const side of [-1, 1])
+          local(
+            jamb,
+            new THREE.BoxGeometry(JAMB_W, jambH, JAMB_PROUD * 2),
+            (side * (width + JAMB_W)) / 2,
+            jambY,
+            0,
+          );
+      } else {
+        /* A link door's opening is filled by its own leaf (see LinkDoors),
+           which sits exactly on this piece — so the piece drops a centimetre
+           behind it rather than z-fighting with it, and still closes the wall
+           from the far side. */
+        local(wall, new THREE.PlaneGeometry(width, height), 0, 0, w.portal ? -0.01 : 0);
+      }
+
+      if (isFullHeight(w)) {
+        /* Skirting: a box, not a plane, so it has a top face for the ceiling
+           light to catch. One box straddling the wall serves both of its
+           sides — a wall piece is shared between two spaces, and two
+           half-boxes would be two draw calls for the same board. */
+        local(
+          trim,
+          new THREE.BoxGeometry(width, SKIRT_H, TRIM_PROUD * 2),
+          0,
+          floorY - w.centre.y + SKIRT_H / 2,
+          0,
+        );
+        /* The picture rail, level with the top edge of the pages — and only on
+           the walls pages actually hang on. Run down the corridor as well it
+           became a long horizontal edge at eye height, and every horizontal
+           edge converges on eye height in the distance: it drew itself straight
+           through the section sign over each far doorway. */
+        if (w.hangs)
+          local(
+            rail,
+            new THREE.BoxGeometry(width, RAIL_H, TRIM_PROUD * 2),
+            0,
+            railY - w.centre.y,
+            0,
+          );
+      }
+    }
+
+    return {
+      wall: weld(wall),
+      head: weld(head),
+      jamb: weld(jamb),
+      trim: weld(trim),
+      rail: weld(rail),
+    };
+  }
 }
 
 /**
@@ -547,93 +673,76 @@ const SOFFIT_BAND = ROOM_SOFFIT_BAND;
  */
 export function RoomSlabs({ slabs, anchor }: { slabs: RoomSlab[]; anchor: Anchor }) {
   const mats = useRoomMaterials();
-  // Each floor gets its own tiling of the shared texture image.
-  const floorMaps = React.useMemo(
-    () =>
-      slabs.map((s) => {
-        if (s.facing !== "up") return null;
-        const t = mats.floorMap.clone();
-        t.needsUpdate = true;
-        t.repeat.set(
-          Math.max(1, Math.round(s.size.width)),
-          Math.max(1, Math.round(s.size.depth)),
-        );
-        return t;
-      }),
-    [slabs, mats.floorMap],
-  );
-  React.useEffect(
-    () => () => floorMaps.forEach((t) => t?.dispose()),
-    [floorMaps],
-  );
+  const geom = React.useMemo(() => buildSlabGeometry(slabs), [slabs]);
 
   return (
-    <group raycast={() => null}>
-      {slabs.map((s, i) => {
-        const at: [number, number, number] = [
-          anchor.x + s.centre.x,
-          anchor.y + s.centre.y,
-          anchor.z + s.centre.z,
-        ];
-        if (s.facing === "up")
-          return (
-            <mesh
-              key={`room-slab-${i}`}
-              position={at}
-              // A plane faces +z; a quarter turn back lays it flat facing up.
-              rotation={[-Math.PI / 2, 0, 0]}
-            >
-              <planeGeometry args={[s.size.width, s.size.depth]} />
-              {/* Sealed boards: a shade glossier than plaster, so the
-                  luminaires above leave a soft sheen down the floor and the
-                  reader can see the light has a source. Not metallic — the
-                  old 0.06 metalness on a warm floor greyed it out. */}
-              <meshStandardMaterial
-                map={floorMaps[i] ?? undefined}
-                roughness={0.6}
-                metalness={0}
-              />
-            </mesh>
-          );
-        const halfW = s.size.width / 2;
-        const halfD = s.size.depth / 2;
-        return (
-          <group key={`room-slab-${i}`} position={at}>
-            <mesh material={mats.ceiling} rotation={[Math.PI / 2, 0, 0]}>
-              <planeGeometry args={[s.size.width, s.size.depth]} />
-            </mesh>
-            {/* The dropped band round the edge of the ceiling. */}
-            {[
-              {
-                p: [0, -SOFFIT_DROP / 2 - 0.001, -halfD + SOFFIT_BAND / 2],
-                a: [s.size.width, SOFFIT_DROP, SOFFIT_BAND],
-              },
-              {
-                p: [0, -SOFFIT_DROP / 2 - 0.001, halfD - SOFFIT_BAND / 2],
-                a: [s.size.width, SOFFIT_DROP, SOFFIT_BAND],
-              },
-              {
-                p: [-halfW + SOFFIT_BAND / 2, -SOFFIT_DROP / 2 - 0.001, 0],
-                a: [SOFFIT_BAND, SOFFIT_DROP, s.size.depth],
-              },
-              {
-                p: [halfW - SOFFIT_BAND / 2, -SOFFIT_DROP / 2 - 0.001, 0],
-                a: [SOFFIT_BAND, SOFFIT_DROP, s.size.depth],
-              },
-            ].map((b, k) => (
-              <mesh
-                key={`soffit-${k}`}
-                material={mats.soffit}
-                position={b.p as [number, number, number]}
-              >
-                <boxGeometry args={b.a as [number, number, number]} />
-              </mesh>
-            ))}
-          </group>
-        );
-      })}
+    <group position={[anchor.x, anchor.y, anchor.z]} raycast={() => null}>
+      <Welded geometry={geom.floor} material={mats.floor} />
+      <Welded geometry={geom.ceiling} material={mats.ceiling} />
+      <Welded geometry={geom.soffit} material={mats.soffit} />
     </group>
   );
+}
+
+/** The floors, ceilings and soffit bands, welded by material. Pure — see
+ *  `buildShellGeometry`. */
+export function buildSlabGeometry(slabs: RoomSlab[]) {
+  {
+    const floor: Part[] = [];
+    const ceiling: Part[] = [];
+    const soffit: Part[] = [];
+
+    for (const s of slabs) {
+      const { width } = s.size;
+      const depth = Math.abs(s.size.depth);
+      if (s.facing === "up") {
+        const g = new THREE.PlaneGeometry(width, depth);
+        // ONE floor material for the whole building, so the tiling has to live
+        // in the vertices. Each floor used to clone the shared texture and set
+        // its own `repeat`, which is a texture and a draw call per space; the
+        // same tiling baked into the UVs is identical on screen (the map wraps)
+        // and costs neither.
+        const uv = g.attributes.uv as THREE.BufferAttribute;
+        const rx = Math.max(1, Math.round(width));
+        const ry = Math.max(1, Math.round(depth));
+        for (let i = 0; i < uv.count; i++)
+          uv.setXY(i, uv.getX(i) * rx, uv.getY(i) * ry);
+        // A plane faces +z; a quarter turn back lays it flat facing up.
+        floor.push({
+          geom: g,
+          matrix: at(s.centre.x, s.centre.y, s.centre.z, -Math.PI / 2, 0, 0),
+        });
+        continue;
+      }
+
+      const place = at(s.centre.x, s.centre.y, s.centre.z);
+      ceiling.push({
+        geom: new THREE.PlaneGeometry(width, depth),
+        matrix: place.clone().multiply(at(0, 0, 0, Math.PI / 2, 0, 0)),
+      });
+      // The dropped band round the edge of the ceiling.
+      const halfW = width / 2;
+      const halfD = depth / 2;
+      const y = -SOFFIT_DROP / 2 - 0.001;
+      const bands: Array<[number, number, number, number, number, number]> = [
+        [0, y, -halfD + SOFFIT_BAND / 2, width, SOFFIT_DROP, SOFFIT_BAND],
+        [0, y, halfD - SOFFIT_BAND / 2, width, SOFFIT_DROP, SOFFIT_BAND],
+        [-halfW + SOFFIT_BAND / 2, y, 0, SOFFIT_BAND, SOFFIT_DROP, depth],
+        [halfW - SOFFIT_BAND / 2, y, 0, SOFFIT_BAND, SOFFIT_DROP, depth],
+      ];
+      for (const [bx, by, bz, sx, sy, sz] of bands)
+        soffit.push({
+          geom: new THREE.BoxGeometry(sx, sy, sz),
+          matrix: place.clone().multiply(at(bx, by, bz)),
+        });
+    }
+
+    return {
+      floor: weld(floor),
+      ceiling: weld(ceiling),
+      soffit: weld(soffit),
+    };
+  }
 }
 
 // ── The light ────────────────────────────────────────────────
@@ -788,67 +897,63 @@ export function RoomLights({
   );
   React.useEffect(() => () => poolMat.dispose(), [poolMat]);
 
+  /**
+   * The lit faces: unlit basic materials, one per bulb colour. This is what
+   * keeps a corridor reading as lit all the way down while only its near end
+   * is actually lighting anything — the glow costs nothing and does not care
+   * how far away it is.
+   */
+  const bulbMats = React.useMemo(
+    () => ({
+      warm: new THREE.MeshBasicMaterial({ color: LAMP_WARM, toneMapped: false }),
+      cool: new THREE.MeshBasicMaterial({ color: LAMP_COOL, toneMapped: false }),
+      picture: new THREE.MeshBasicMaterial({
+        color: LAMP_PICTURE,
+        toneMapped: false,
+      }),
+    }),
+    [],
+  );
+  React.useEffect(
+    () => () => {
+      bulbMats.warm.dispose();
+      bulbMats.cool.dispose();
+      bulbMats.picture.dispose();
+    },
+    [bulbMats],
+  );
+
   const bulb = (f: RoomFixture) => (f.space === "room" ? LAMP_WARM : LAMP_COOL);
-  const world = (p: { x: number; y: number; z: number }): [number, number, number] => [
+  /** A fixture's own coordinates, which are anchor-relative, in world space. */
+  const world = (p: {
+    x: number;
+    y: number;
+    z: number;
+  }): [number, number, number] => [
     anchor.x + p.x,
     anchor.y + p.y,
     anchor.z + p.z,
   ];
 
+  /**
+   * Every fitting in the building, welded by material.
+   *
+   * The fittings are the most numerous thing here — a file of luminaires down
+   * every corridor and every room, plus a gallery light over each page, three
+   * meshes apiece — and they never move. A hundred-page document had over eight
+   * hundred of them; now it has six draw calls. See the note above `weld`.
+   */
+  const geom = React.useMemo(() => buildFixtureGeometry(fixtures), [fixtures]);
+
   return (
     <>
-      <group raycast={() => null}>
-        {fixtures.map((f, i) =>
-          f.kind === "ceiling" ? (
-            <group key={`fixture-${i}`} position={world(f.centre)}>
-              {/* The luminaire: a glowing plate hanging below a shallow
-                  housing. The housing's underside is lifted a centimetre
-                  clear of the plate — flush, the two faces are coplanar and
-                  z-fight into moiré stripes across the light. */}
-              <mesh material={mats.soffit} position={[0, 0.045, 0]}>
-                <boxGeometry args={[f.size.width + 0.06, 0.07, f.size.depth + 0.06]} />
-              </mesh>
-              <mesh rotation={[Math.PI / 2, 0, 0]}>
-                <planeGeometry args={[f.size.width, f.size.depth]} />
-                <meshBasicMaterial color={bulb(f)} toneMapped={false} />
-              </mesh>
-              {/* …and the pool it throws, a hair above the floor so it never
-                  z-fights the slab it lies on. */}
-              <mesh
-                material={poolMat}
-                position={[0, f.target.y - f.centre.y + 0.008, 0]}
-                rotation={[-Math.PI / 2, 0, 0]}
-              >
-                {/* Roughly the spread a lamp throws from ceiling height. */}
-                <planeGeometry args={[2.7, 2.7]} />
-              </mesh>
-            </group>
-          ) : (
-            <group
-              key={`fixture-${i}`}
-              position={world(f.centre)}
-              rotation={[0, f.yaw, 0]}
-            >
-              {/* A gallery light: a small shade on an arm off the wall, with
-                  its lit underside facing down the page. */}
-              <mesh material={mats.trim}>
-                <boxGeometry args={[f.size.width, 0.07, f.size.depth]} />
-              </mesh>
-              {/* The arm back to the wall — long enough to bury its far end
-                  in the plaster rather than stop a finger's width short. */}
-              <mesh material={mats.trim} position={[0, 0.02, -f.size.depth]}>
-                <boxGeometry args={[0.035, 0.035, f.size.depth * 2.6]} />
-              </mesh>
-              {/* The lit underside, hanging a clear centimetre below the
-                  shade rather than flush with its bottom face — flush is
-                  coplanar, and coplanar z-fights. */}
-              <mesh position={[0, -0.046, 0]} rotation={[Math.PI / 2, 0, 0]}>
-                <planeGeometry args={[f.size.width * 0.8, f.size.depth * 0.7]} />
-                <meshBasicMaterial color={LAMP_PICTURE} toneMapped={false} />
-              </mesh>
-            </group>
-          ),
-        )}
+      <group position={[anchor.x, anchor.y, anchor.z]} raycast={() => null}>
+        <Welded geometry={geom.housing} material={mats.soffit} />
+        <Welded geometry={geom.warm} material={bulbMats.warm} />
+        <Welded geometry={geom.cool} material={bulbMats.cool} />
+        <Welded geometry={geom.shade} material={mats.trim} />
+        <Welded geometry={geom.picture} material={bulbMats.picture} />
+        <Welded geometry={geom.pools} material={poolMat} />
       </group>
 
       {/* The real lights: one per slot, parked dark when there is no fitting
@@ -881,4 +986,83 @@ export function RoomLights({
       })}
     </>
   );
+}
+
+/**
+ * Every light fitting in the building, welded by material. Pure — see
+ * `buildShellGeometry`.
+ */
+export function buildFixtureGeometry(fixtures: RoomFixture[]) {
+  {
+    const housing: Part[] = [];
+    const warm: Part[] = [];
+    const cool: Part[] = [];
+    const pools: Part[] = [];
+    const shade: Part[] = [];
+    const picture: Part[] = [];
+
+    for (const f of fixtures) {
+      const place = at(f.centre.x, f.centre.y, f.centre.z);
+      const local = (b: Part[], g: THREE.BufferGeometry, m: THREE.Matrix4) =>
+        b.push({ geom: g, matrix: place.clone().multiply(m) });
+
+      if (f.kind === "ceiling") {
+        /* The luminaire: a glowing plate hanging below a shallow housing. The
+           housing's underside is lifted a centimetre clear of the plate —
+           flush, the two faces are coplanar and z-fight into moiré stripes
+           across the light. */
+        local(
+          housing,
+          new THREE.BoxGeometry(f.size.width + 0.06, 0.07, f.size.depth + 0.06),
+          at(0, 0.045, 0),
+        );
+        local(
+          f.space === "room" ? warm : cool,
+          new THREE.PlaneGeometry(f.size.width, f.size.depth),
+          at(0, 0, 0, Math.PI / 2, 0, 0),
+        );
+        /* …and the pool it throws, a hair above the floor so it never z-fights
+           the slab it lies on. Roughly the spread a lamp throws from ceiling
+           height. */
+        local(
+          pools,
+          new THREE.PlaneGeometry(2.7, 2.7),
+          at(0, f.target.y - f.centre.y + 0.008, 0, -Math.PI / 2, 0, 0),
+        );
+        continue;
+      }
+
+      // A gallery light: a small shade on an arm off the wall, with its lit
+      // underside facing down the page. Turned to the wall's bearing first,
+      // exactly as the <group rotation> that used to carry it did.
+      const face = place.clone().multiply(at(0, 0, 0, 0, f.yaw, 0));
+      const on = (b: Part[], g: THREE.BufferGeometry, m: THREE.Matrix4) =>
+        b.push({ geom: g, matrix: face.clone().multiply(m) });
+      on(shade, new THREE.BoxGeometry(f.size.width, 0.07, f.size.depth), at(0, 0, 0));
+      // The arm back to the wall — long enough to bury its far end in the
+      // plaster rather than stop a finger's width short.
+      on(
+        shade,
+        new THREE.BoxGeometry(0.035, 0.035, f.size.depth * 2.6),
+        at(0, 0.02, -f.size.depth),
+      );
+      /* The lit underside, hanging a clear centimetre below the shade rather
+         than flush with its bottom face — flush is coplanar, and coplanar
+         z-fights. */
+      on(
+        picture,
+        new THREE.PlaneGeometry(f.size.width * 0.8, f.size.depth * 0.7),
+        at(0, -0.046, 0, Math.PI / 2, 0, 0),
+      );
+    }
+
+    return {
+      housing: weld(housing),
+      warm: weld(warm),
+      cool: weld(cool),
+      pools: weld(pools),
+      shade: weld(shade),
+      picture: weld(picture),
+    };
+  }
 }

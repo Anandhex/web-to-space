@@ -2791,6 +2791,90 @@ export function roomWalkStep(
   return { x: best.x, z: best.z };
 }
 
+/**
+ * WHERE A TELEPORT LANDS — the headset's equivalent of a walk.
+ *
+ * In VR the reader has no keyboard, so `useRoomWalking` reaches them not at
+ * all: they look at a piece of floor and double-tap, and that is the whole of
+ * their locomotion (see scene/xr-locomotion.tsx). This answers the two
+ * questions that gesture asks — may I stand THERE, and may I get there from
+ * HERE — with the same geometry walking already uses, so the building means
+ * the same thing on foot and in a headset.
+ *
+ * The path test is a STRAIGHT sweep, deliberately unlike `roomWalkStep`,
+ * which slides along whatever it hits. Sliding is right for a key held down
+ * and wrong for a marker on the floor: a landing spot that quietly slid two
+ * metres sideways from the one the reader was looking at is a teleport that
+ * lied. Blocked means blocked — and because the sweep stops at the last clear
+ * point, the reticle can stand there and say so.
+ *
+ * It also means doorways still matter. The only line from the corridor into a
+ * room that does not cross a wall is the one through its opening, so a reader
+ * can teleport into a room they can see into and not through its back wall —
+ * the same rule their feet obey.
+ *
+ * @returns the point actually reachable along the way to `to`, and whether a
+ *   wall cut the journey short.
+ */
+export function roomTeleportPath(
+  from: { x: number; z: number },
+  to: { x: number; z: number },
+  walls: RoomWall[],
+  floorY: number,
+  radius = WALK_RADIUS,
+): { x: number; z: number; blocked: boolean } {
+  const solid = walls.filter(
+    (w) => w.centre.y - w.size.height / 2 <= floorY + 0.05,
+  );
+  const clear = (x: number, z: number) => {
+    for (const w of solid) if (wallDistance(w, x, z) < radius) return false;
+    return true;
+  };
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-6) return { x: from.x, z: from.z, blocked: false };
+  // Same sub-step as the walk: half the reader's radius, so nothing thinner
+  // than they are can be stepped over.
+  const n = Math.max(1, Math.ceil(len / (radius * 0.5)));
+  let x = from.x;
+  let z = from.z;
+  for (let i = 1; i <= n; i++) {
+    const cx = from.x + (dx * i) / n;
+    const cz = from.z + (dz * i) / n;
+    if (!clear(cx, cz)) return { x, z, blocked: true };
+    x = cx;
+    z = cz;
+  }
+  return { x, z, blocked: false };
+}
+
+/**
+ * Whether (x, z) is over a floor the building actually laid — i.e. inside the
+ * corridor or one of the rooms.
+ *
+ * The floor is mathematically a plane at y = 0 and stretches to the horizon;
+ * the BUILDING's floor is the union of the up-facing slabs. Without this a
+ * gaze aimed past the end of the enfilade lands the reader in the void
+ * outside, where there is nothing to read and no wall to walk back through.
+ */
+export function roomFloorContains(
+  slabs: RoomSlab[],
+  x: number,
+  z: number,
+  margin = 0,
+): boolean {
+  for (const s of slabs) {
+    if (s.facing !== "up") continue;
+    if (
+      Math.abs(x - s.centre.x) <= s.size.width / 2 + margin &&
+      Math.abs(z - s.centre.z) <= Math.abs(s.size.depth) / 2 + margin
+    )
+      return true;
+  }
+  return false;
+}
+
 /** Distance from a point to a wall piece, in the floor plane. */
 function wallDistance(w: RoomWall, x: number, z: number): number {
   const ax = Math.cos(w.yaw);

@@ -523,6 +523,83 @@ function Chevron({
   );
 }
 
+
+/** The tappable chips on the floor indicator, in plate reference units. */
+const CALL_W = 0.072;
+const CALL_H = 0.058;
+
+/**
+ * A CALL BUTTON on the floor indicator — one storey up, one down, one page
+ * either way.
+ *
+ * The elevator's navigation was four arrow keys and nothing else, which made it
+ * the one view a reader in a headset could see all of and reach none of. A
+ * thumbstick answers that for anybody holding controllers (see
+ * `useXRStickSteps`); this answers it for anybody who is not. Hand tracking has
+ * no axes at all, but it has a ray and a pinch, and a button is the only thing
+ * those two make.
+ *
+ * So the legend that used to sit here — two drawn chevrons and the word "floor"
+ * — becomes the control it was describing. Nothing else about the view changes:
+ * the chips call the same `setPage` the keys do, on the same plate the reader is
+ * already reading their floor number off, in the slot the ring keeps dead ahead.
+ */
+function CallButton({
+  dir,
+  position,
+  accent,
+  plate,
+  edge,
+  onPress,
+}: {
+  dir: "up" | "down" | "left" | "right";
+  position: [number, number, number];
+  accent: string;
+  plate: string;
+  edge: string;
+  onPress: () => void;
+}) {
+  const [hot, setHot] = React.useState(false);
+  return (
+    <group position={position}>
+      {/* The chip's face. Slightly proud of the plate so the pointer's own
+          highlight cannot be mistaken for a mark on the sign behind it. */}
+      <mesh position={[0, 0, 0.001]}>
+        <planeGeometry args={[CALL_W, CALL_H]} />
+        <meshBasicMaterial color={edge} toneMapped={false} />
+      </mesh>
+      <mesh position={[0, 0, 0.002]}>
+        <planeGeometry args={[CALL_W - 0.006, CALL_H - 0.006]} />
+        <meshBasicMaterial
+          color={hot ? accent : plate}
+          toneMapped={false}
+        />
+      </mesh>
+      <Chevron
+        dir={dir}
+        size={0.015}
+        color={hot ? plate : accent}
+        position={[0, 0, 0.003]}
+      />
+      {/* One quad carries the whole chip's hit area: a ray that lands between
+          the arrow's three vertices is still a press, and a control you can
+          miss by two millimetres is not a control in a headset. */}
+      <mesh
+        position={[0, 0, 0.004]}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPress();
+        }}
+        onPointerOver={() => setHot(true)}
+        onPointerOut={() => setHot(false)}
+      >
+        <planeGeometry args={[CALL_W, CALL_H]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+    </group>
+  );
+}
+
 /**
  * The plate in the slot the ring keeps dead ahead of the reader.
  *
@@ -540,9 +617,15 @@ function Chevron({
 export function ElevatorDirectory({
   shell,
   anchor,
+  onStep,
 }: {
   shell: ElevatorShell;
   anchor: Anchor;
+  /**
+   * Ride the shaft: `(±1, 0)` a storey (positive = up), `(0, ±1)` a page.
+   * The same journey ↑↓←→ and the thumbstick make — see the call buttons.
+   */
+  onStep?: (floor: number, page: number) => void;
 }) {
   const theme = useTheme();
   const mats = useAtriumMaterials();
@@ -694,48 +777,63 @@ export function ElevatorDirectory({
             {/* The controls, on the floor you are on only: repeated on all
                 three plates they would be wallpaper and read as nothing.
                 The arrows are DRAWN (see Chevron) — the font has no ↑/↓, and
-                typing them put two tofu boxes in the middle of the legend. */}
+                typing them put two tofu boxes in the middle of the legend.
+
+                These are BUTTONS, not a key legend. They used to be the
+                latter, which meant the only way to ride the shaft was ↑↓←→ —
+                so the view worked at a desk and stranded a reader in a headset
+                on whichever storey they arrived at. A chip a pointer can press
+                is the one control every input has: a controller ray presses
+                it, and so does a bare hand's. */}
             {here && (
               <>
-                <Chevron
+                <CallButton
                   dir="up"
-                  size={0.016}
-                  color={theme.accentCol}
-                  position={[left + 0.017, -h / 2 + 0.115, 0]}
+                  position={[left + 0.045, -h / 2 + 0.115, 0]}
+                  accent={theme.accentCol}
+                  plate={p.plate}
+                  edge={p.plateEdge}
+                  onPress={() => onStep?.(1, 0)}
                 />
-                <Chevron
+                <CallButton
                   dir="down"
-                  size={0.016}
-                  color={theme.accentCol}
-                  position={[left + 0.056, -h / 2 + 0.115, 0]}
+                  position={[left + 0.122, -h / 2 + 0.115, 0]}
+                  accent={theme.accentCol}
+                  plate={p.plate}
+                  edge={p.plateEdge}
+                  onPress={() => onStep?.(-1, 0)}
                 />
                 <Text
                   font={fontType}
                   anchorX="left"
                   anchorY="middle"
-                  position={[left + 0.08, -h / 2 + 0.115, 0]}
+                  position={[left + 0.166, -h / 2 + 0.115, 0]}
                   fontSize={0.03}
                   color={theme.accentCol}
                 >
                   floor
                 </Text>
-                <Chevron
+                <CallButton
                   dir="left"
-                  size={0.016}
-                  color={theme.accentCol}
-                  position={[left + 0.192, -h / 2 + 0.115, 0]}
+                  position={[left + 0.297, -h / 2 + 0.115, 0]}
+                  accent={theme.accentCol}
+                  plate={p.plate}
+                  edge={p.plateEdge}
+                  onPress={() => onStep?.(0, -1)}
                 />
-                <Chevron
+                <CallButton
                   dir="right"
-                  size={0.016}
-                  color={theme.accentCol}
-                  position={[left + 0.231, -h / 2 + 0.115, 0]}
+                  position={[left + 0.374, -h / 2 + 0.115, 0]}
+                  accent={theme.accentCol}
+                  plate={p.plate}
+                  edge={p.plateEdge}
+                  onPress={() => onStep?.(0, 1)}
                 />
                 <Text
                   font={fontType}
                   anchorX="left"
                   anchorY="middle"
-                  position={[left + 0.255, -h / 2 + 0.115, 0]}
+                  position={[left + 0.418, -h / 2 + 0.115, 0]}
                   fontSize={0.03}
                   color={theme.accentCol}
                 >
@@ -748,8 +846,9 @@ export function ElevatorDirectory({
                   position={[left, -h / 2 + 0.055, 0]}
                   fontSize={0.026}
                   color={p.plateMuted}
+                  maxWidth={w - 0.12}
                 >
-                  drag to look round · point at a page to enlarge it
+                  press a chip, or push the stick · point at a page to enlarge it
                 </Text>
               </>
             )}

@@ -31,13 +31,27 @@ import type * as THREE from "three";
  * the user must remain free to physically lean and walk relative to the panel.
  * A change of `target` (e.g. switching view mode) re-centres on the new panel.
  *
- * Only x/y are corrected. z is left alone so the viewer keeps the standing-off
- * distance the layout engine already authored via `viewingDistance`.
+ * Only x/y are corrected by default: z is left alone so the viewer keeps the
+ * standing-off distance the layout engine already authored via
+ * `viewingDistance`.
+ *
+ * `standing` turns that off, and the views that need it are the ones the reader
+ * is INSIDE. The elevator builds a cylinder about one point and `rooms` builds a
+ * building about one point, and in both the reader has to be ON it. Leaving z to
+ * wherever the headset's own play space happened to put them stands them
+ * anywhere up to a couple of metres up or down the corridor — which is inside a
+ * wall about as often as it is not, and from inside a wall the view is whatever
+ * is on the far side of it. (This is why `rooms` could open onto black: not a
+ * rendering fault, a reader standing in the plaster.) Those views place the eye;
+ * their geometry is meaningless anywhere else.
  */
 export function XRViewerAnchor({
   target,
+  standing = false,
 }: {
   target: [number, number, number] | null;
+  /** Correct z as well: the reader must be AT the target, not merely level with it. */
+  standing?: boolean;
 }) {
   const [origin, setOrigin] = React.useState<[number, number, number]>([
     0, 0, 0,
@@ -56,7 +70,7 @@ export function XRViewerAnchor({
     }
     if (!target) return;
 
-    const key = target.join(",");
+    const key = `${target.join(",")}|${standing}`;
     if (appliedKey.current === key) return;
 
     // camera.position is the head in world space, i.e. it already includes the
@@ -66,7 +80,7 @@ export function XRViewerAnchor({
     setOrigin((prev) => [
       prev[0] + (target[0] - cam.position.x),
       prev[1] + (target[1] - cam.position.y),
-      prev[2],
+      standing ? prev[2] + (target[2] - cam.position.z) : prev[2],
     ]);
     appliedKey.current = key;
   });

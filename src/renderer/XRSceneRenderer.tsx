@@ -744,8 +744,20 @@ export function XRSceneRenderer({
           camera={{
             position: [0, 1.5, 0],
             fov: DEFAULT_PREVIEW_FOV,
-            near: 0.01,
-            far: 100,
+            // The frustum has to hold a BUILDING, not a panel. `rooms` lays
+            // one room per section down a single enfilade, so a long document
+            // is a long corridor — a hundred-page one runs to about 175 m —
+            // and at the old far plane of 100 the end of it was simply cut off
+            // and painted the clear colour. Down a straight corridor that
+            // reads as the world stopping in mid-air.
+            //
+            // The near plane pays for it. 0.01 m spent depth precision on
+            // nothing (the closest thing a reader ever gets to is a controller
+            // in their own hand), and near/far is what depth precision is
+            // mostly made of: 0.05/250 is a tighter ratio than 0.01/100 was, so
+            // the longer view costs no z-fighting.
+            near: 0.05,
+            far: 250,
           }}
           gl={{
             antialias: true,
@@ -801,9 +813,14 @@ export function XRSceneRenderer({
               <XRViewerAnchor
                 target={
                   (plan?.referenceFrame ?? "world") === "world"
-                    ? (elevatorAxis ?? roomsAxis ?? xrLevel)
+                    ? (standingAxis ?? xrLevel)
                     : null
                 }
+                // The standing views place the eye in all three axes: their
+                // geometry is built about one point and means nothing anywhere
+                // else. See XRViewerAnchor — leaving z alone there is what put
+                // readers inside the gallery's walls.
+                standing={!!standingAxis}
               />
               {/* Even, mostly-neutral lighting so panels read as one flat
                   material regardless of how far each is tilted toward the user.

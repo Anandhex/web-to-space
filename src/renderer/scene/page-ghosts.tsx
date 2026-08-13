@@ -67,11 +67,14 @@ import { DeckField } from "./deck-field";
 import { NavigateContext } from "../primitives/contexts";
 import {
   RoomWalk,
+  RoomTeleport,
   LinkDoors,
   ReadingSpots,
+  SPOT_REACH,
   useReadingView,
   useRoomWalking,
 } from "./room-walk";
+import { useXRStickSteps } from "./xr-locomotion";
 import { RoomShell, RoomSlabs, RoomLights, GALLERY_SIGN } from "./room-decor";
 import {
   ElevatorShaft,
@@ -414,6 +417,12 @@ export function PageGhostField({
   // Yaw 0 looks down −z, which is where the panel slot is: a sane pose to
   // hold until the focused page's own reading pose replaces it below.
   const poseRef = React.useRef<ReaderPose>({ x: 0, z: 0, yaw: 0 });
+  /**
+   * Bumped whenever the reader JUMPED to a pose instead of walking to it — a
+   * headset teleport, or a reading spot clicked from the far side of a room.
+   * `RoomWalk` eases everything else; it lands on these.
+   */
+  const jumpRef = React.useRef(0);
   const readingPose =
     isRooms && entry
       ? roomReadingPose(mode, pageCount, entry.size, focus, roomOpts)
@@ -537,6 +546,10 @@ export function PageGhostField({
       setStandingOn(pageIndex);
       setReaderAt({ x: pose?.x ?? 0, z: pose?.z ?? 0 });
       setPage(panel.id, pageIndex);
+      // Clicking a spot across the room is a jump, not a walk — see RoomWalk's
+      // jumpRef. The glide is a pleasure through a window and a lurch inside a
+      // headset, so the carrier lands on the pose instead of easing to it.
+      jumpRef.current += 1;
       // The page lands on the panel slot; put the eye back on the line that
       // looks at it, or an orbited camera sees the page edge-on.
       restoreReadingView();
@@ -544,10 +557,37 @@ export function PageGhostField({
     [mode, entry, pageCount, roomOpts, setPage, panel.id, restoreReadingView],
   );
 
+  /**
+   * Landing somewhere: what a teleport has to settle once the pose has moved.
+   * Walking reports the same three things a step at a time (`onReachSpot`);
+   * arriving all at once has to do them in one go, and against EVERY reading
+   * spot rather than the current room's — the whole point of a teleport is
+   * that it can put the reader in a room they had not entered.
+   */
+  const arriveAt = React.useCallback(
+    (pose: ReaderPose) => {
+      updateRoom(pose);
+      setReaderAt({ x: pose.x, z: pose.z });
+      let on: number | null = null;
+      for (const s of readingSpots)
+        if (Math.hypot(pose.x - s.centre.x, pose.z - s.centre.z) < SPOT_REACH) {
+          on = s.pageIndex;
+          break;
+        }
+      setStandingOn(on);
+      if (on !== null && on !== focusRef.current) {
+        focusFromWalk.current = true;
+        setPage(panel.id, on);
+      }
+    },
+    [updateRoom, readingSpots, setPage, panel.id],
+  );
+
   const navigate = React.useContext(NavigateContext);
   useRoomWalking({
     enabled: isRooms,
     poseRef,
+    jumpRef,
     walls: roomShell,
     floorY: entry ? -entry.position.y : 0,
     onRoomChange: updateRoom,
@@ -611,14 +651,39 @@ export function PageGhostField({
   const focusRef = React.useRef(focus);
   focusRef.current = focus;
 
-  // elevator: ride the shaft from the keyboard. ↑/↓ change storey (previous
-  // / next section), ←/→ step a page around the current ring. This is the
-  // whole of the view's navigation — it has no pagination controls, because
-  // a page-at-a-time widget makes no sense in a room you look around.
+  /**
+   * ONE WAY TO RIDE THE SHAFT, whatever the reader is holding. `floor` is
+   * storeys up (positive) or down; `page` steps one page around the current
+   * ring. ↑↓←→, the thumbstick and the call buttons on the floor indicator all
+   * come through here, so none of them can drift into meaning something
+   * slightly different from the others.
+   *
+   * This is the elevator's WHOLE navigation — it has no pagination widget,
+   * because a page-at-a-time control makes no sense in a room you look around.
+   * Which is exactly why it had to grow more than a keyboard: until it did, a
+   * reader in a headset could see every storey of the shaft and reach none of
+   * them.
+   */
+  const rideShaft = React.useCallback(
+    (floor: number, page: number) => {
+      const at = focusRef.current;
+      const next =
+        floor !== 0
+          ? elevatorFloorTarget(at, pageCount, sectionRanges, floor > 0 ? -1 : 1)
+          : Math.max(0, Math.min(pageCount - 1, at + page));
+      if (next !== null && next !== at) {
+        // …through the ref, so a burst faster than a render keeps climbing
+        // instead of recomputing every step from the same stale floor.
+        focusRef.current = next;
+        setPage(panel.id, next);
+      }
+    },
+    [pageCount, sectionRanges, setPage, panel.id],
+  );
+
   React.useEffect(() => {
     if (mode !== "elevator") return;
     const onKey = (e: KeyboardEvent) => {
-      const at = focusRef.current;
       // Never steal arrows from the URL bar or any other text field.
       const t = e.target as HTMLElement | null;
       if (
@@ -629,32 +694,27 @@ export function PageGhostField({
           t.tagName === "SELECT")
       )
         return;
-      let next: number | null = null;
-      switch (e.key) {
-        case "ArrowUp":
-          next = elevatorFloorTarget(at, pageCount, sectionRanges, -1);
-          break;
-        case "ArrowDown":
-          next = elevatorFloorTarget(at, pageCount, sectionRanges, 1);
-          break;
-        case "ArrowLeft":
-          next = Math.max(0, at - 1);
-          break;
-        case "ArrowRight":
-          next = Math.min(pageCount - 1, at + 1);
-          break;
-        default:
-          return;
-      }
+      const step: Record<string, [number, number]> = {
+        ArrowUp: [1, 0],
+        ArrowDown: [-1, 0],
+        ArrowLeft: [0, -1],
+        ArrowRight: [0, 1],
+      };
+      const s = step[e.key];
+      if (!s) return;
       e.preventDefault();
-      if (next !== null && next !== at) {
-        focusRef.current = next; // so a burst of repeats keeps climbing
-        setPage(panel.id, next);
-      }
+      rideShaft(s[0], s[1]);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mode, pageCount, sectionRanges, setPage, panel.id]);
+  }, [mode, rideShaft]);
+
+  /**
+   * …and the same ride from a thumbstick, because a headset has no arrow keys.
+   * Detented (see `useXRStickSteps`), with the stick's forward push standing in
+   * for ↑ — one push, one floor.
+   */
+  useXRStickSteps(mode === "elevator", (dx, dy) => rideShaft(dy, dx));
 
   if (!mode || mode === "flip" || !entry) return null;
   if (pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return null;
@@ -706,7 +766,11 @@ export function PageGhostField({
       {elevatorShell && (
         <>
           <ElevatorShaft shell={elevatorShell} anchor={entry.position} />
-          <ElevatorDirectory shell={elevatorShell} anchor={entry.position} />
+          <ElevatorDirectory
+            shell={elevatorShell}
+            anchor={entry.position}
+            onStep={rideShaft}
+          />
         </>
       )}
       {roomShell.length > 0 && (
@@ -729,6 +793,18 @@ export function PageGhostField({
       )}
       {roomShell.some((w) => w.portal) && (
         <LinkDoors walls={roomShell} anchor={entry.position} />
+      )}
+      {isRooms && entry && (
+        <RoomTeleport
+          enabled={isRooms}
+          poseRef={poseRef}
+          jumpRef={jumpRef}
+          walls={roomShell}
+          slabs={roomSlabs}
+          anchor={entry.position}
+          floorY={-entry.position.y}
+          onArrive={arriveAt}
+        />
       )}
       {roomSpots.length > 0 && (
         <ReadingSpots
@@ -891,6 +967,7 @@ export function PageGhostField({
     <RoomWalk
       anchor={entry.position}
       poseRef={poseRef}
+      jumpRef={jumpRef}
       panel={entry.size}
       viewingDistance={viewingDistance}
     >

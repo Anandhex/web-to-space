@@ -39,15 +39,24 @@ import { NavigateContext } from "../primitives/contexts";
 import {
   roomPoseTransform,
   ROOM_EYE_HEIGHT,
+  roomFloorContains,
+  roomTeleportPath,
   roomWalkStep,
   type ReaderPose,
   type ReadingSpot,
+  type RoomSlab,
   type RoomWall,
 } from "../page-placements";
+import {
+  gazeFloorPoint,
+  useXRDoubleTap,
+  useXRThumbsticks,
+} from "./xr-locomotion";
 
 export function RoomWalk({
   anchor,
   poseRef,
+  jumpRef,
   panel,
   viewingDistance,
   children,
@@ -60,6 +69,18 @@ export function RoomWalk({
    * field at 60 Hz to move the reader two centimetres would be absurd.
    */
   poseRef: React.MutableRefObject<ReaderPose>;
+  /**
+   * A counter the reader bumps when they JUMPED rather than walked — a
+   * teleport, or a reading spot clicked from across the room.
+   *
+   * The ease below is what makes walking read as walking, and it is exactly
+   * what must not happen to a jump. Gliding a reader ten metres across a
+   * gallery in a quarter of a second is the strongest vection cue this app can
+   * produce, and in a headset it is the difference between a view somebody can
+   * use and one they take off. On a change, the carrier lands on the new pose
+   * in one frame.
+   */
+  jumpRef?: React.MutableRefObject<number>;
   panel: { width: number; height: number };
   viewingDistance: number;
   children: React.ReactNode;
@@ -87,6 +108,8 @@ export function RoomWalk({
    * always one that puts the reader exactly at their station.
    */
   const eased = React.useRef<ReaderPose>({ ...poseRef.current });
+  /** The last jump we landed, so one bump lands once. */
+  const landed = React.useRef(jumpRef?.current ?? 0);
 
   const apply = React.useCallback(
     (pose: ReaderPose) => {
@@ -118,6 +141,17 @@ export function RoomWalk({
     if (!ref.current || !inited.current) return;
     const t = poseRef.current;
     const e = eased.current;
+
+    // A jump is not a very fast walk: cut to it, whole.
+    if (jumpRef && jumpRef.current !== landed.current) {
+      landed.current = jumpRef.current;
+      e.x = t.x;
+      e.z = t.z;
+      e.yaw = t.yaw;
+      apply(e);
+      return;
+    }
+
     const a = 1 - Math.exp(-MORPH_RATE * Math.min(dt, 0.1));
 
     const dx = t.x - e.x;
@@ -152,6 +186,23 @@ export function RoomWalk({
 const WALK_SPEED = 2.4;
 const TURN_SPEED = 2.0;
 /**
+ * How far one push of the turn stick swings the reader, in radians, and the
+ * detent that keeps one push to one swing.
+ *
+ * SNAP, not smooth. Smooth yaw from a thumbstick is the single most reliable
+ * way to make somebody sick in a headset: the inner ear reports no rotation
+ * while the whole world turns, and unlike forward motion there is no way to
+ * brace for it. A discrete step is over before the conflict registers. Thirty
+ * degrees is the usual choice — coarse enough to be a step, fine enough that
+ * four of them face you back down a corridor.
+ *
+ * The keyboard keeps its smooth turn: at a desk the world is a window, not a
+ * room, and Q/E turning in steps would be unusable.
+ */
+const SNAP_TURN = Math.PI / 6;
+const SNAP_HOLD = 0.6;
+const SNAP_REPEAT = 0.28;
+/**
  * Going through a link door has to be deliberate: the reader must be pressed
  * up against the leaf, FACING it, and stay there. A corridor is only 1.15 m
  * from its centre to a wall, so anything more generous fires as soon as
@@ -162,7 +213,7 @@ const DOOR_REACH = 0.38;
 /** Seconds pressed against a door before it opens. */
 const DOOR_DWELL = 0.45;
 /** Close enough to a page's spot to be standing on it. */
-const SPOT_REACH = 0.55;
+export const SPOT_REACH = 0.55;
 /**
  * Squaring the reader up to a page is for arriving at it, not for crossing
  * it: they have to come to a stop for this long, and be this close to the
@@ -181,10 +232,15 @@ const look = new THREE.Vector3();
 
 /**
  * Walking: W/A/S/D or the arrow keys move the reader through the building —
- * forward, back and strafing with W/S/A/D, turning with ←/→ (and Q/E). The
+ * forward, back and strafing with W/S/A/D, turning with ←/→ (and Q/E) — and,
+ * in a headset, the left thumbstick walks and the right one snap-turns. The
  * walls are solid (`roomWalkStep` slides the step along them), so a doorway
  * is the only way from the corridor into a room, which is what makes the
  * doors mean anything.
+ *
+ * Both inputs feed ONE intent (see the frame loop), so there is exactly one
+ * set of walking rules; the headset's third way in, teleporting, is
+ * {@link RoomTeleport} and goes through the same wall geometry.
  *
  * The pose lives in a ref and is written straight from the frame loop; only
  * the ROOM the reader is in is state, and only because mounting a room's
@@ -193,6 +249,7 @@ const look = new THREE.Vector3();
 export function useRoomWalking({
   enabled,
   poseRef,
+  jumpRef,
   walls,
   floorY,
   onRoomChange,
@@ -202,6 +259,12 @@ export function useRoomWalking({
 }: {
   enabled: boolean;
   poseRef: React.MutableRefObject<ReaderPose>;
+  /**
+   * Bumped on a SNAP TURN, so the carrier lands on the new bearing instead of
+   * easing to it. Easing a snap turn is a smooth turn taking 250 ms, which is
+   * the precise thing snapping exists to avoid — see SNAP_TURN and RoomWalk.
+   */
+  jumpRef?: React.MutableRefObject<number>;
   walls: RoomWall[];
   floorY: number;
   /** Called (from the frame loop) when the reader walks into or out of a room. */
@@ -228,6 +291,16 @@ export function useRoomWalking({
   const squared = React.useRef(true);
   /** How long they have been standing still — a stop, not a gap between keys. */
   const still = React.useRef(0);
+  /**
+   * The headset's half of the same walk. A reader in VR has no keys, so the
+   * left stick is W/A/S/D and the right one is Q/E — fed into the SAME frame
+   * loop below, which is what keeps doors, reading spots and wall collision
+   * behaving identically however the reader is driving.
+   */
+  const sticks = useXRThumbsticks();
+  /** Snap-turn detent: the direction currently latched, and its repeat clock. */
+  const snapped = React.useRef(0);
+  const snapHeld = React.useRef(0);
 
   React.useEffect(() => {
     if (!enabled) return;
@@ -275,7 +348,57 @@ export function useRoomWalking({
   useFrame((state, dt) => {
     if (!enabled) return;
     const pose0 = poseRef.current;
-    if (held.current.size === 0) {
+    const k = held.current;
+    const presenting = state.gl.xr.isPresenting;
+    const stick = presenting
+      ? sticks()
+      : { left: { x: 0, y: 0 }, right: { x: 0, y: 0 } };
+
+    // ONE INTENT, TWO INPUTS. Everything below — collision, doors, spots,
+    // squaring up — reads these three numbers and never asks where they came
+    // from, so the headset cannot drift into a second, subtly different set of
+    // walking rules the way it would if it had its own loop.
+    let fwd = 0;
+    let strafe = 0;
+    let spin = 0;
+    if (k.has("w") || k.has("arrowup")) fwd += 1;
+    if (k.has("s") || k.has("arrowdown")) fwd -= 1;
+    if (k.has("d")) strafe += 1;
+    if (k.has("a")) strafe -= 1;
+    if (k.has("arrowleft") || k.has("q")) spin += 1;
+    if (k.has("arrowright") || k.has("e")) spin -= 1;
+    fwd += stick.left.y;
+    strafe += stick.left.x;
+    // Diagonals are not faster than straight lines. Keys used to add two
+    // full-speed steps at right angles, so a reader holding W and D crossed
+    // the room 41% faster and cleared gaps their straight-on self could not.
+    const mag = Math.hypot(fwd, strafe);
+    if (mag > 1) {
+      fwd /= mag;
+      strafe /= mag;
+    }
+
+    // The turn stick is detented into 30° steps (see SNAP_TURN); the keys stay
+    // smooth. `snap` is a whole swing to apply this frame, not a rate.
+    let snap = 0;
+    const tx = stick.right.x;
+    const dir = tx >= 0.65 ? 1 : tx <= -0.65 ? -1 : 0;
+    if (snapped.current !== 0 && Math.abs(tx) < 0.35) snapped.current = 0;
+    else if (dir !== 0) {
+      if (dir !== snapped.current) {
+        snapped.current = dir;
+        snapHeld.current = -SNAP_HOLD;
+        snap = -dir * SNAP_TURN;
+      } else {
+        snapHeld.current += Math.min(dt, 0.1);
+        if (snapHeld.current >= SNAP_REPEAT) {
+          snapHeld.current -= SNAP_REPEAT;
+          snap = -dir * SNAP_TURN;
+        }
+      }
+    }
+
+    if (fwd === 0 && strafe === 0 && spin === 0 && snap === 0) {
       // Come to a stop ON a page's mark and the reader turns to it, the way
       // you stop in front of a painting and square up. Once only — someone
       // who then looks elsewhere stays looking elsewhere — and the position
@@ -284,7 +407,13 @@ export function useRoomWalking({
       if (
         !squared.current &&
         atSpot.current !== null &&
-        still.current >= SQUARE_AFTER
+        still.current >= SQUARE_AFTER &&
+        // Not in a headset. Squaring up turns the BUILDING, and a reader
+        // wearing one has a neck that did not turn with it: the world swinging
+        // by itself under a still head is the exact vestibular conflict that
+        // makes people take a headset off. At a desk it is a nicety; in VR the
+        // reader's own head is already the aim, so there is nothing to correct.
+        !presenting
       ) {
         const s = spots.find((sp) => sp.pageIndex === atSpot.current);
         if (
@@ -300,13 +429,12 @@ export function useRoomWalking({
     }
     still.current = 0;
     squared.current = false;
-    const k = held.current;
     const step = WALK_SPEED * Math.min(dt, 0.1);
     const turn = TURN_SPEED * Math.min(dt, 0.1);
     const pose = poseRef.current;
 
-    if (k.has("arrowleft") || k.has("q")) pose.yaw += turn;
-    if (k.has("arrowright") || k.has("e")) pose.yaw -= turn;
+    pose.yaw += spin * turn + snap;
+    if (snap !== 0 && jumpRef) jumpRef.current += 1;
     // Turning is unbounded; the bearing is not.
     if (pose.yaw > Math.PI) pose.yaw -= 2 * Math.PI;
     else if (pose.yaw < -Math.PI) pose.yaw += 2 * Math.PI;
@@ -335,25 +463,9 @@ export function useRoomWalking({
       fx = -Math.sin(pose.yaw);
       fz = -Math.cos(pose.yaw);
     }
-    let dx = 0;
-    let dz = 0;
-    if (k.has("w") || k.has("arrowup")) {
-      dx += fx * step;
-      dz += fz * step;
-    }
-    if (k.has("s") || k.has("arrowdown")) {
-      dx -= fx * step;
-      dz -= fz * step;
-    }
-    // Strafing is forward turned a quarter to the left/right.
-    if (k.has("a")) {
-      dx += fz * step;
-      dz -= fx * step;
-    }
-    if (k.has("d")) {
-      dx -= fz * step;
-      dz += fx * step;
-    }
+    // Strafing is forward turned a quarter to the right.
+    const dx = (fx * fwd - fz * strafe) * step;
+    const dz = (fz * fwd + fx * strafe) * step;
     if (dx !== 0 || dz !== 0) {
       const moved = roomWalkStep(pose, dx, dz, walls, floorY);
       // Walking into a link door is how you go through it: the leaf is solid,
@@ -630,6 +742,155 @@ export function LinkDoors({
           <LinkDoorLeaf key={`link-door-${i}`} wall={w} anchor={anchor} />
         ))}
     </>
+  );
+}
+
+/** Radius of the teleport reticle — read as a place to stand, so: a spot. */
+const RETICLE_RADIUS = 0.34;
+/** Scratch, module scope: this runs every frame in a headset. */
+const gazeWorld = new THREE.Vector3();
+const gazeLocal = new THREE.Vector3();
+
+/**
+ * LOOK AT THE FLOOR, TAP TWICE, BE THERE — the headset's teleport.
+ *
+ * The reader's other two ways of moving both need a device they may not be
+ * holding: the keys need a keyboard, the stick needs controllers. Hand tracking
+ * has neither, and this view is the one where being unable to move means being
+ * unable to read past the first wall. So the gesture is built out of the two
+ * things every input mode has — where the head is pointing, and a `select`
+ * (a trigger pull, a pinch) — and nothing else.
+ *
+ * It is deliberately the same journey their feet would make. The destination
+ * has to be floor the building actually laid (`roomFloorContains`), and the
+ * straight line to it has to clear the walls (`roomTeleportPath`), so a reader
+ * still enters a room through its doorway and still cannot stand inside a wall.
+ * What they are spared is the walking.
+ *
+ * The reticle is not decoration: without it the gesture is a guess, because the
+ * head's aim has no cursor of its own. It stands exactly where a tap would put
+ * the reader — including when a wall cuts the journey short, where it stops at
+ * the last clear point and goes quiet rather than pretending.
+ *
+ * Rendered INSIDE the carrier (`RoomWalk`), which is why it can hand the pose
+ * building coordinates at all: the carrier's inverse is what turns "where the
+ * head is looking, in the world" into "where that is in the building", and
+ * reading it off the live group means the ease in flight cannot desynchronise
+ * the marker from the floor it is lying on.
+ */
+export function RoomTeleport({
+  enabled,
+  poseRef,
+  jumpRef,
+  walls,
+  slabs,
+  anchor,
+  floorY,
+  onArrive,
+}: {
+  enabled: boolean;
+  poseRef: React.MutableRefObject<ReaderPose>;
+  /** Bumped on arrival so the carrier lands rather than glides — see RoomWalk. */
+  jumpRef: React.MutableRefObject<number>;
+  walls: RoomWall[];
+  /** The up-facing slabs: the floor the building actually laid. */
+  slabs: RoomSlab[];
+  anchor: { x: number; y: number; z: number };
+  /** The floor, panel-anchor-relative. */
+  floorY: number;
+  /** Called with the landing pose, so the field can re-judge room and page. */
+  onArrive: (pose: ReaderPose) => void;
+}) {
+  const theme = useTheme();
+  const group = React.useRef<THREE.Group>(null);
+  const marker = React.useRef<THREE.Group>(null);
+  const ring = React.useRef<THREE.MeshBasicMaterial>(null);
+  const disc = React.useRef<THREE.MeshBasicMaterial>(null);
+  /**
+   * The landing solved this frame, or null when the reader is not looking at
+   * anywhere they could go. A ref, not state: it is recomputed every frame and
+   * re-rendering the building at 90 Hz to move a ring is not on.
+   */
+  const landing = React.useRef<{ x: number; z: number; blocked: boolean } | null>(
+    null,
+  );
+
+  useFrame((state) => {
+    const g = group.current;
+    const m = marker.current;
+    if (!g || !m) return;
+    if (!enabled || !state.gl.xr.isPresenting) {
+      landing.current = null;
+      m.visible = false;
+      return;
+    }
+    const hit = gazeFloorPoint(state.camera, anchor.y + floorY, gazeWorld);
+    if (!hit) {
+      landing.current = null;
+      m.visible = false;
+      return;
+    }
+    // World → the carrier's frame, whose children are laid out at
+    // `anchor + buildingOffset`; the pose and the walls speak the offset.
+    g.worldToLocal(gazeLocal.copy(hit));
+    const bx = gazeLocal.x - anchor.x;
+    const bz = gazeLocal.z - anchor.z;
+    // Inset from the edge by the reader's own radius: a landing half in the
+    // wall is not a landing.
+    if (!roomFloorContains(slabs, bx, bz, -0.3)) {
+      landing.current = null;
+      m.visible = false;
+      return;
+    }
+    const path = roomTeleportPath(poseRef.current, { x: bx, z: bz }, walls, floorY);
+    landing.current = path;
+    m.visible = true;
+    m.position.set(anchor.x + path.x, anchor.y + floorY + 0.014, anchor.z + path.z);
+    // A blocked aim still shows where the reader WOULD get to, quietly. Going
+    // dark rather than vanishing is the difference between "not there" and
+    // "not anywhere", and only one of those tells them to look further left.
+    if (ring.current) ring.current.opacity = path.blocked ? 0.3 : 0.95;
+    if (disc.current) disc.current.opacity = path.blocked ? 0.1 : 0.34;
+  });
+
+  useXRDoubleTap(enabled, () => {
+    const at = landing.current;
+    if (!at) return;
+    const pose = poseRef.current;
+    // The yaw is left exactly as it was. The reader's head did not turn, and
+    // turning the building under it because they moved would be a rotation
+    // nobody asked for — see the square-up in `useRoomWalking`.
+    pose.x = at.x;
+    pose.z = at.z;
+    jumpRef.current += 1;
+    onArrive(pose);
+  });
+
+  return (
+    <group ref={group}>
+      <group ref={marker} visible={false} rotation={[-Math.PI / 2, 0, 0]}>
+        <mesh raycast={() => null}>
+          <circleGeometry args={[RETICLE_RADIUS, 32]} />
+          <meshBasicMaterial
+            ref={disc}
+            color={theme.accentCol}
+            transparent
+            opacity={0.34}
+            depthWrite={false}
+          />
+        </mesh>
+        <mesh position={[0, 0, 0.002]} raycast={() => null}>
+          <ringGeometry args={[RETICLE_RADIUS * 0.84, RETICLE_RADIUS, 32]} />
+          <meshBasicMaterial
+            ref={ring}
+            color={theme.rimHighlight}
+            transparent
+            opacity={0.95}
+            depthWrite={false}
+          />
+        </mesh>
+      </group>
+    </group>
   );
 }
 
