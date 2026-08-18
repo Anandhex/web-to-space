@@ -9,6 +9,8 @@ import { computeLayoutPlan } from "../../layout/engine";
 import { DEFAULT_CONFIG } from "../../ir/defaults";
 import { applyParserBackend } from "../../ir/backends";
 import { QUEST_3_PROFILE } from "../../layout/profiles";
+import { getArrangement } from "../../layout/placement";
+import { foldForArrangement } from "../../layout/content-only";
 import { computeXRQuality } from "../../eval/xr-quality";
 import { scoreSceneSegmentation } from "../../eval/segmentation";
 import { INLINE_PRIMITIVE_TYPES } from "./config";
@@ -90,7 +92,23 @@ export async function runBackend(
     const mapMs = Math.round(performance.now() - mapT0);
 
     const layoutT0 = performance.now();
-    const plan = computeLayoutPlan(scene, QUEST_3_PROFILE, undefined, {});
+    // Lay out the way the app does. Every shipped view is a page view, so the
+    // slot roster is [main] and the landmarks fold into the panel's flow —
+    // measuring the unfolded landmark desk would measure a layout no reader
+    // ever sees.
+    const arrangement = getArrangement("rooms");
+    // `scene` stays the mapper's own output — the parser metrics below are
+    // about what was PARSED. `laidOut` is what gets placed, and anything that
+    // reads positions out of the plan must use it, since folding re-parents
+    // the landmarks and the plan has entries for that shape, not this one.
+    const laidOut = foldForArrangement(scene, arrangement);
+    const plan = computeLayoutPlan(
+      laidOut,
+      QUEST_3_PROFILE,
+      {},
+      undefined,
+      arrangement,
+    );
     const layoutMs = Math.round(performance.now() - layoutT0);
 
     const totalMs = Math.round(performance.now() - t0);
@@ -161,8 +179,7 @@ export async function runBackend(
       paginatedPanels: plan.diagnostics.paginatedPanelCount,
       totalPages,
       fallbackHeightCount: plan.diagnostics.fallbackHeightIds.length,
-      layoutTemplate: plan.template,
-      xr: computeXRQuality(plan, QUEST_3_PROFILE, scene),
+      xr: computeXRQuality(plan, QUEST_3_PROFILE, laidOut),
       segmentation: scoreSceneSegmentation(scene.root, refBody),
       cssom,
     };
@@ -241,7 +258,6 @@ export async function runBackend(
       paginatedPanels: 0,
       totalPages: 0,
       fallbackHeightCount: 0,
-      layoutTemplate: "generic",
       xr: null,
       segmentation: {
         precision: 0,

@@ -12,6 +12,8 @@ import { DEFAULT_CONFIG } from "../ir/defaults";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../mapper/mapper";
 import { computeLayoutPlan } from "../layout/engine";
 import { QUEST_3_PROFILE } from "../layout/profiles";
+import { getArrangement } from "../layout/placement";
+import { foldForArrangement } from "../layout/content-only";
 import {
   extractHTMLGroundTruth,
   deriveIRQuality,
@@ -104,7 +106,23 @@ async function runOneBackend(
       ir = await parsePageToIR(transform.html, url, undefined, cfg);
     }
     const scene = mapIRToScene(ir, DEFAULT_MAPPER_CONFIG);
-    const plan = computeLayoutPlan(scene, QUEST_3_PROFILE, undefined, {});
+    // Lay out the way the app does. Every shipped view is a page view, so the
+    // slot roster is [main] and the landmarks fold into the panel's flow —
+    // measuring the unfolded landmark desk would measure a layout no reader
+    // ever sees.
+    const arrangement = getArrangement("rooms");
+    // `scene` stays the mapper's own output — the parser metrics below are
+    // about what was PARSED. `laidOut` is what gets placed, and anything that
+    // reads positions out of the plan must use it, since folding re-parents
+    // the landmarks and the plan has entries for that shape, not this one.
+    const laidOut = foldForArrangement(scene, arrangement);
+    const plan = computeLayoutPlan(
+      laidOut,
+      QUEST_3_PROFILE,
+      {},
+      undefined,
+      arrangement,
+    );
     const timingMs = Math.round(performance.now() - t0);
 
     const nodes = Object.values(ir.nodes);
@@ -139,7 +157,7 @@ async function runOneBackend(
       tablePreservation: structural.tablePreservation,
       mediaPreservation: structural.mediaPreservation,
       readingOrderFidelity: structural.readingOrderFidelity,
-      xr: computeXRQuality(plan, QUEST_3_PROFILE, scene),
+      xr: computeXRQuality(plan, QUEST_3_PROFILE, laidOut),
       caveat,
     };
   } catch (err) {

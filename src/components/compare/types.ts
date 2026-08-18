@@ -2,7 +2,6 @@
  * compare/types.ts — metric + result shapes for the parser comparison panel.
  */
 import type { IRAnalytics } from "../../ir/types";
-import type { LayoutTemplate } from "../../layout/types";
 import type { XRSpatialQuality } from "../../eval/xr-quality";
 import type { SegmentationScore } from "../../eval/segmentation";
 import type { VipsMode, VipsFallbackReason } from "../../ir/vips";
@@ -176,7 +175,6 @@ export interface BackendStats {
   paginatedPanels: number;
   totalPages: number;
   fallbackHeightCount: number;
-  layoutTemplate: LayoutTemplate;
   /** Literature-grounded XR spatial quality of the placed plan (null on error). */
   xr: XRSpatialQuality | null;
   /** BCubed segmentation quality of THIS backend's produced scene vs reference. */

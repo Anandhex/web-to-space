@@ -619,13 +619,6 @@ export interface SemanticScene {
   readingOrder: string[];
   /** Mapping diagnostics — useful for evaluation and debugging. */
   diagnostics: MappingDiagnostics;
-  /**
-   * Layout template selected from IR analytics.
-   * Stored here so the layout engine can consume it without re-running
-   * selectLayoutTemplate, and so the renderer can display it in diagnostics.
-   *  to be done via the layout engine, not the mapper directly, since it may be overridden by runtime constraints
-   */
-  //   template: LayoutTemplate;
 }
 
 export interface MappingDiagnostics {

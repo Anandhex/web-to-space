@@ -926,10 +926,6 @@ export function ComparePanel({
                   colCount={stats.length}
                 />
                 <Row
-                  label="Layout template"
-                  values={stats.map((s) => s.layoutTemplate)}
-                />
-                <Row
                   label="Primitives placed"
                   values={stats.map((s) => s.primitiveCount)}
                 />

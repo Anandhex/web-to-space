@@ -62,7 +62,7 @@ The full mapping table is the `MappingRule` union type in `src/mapper/types.ts`.
 
 ### Stage 3 — Layout Engine (`src/layout/engine.ts`)
 
-`computeLayoutPlan(scene, profile, template?, configOverrides?, metricsOverrides?, arrangement?)` → `LayoutPlan`
+`computeLayoutPlan(scene, profile, configOverrides?, metricsOverrides?, arrangement?)` → `LayoutPlan`
 
 The `DeviceProfile` supplies both the `LayoutConfig` and the `RenderMetrics`;
 the two override arguments are partials merged over it. `arrangement` is what
@@ -78,9 +78,9 @@ Places every primitive in 3D space. Outputs a flat `LayoutPlan.entries: Record<s
 
 **Pagination:** `XRContentPanel` is the only container that paginates. `paginateContentPanel()` runs a `stampDescendants` pass that writes panel-absolute positions for every descendant into `placedPositionMap` so the renderer always reads a uniform coordinate system regardless of nesting depth.
 
-Template selection (`selectLayoutTemplate`) classifies the scene as `"document" | "dashboard" | "form" | "landing" | "generic"` and drives landmark slot placement.
+Landmark slot placement comes from ONE hand-tuned desk (`selectSlots` in `src/layout/placement.ts`), sized off the device profile's comfort cone. It offers exactly three slots — `main`, `alert`, `dialog`. The rails (`toc` / `navigation` / `complementary`) and the whole shared-cylinder geometry that placed them were removed 2026-08-19, along with `selectLayoutTemplate` and the `document | landing | generic` union: all three shipped views are page views, so `resolveArrangementSlots` collapsed the roster to `[main]` and every rail was computed and thrown away on every layout. A `<nav>` / `<aside>` / `<header>` now folds into the content panel's flow (`foldForArrangement` in `src/layout/content-only.ts`) instead of getting a panel of its own. Any caller that builds a plan MUST pass an arrangement and fold through that helper — the no-arrangement path exists only as a type-level default and places landmarks on top of the main panel. If you find a reference to a layout template or a rail slot anywhere, it is stale.
 
-Device profiles are in `src/layout/profiles.ts`: `QUEST_3_PROFILE`, `QUEST_PRO_PROFILE`, `RAY_BAN_META_PROFILE`.
+Device profiles are in `src/layout/profiles.ts`. There is only ONE — `QUEST_3_PROFILE` — and `XRSceneRenderer` hard-codes it; the Home screen's device picker does not reach layout. (`QUEST_PRO_PROFILE` and `RAY_BAN_META_PROFILE` are referenced in comments but do not exist.)
 
 ### Stage 4 — Renderer (`src/renderer/`)
 

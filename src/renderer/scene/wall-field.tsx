@@ -260,7 +260,7 @@ function WallHeader({
   // bare fraction of the plate would come out three times its nominal height
   // and quietly stop matching the number here. Ask for what we get.
   const railH = Math.max(0.009, h * 0.075);
-  const here = openSection === null ? null : ranges[openSection];
+  const here = openSection === null ? null : (ranges[openSection] ?? null);
 
   const title =
     here === null
@@ -761,8 +761,10 @@ export function WallField({
   const dark = React.useMemo(() => isDarkTheme(theme), [theme]);
 
   // The board starts on the outline: sections only, nothing expanded.
-  const [openSection, setOpenSection] = React.useState<number | null>(null);
-  const [openPage, setOpenPage] = React.useState<number | null>(null);
+  const [openSectionState, setOpenSection] = React.useState<number | null>(
+    null,
+  );
+  const [openPageState, setOpenPage] = React.useState<number | null>(null);
   const [hoverKey, setHoverKey] = React.useState<string | null>(null);
 
   const ranges = React.useMemo(
@@ -772,6 +774,37 @@ export function WallField({
         : [{ start: 0, end: Math.max(0, pageCount - 1), label: "" }],
     [sectionRanges, pageCount],
   );
+
+  /**
+   * What is open is an index into THIS document's sections, and this field
+   * does not remount when the document changes — the panel's id is `"main"`
+   * in every document and it is the React key, so the same instance and all
+   * its state carry straight over from one page into the next.
+   *
+   * Carried into a document with fewer sections, the index points past the
+   * end and `ranges[openSection]` is `undefined`. Anand, 2026-08-18: *"after
+   * 5th new page opened in wall field it crashes the application"* — the
+   * header dereferenced `here.label` and threw during render, which unmounts
+   * the whole tree (and inside XR would end the frame loop for good).
+   *
+   * Resetting on a focus CHANGE is not enough on its own: a new document
+   * resets paging to page 0, so arriving on page 0 from page 0 is no change
+   * and nothing fires. Arrival is keyed off the plan instead — a new plan is
+   * a new document — and the value this render reads is derived, not the
+   * stored one, so no render ever sees an index into a document that is gone.
+   */
+  const lastPlan = React.useRef(plan);
+  const samePlan = lastPlan.current === plan;
+  lastPlan.current = plan;
+  if (!samePlan && (openSectionState !== null || openPageState !== null)) {
+    setOpenSection(null);
+    setOpenPage(null);
+  }
+  const openSection =
+    samePlan && openSectionState !== null && openSectionState < ranges.length
+      ? openSectionState
+      : null;
+  const openPage = openSection === null ? null : openPageState;
 
   // Handlers read state through this ref rather than their closure: a held
   // arrow key repeats faster than React re-renders, and every repeat would
@@ -952,20 +985,22 @@ export function WallField({
 
   if (!entry) return null;
 
-  // The open page's cell, in the board group's own frame. `cells` are already
-  // laid out for the current disclosure, so this follows the reflow for free.
-  const openCell = cells.find((c) => c.kind === "page" && c.open) ?? null;
-  const stripFrame: StripFrame | null = openCell
+  // The backing wall's silhouette, in the board group's own frame — the spine
+  // ends are its left and right edges, margins included, and `top`/`bottom`
+  // already clear the header plate and the hint line. `board` is recomputed
+  // for the current disclosure, so the strips follow the reflow for free and
+  // sit on the same four edges whichever page inside it is open.
+  const stripFrame: StripFrame | null = board
     ? {
-        left: openCell.offset.x,
-        right: openCell.offset.x + entry.size.width * openCell.scale,
-        top: openCell.offset.y,
-        bottom: openCell.offset.y - entry.size.height * openCell.scale,
+        left: board.spine[0].x,
+        right: board.spine[board.spine.length - 1].x,
+        top: board.top,
+        bottom: board.bottom,
       }
     : null;
 
   const maxPages = ranges.reduce((m, r) => Math.max(m, r.end - r.start + 1), 1);
-  const openRange = openSection === null ? null : ranges[openSection];
+  const openRange = openSection === null ? null : (ranges[openSection] ?? null);
   const tones = boardTones(theme, dark);
   const cellEntry = (c: WallCell): LayoutEntry => ({
     ...entry,
@@ -1001,9 +1036,10 @@ export function WallField({
             tones={tones}
           />
           {/* Links, on the edges the legend puts them on: parent above,
-              external below, siblings to the sides — hung off the OPEN PAGE's
-              own cell, which is the page whose links they are. Only while a
-              page is open; see the note at `showStrips`. */}
+              external below, siblings to the sides — hung off the BACKING
+              WALL's own edges, where nothing can occlude them and where they
+              stay put as the board reflows. They are still the open page's
+              links: only while a page is open; see the note at `showStrips`. */}
           {showStrips && stripFrame && (
             <WallLinkStrips
               frame={stripFrame}
@@ -1195,9 +1231,10 @@ function renderLive(
  * geometry of the set, so it tests the IDEA — relation read as direction —
  * rather than a view's own quirks.
  *
- * Strips sit OUTSIDE the grid, in the board's margin, and stop short of the
- * header plate. They are read by turning the head, which is the whole channel:
- * a reader who wants the level above looks up.
+ * Strips sit OUTSIDE the backing surface, tight against its four edges, so
+ * they clear the header plate above and the key hints below without either
+ * having to make room. They are read by turning the head, which is the whole
+ * channel: a reader who wants the level above looks up.
  */
 /**
  * Strip size, metres.
@@ -1218,17 +1255,24 @@ const STRIP_GAP = 0.016;
 /** Lateral strips stack down the side edges; this is their long axis. */
 const STRIP_W_LATERAL = 0.42;
 /**
- * How far a strip stands off the CELL plane — the plane the pages hang in,
- * `WALL_BOARD_STANDOFF` in front of the board's surface.
+ * How far a strip stands off the BOARD's own surface.
  *
- * The plane matters more than the number. Drawn on the board's own surface,
- * the strips sat BEHIND the open page and its mount and were occluded by the
- * very thing whose links they are: the wall looked like it had no links at
- * all. They belong in the page's plane, standing slightly proud of it.
+ * The plane matters more than the number, and it is the second thing about
+ * these strips to change. Drawn on the board plane but hung off the open
+ * PAGE's cell, they sat behind that page and its mount and were occluded by
+ * the very thing whose links they are — the wall looked like it had no links
+ * at all — so the first fix lifted them into the page's plane instead.
+ *
+ * Hanging them on the board's outer EDGE (Anand, 2026-08-18) fixes the same
+ * fault at its cause: outside the silhouette there is nothing in front of
+ * them to be hidden by, whatever the open page's size, so they can go back
+ * onto the wall standing slightly proud of it — which is where a door in a
+ * wall belongs, and reads as part of the building rather than as a card
+ * floating beside the page.
  */
 const STRIP_LIFT = 0.02;
 
-/** The rectangle the strips hang off: the open page's own cell. */
+/** The rectangle the strips hang off: the backing wall's own silhouette. */
 export interface StripFrame {
   left: number;
   right: number;
@@ -1247,21 +1291,26 @@ function WallLinkStrips({
   slots: DirSlots;
   onTake: (slot: DirSlot) => void;
 }) {
-  // ── The strips hang off the OPEN PAGE, not off the board ──
+  // ── The strips hang off the BOARD's edge, not off the open page ──
   //
-  // The board is the whole document's outline and grows to four metres wide
-  // with a long section open; its literal edges are then a metre either side
-  // of the reader and its top and bottom are past the top and bottom of what
-  // they can see without moving. Doors placed there are doors nobody finds.
+  // They were hung off the open page's own cell first, on the argument that
+  // the page is a known, modest size and its links should stay within a
+  // glance of it. In the headset that argument lost to a plain fact: the open
+  // page is the LARGEST thing on the wall and it is pushed forward off the
+  // board, so its own strips end up half behind it — a sibling door reading
+  // "…of Units" with its plate clipped by the page it belongs to.
   //
-  // The page is the right frame for two reasons. It is a known, modest size —
-  // one reading panel — so the strips are always within a glance of the thing
-  // they belong to. And they ARE the page's links: "a corridor belongs to the
-  // page the reader is on" is the model, so hanging them off the page rather
-  // than off the building it sits in is what the model already said.
+  // The board's outer edge has no such problem. Nothing is ever drawn there,
+  // so no strip can be occluded by anything, and the frame stops moving every
+  // time the reader opens a different page: the doors of this wall are always
+  // in the same four places, which is what makes direction learnable at all.
+  // The cost is head turn on a wide board — a long open section pushes the
+  // side columns out toward the wings — and that is the channel working as
+  // designed rather than a fault: up is up, and the way out is at the edge of
+  // the room. (Anand, 2026-08-18.)
   const centreX = (frame.left + frame.right) / 2;
   const centreY = (frame.top + frame.bottom) / 2;
-  const gridW = Math.max(0.2, frame.right - frame.left);
+  const frameW = Math.max(0.2, frame.right - frame.left);
 
   /**
    * Rows and columns both fill from the MIDDLE OUT (Anand, 2026-08-16).
@@ -1298,7 +1347,7 @@ function WallLinkStrips({
     return (
       <group
         key={s ? s.key : `${axis}-overflow`}
-        position={[x, y, arc.z + STRIP_LIFT]}
+        position={[x, y, arc.z - WALL_BOARD_STANDOFF + STRIP_LIFT]}
         rotation={[0, arc.yaw, 0]}
       >
         {s ? (
@@ -1323,7 +1372,10 @@ function WallLinkStrips({
   const horizontal = (axis: "up" | "down", y: number): React.ReactNode => {
     const run = runOf(axis);
     if (run.length === 0) return null;
-    const w = Math.min(STRIP_W_LATERAL, (gridW - STRIP_GAP * 2) / Math.max(1, Math.min(run.length, 5)));
+    const w = Math.min(
+      STRIP_W_LATERAL,
+      (frameW - STRIP_GAP * 2) / Math.max(1, Math.min(run.length, 5)),
+    );
     const pitch = w + STRIP_GAP;
     return centreOut(run.length).map((k, i) =>
       plate(run[i], axis, w, centreX + k * pitch, y),
@@ -1331,7 +1383,8 @@ function WallLinkStrips({
   };
 
   // Lateral strips stack DOWN the side edges, fanning from the board's own
-  // vertical centre for the same reason the rows fan from its horizontal one.
+  // vertical centre for the same reason the rows fan from its horizontal one:
+  // slot 0 lands at eye level, where the reader is already looking.
   const vertical = (axis: "left" | "right"): React.ReactNode => {
     const run = runOf(axis);
     if (run.length === 0) return null;
@@ -1345,7 +1398,7 @@ function WallLinkStrips({
     );
   };
 
-  // Above the page's top edge and below its bottom one — up is up.
+  // Above the board's top edge and below its bottom one — up is up.
   const upY = frame.top + STRIP_GAP + STRIP_H / 2;
   const downY = frame.bottom - STRIP_GAP - STRIP_H / 2;
 

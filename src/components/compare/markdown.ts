@@ -185,10 +185,6 @@ export function buildMarkdownTable(
     ),
     "**XR Layout Output** | " + stats.map(() => "").join(" | "),
     row(
-      "Layout template",
-      stats.map((s) => s.layoutTemplate),
-    ),
-    row(
       "Primitives placed",
       stats.map((s) => s.primitiveCount),
     ),

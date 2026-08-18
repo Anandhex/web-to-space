@@ -37,6 +37,8 @@ import { DEFAULT_CONFIG } from "../ir/defaults";
 import { mapIRToScene, DEFAULT_MAPPER_CONFIG } from "../mapper/mapper";
 import { computeLayoutPlan } from "../layout/engine";
 import { QUEST_3_PROFILE } from "../layout/profiles";
+import { getArrangement } from "../layout/placement";
+import { foldForArrangement } from "../layout/content-only";
 import { collectSpatialLinks } from "../links/collect";
 import type { SpatialLink } from "../links/types";
 
@@ -220,9 +222,25 @@ async function main(): Promise<void> {
     const url = sources[f] ?? `file://${resolve(CORPUS_DIR, f)}`;
     const ir = await parsePageToIR(html, url, undefined, DEFAULT_CONFIG);
     const scene = mapIRToScene(ir, DEFAULT_MAPPER_CONFIG);
-    const plan = computeLayoutPlan(scene, QUEST_3_PROFILE, undefined, {});
+    // Lay out the way the app does. Every shipped view is a page view, so the
+    // slot roster is [main] and the landmarks fold into the panel's flow —
+    // measuring the unfolded landmark desk would measure a layout no reader
+    // ever sees.
+    const arrangement = getArrangement("rooms");
+    // `scene` stays the mapper's own output — the parser metrics below are
+    // about what was PARSED. `laidOut` is what gets placed, and anything that
+    // reads positions out of the plan must use it, since folding re-parents
+    // the landmarks and the plan has entries for that shape, not this one.
+    const laidOut = foldForArrangement(scene, arrangement);
+    const plan = computeLayoutPlan(
+      laidOut,
+      QUEST_3_PROFILE,
+      {},
+      undefined,
+      arrangement,
+    );
 
-    const links = collectSpatialLinks(scene, plan, { pageUrl: url });
+    const links = collectSpatialLinks(laidOut, plan, { pageUrl: url });
 
     const pageCount = Math.max(
       1,

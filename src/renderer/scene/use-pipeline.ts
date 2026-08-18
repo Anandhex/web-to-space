@@ -30,7 +30,6 @@ export function usePipeline(
   layoutConfig: Partial<LayoutConfig>,
   parserConfig: Partial<ParserConfig>,
   parserBackend: ParserBackend,
-  templateOverride: import("../../layout/types").LayoutTemplate | undefined,
   arrangement: import("../../layout/types").Arrangement | undefined,
   /**
    * Layer 3's provider config, from the Home screen. `null` (or settings with
@@ -143,7 +142,6 @@ export function usePipeline(
           const plan = computeLayoutPlan(
             scene,
             deviceProfile,
-            templateOverride,
             stableConfig,
             undefined,
             arrangement,
@@ -172,7 +170,6 @@ export function usePipeline(
         const plan = computeLayoutPlan(
           scene,
           deviceProfile,
-          templateOverride,
           stableConfig,
           undefined,
           arrangement,
@@ -209,7 +206,6 @@ export function usePipeline(
     stableConfig,
     stableParserConfig,
     parserBackend,
-    templateOverride,
     arrangement,
     stableAI,
   ]);

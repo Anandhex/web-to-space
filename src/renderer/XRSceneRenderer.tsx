@@ -238,7 +238,6 @@ export function XRSceneRenderer({
     },
     parserConfig,
     parserBackend,
-    undefined,
     arrangement,
     aiSettings ?? null,
   );
@@ -470,9 +469,6 @@ export function XRSceneRenderer({
                 · {plan.diagnostics.unplacedIds.length} unplaced
               </span>
             )}
-            <span style={{ marginLeft: "auto", opacity: 0.5 }}>
-              {plan.template} layout
-            </span>
           </>
         )}
         {/* Layer 3 only ever runs when the reader configured a provider, and

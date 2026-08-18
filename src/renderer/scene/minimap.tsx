@@ -42,16 +42,10 @@ import * as THREE from "three";
 
 import { useTheme } from "../theme";
 import { FontContext } from "./contexts";
-import type { NavNode, NavState } from "../../links/memory";
+import type { NavState } from "../../links/memory";
+import type { Side } from "./minimap-layout";
+import { W, H, U, NODE_R, Z_EDGE, corridor, plot } from "./minimap-layout";
 
-/**
- * Panel size in metres, at the distance below. Small: it is a corner, not a
- * view. 0.2 m at 0.85 m is about 13° across — big enough to pick a node out
- * of, small enough that it never competes with the document for the middle of
- * the frame.
- */
-const W = 0.2;
-const H = 0.16;
 /** Distance from the eye. Close enough to read, far enough not to converge on. */
 const DIST = 0.85;
 /** Offset from the sight line, in metres at DIST — down and to the left. */
@@ -59,132 +53,14 @@ const OFF_X = -0.33;
 const OFF_Y = -0.24;
 /** Lazy follow: fraction of the remaining error closed per frame at 90 Hz. */
 const FOLLOW = 0.06;
-/**
- * Lattice pitch at full size. The drawing is laid out at this pitch and then
- * fitted to the panel as a whole (see `plot`), so this is the spacing a short
- * history gets rather than a spacing every history is forced into.
- */
-const PITCH = 0.05;
-const NODE_R = 0.009;
-/**
- * Half the box a node needs to itself, at full size — the widest of the three
- * glyphs below, not the dot they used to be.
- *
- * This is the number the layout used to be missing. Pitch was fitted to the
- * panel from the lattice span alone, so six rooms in a line got a 9 mm pitch
- * while a room plan is 29 mm across: the glyphs were laid out edge to edge on
- * a grid three times too fine and stacked on top of each other. Whatever the
- * spacing ends up being, it is now spacing for THESE shapes.
- *
- * (deck's lifted card reaches 1.68u across and 1.68u down with its lip;
- * rooms' plan is 1.6u × 1.2u; wall's rim reaches 1.45u. u is NODE_R * 2.)
- */
-const GLYPH_HALF = NODE_R * 2 * 0.9;
-/** The band between the two captions — all the map is allowed to draw in. */
-const PLOT_TOP = H / 2 - 0.026;
-const PLOT_BOTTOM = -H / 2 + 0.038;
-const PLOT_HALF_W = W / 2 - 0.012;
-const PLOT_MID_Y = (PLOT_TOP + PLOT_BOTTOM) / 2;
-/**
- * Floor on the fit. Past this a glyph is under half a degree wide and the
- * shape stops being readable as a shape, so a very long history is allowed to
- * run off the panel edge rather than shrink into an unreadable smudge — the
- * map stays true about WHERE, and the reader can still tell a room from a
- * card. Reached at about eleven documents in a straight line.
- */
-const MIN_SCALE = 0.3;
-
-interface Plotted {
-  node: NavNode;
-  historyIndex: number;
-  /** Panel-local position, metres. */
-  x: number;
-  y: number;
-}
-
-interface Plot {
-  points: Plotted[];
-  /** Uniform scale the drawing was fitted by — glyphs wear it too. */
-  scale: number;
-}
-
-/**
- * Lay the history out on its lattice, then fit the whole drawing to the panel.
- *
- * Two steps rather than one, and the order is the point. Laying out first at a
- * fixed pitch and fitting after means the thing being fitted is the drawing
- * the reader actually sees — glyph extents and collision nudges included —
- * instead of a set of bare centres that the glyphs then overflow. The glyphs
- * are scaled by the same factor, so a node can never grow into its neighbour:
- * pitch and mark shrink together or not at all.
- *
- * Coordinates can collide — going east then west then east again returns to a
- * coordinate already occupied by a different document — so a collided node is
- * nudged rather than drawn on top of its predecessor. Nudging is honest here
- * in a way that dropping would not be: the reader visited both.
- */
-function plot(history: NavNode[]): Plot {
-  if (history.length === 0) return { points: [], scale: 1 };
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const n of history) {
-    minX = Math.min(minX, n.coord.x);
-    maxX = Math.max(maxX, n.coord.x);
-    minY = Math.min(minY, n.coord.y);
-    maxY = Math.max(maxY, n.coord.y);
-  }
-  const cx = (minX + maxX) / 2;
-  const cy = (minY + maxY) / 2;
-
-  const used = new Map<string, number>();
-  const raw = history.map((node, historyIndex) => {
-    const key = `${node.coord.x},${node.coord.y}`;
-    const collisions = used.get(key) ?? 0;
-    used.set(key, collisions + 1);
-    // A spiral nudge, so a third visit to one coordinate does not land on the
-    // second. Sized off the glyph, not off a dot radius, so it keeps reading
-    // as a stack rather than a merge whatever shape the view draws: enough
-    // offset to see two outlines, little enough to read "the same place".
-    const nudge = collisions * GLYPH_HALF * 0.9;
-    return {
-      node,
-      historyIndex,
-      x: (node.coord.x - cx) * PITCH + nudge,
-      y: (node.coord.y - cy) * PITCH + nudge,
-    };
-  });
-
-  // The box the drawing occupies, glyphs and all.
-  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-  for (const p of raw) {
-    x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
-    y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
-  }
-  const drawW = x1 - x0 + GLYPH_HALF * 2;
-  const drawH = y1 - y0 + GLYPH_HALF * 2;
-  const scale = Math.max(
-    MIN_SCALE,
-    Math.min(1, (PLOT_HALF_W * 2) / drawW, (PLOT_TOP - PLOT_BOTTOM) / drawH),
-  );
-
-  // Recentre on the plot band rather than on the panel: the captions own the
-  // top and bottom of it, and a map centred on the panel drifts under them.
-  const midX = (x0 + x1) / 2;
-  const midY = (y0 + y1) / 2;
-  const points = raw.map((p) => ({
-    ...p,
-    x: (p.x - midX) * scale,
-    y: (p.y - midY) * scale + PLOT_MID_Y,
-  }));
-  return { points, scale };
-}
 
 /**
  * A visited document, drawn as the thing the reader's own view is made of.
  *
  * A generic dot is a correct graph and a useless map: the reader has spent the
  * whole session learning that a document is a FACE of a dice, or a TABLE, or a
- * ROOM, or a STOREY, and a corner overlay that throws that away and hands them
- * five identical circles makes them translate between two vocabularies to read
+ * ROOM, and a corner overlay that throws that away and hands them five
+ * identical circles makes them translate between two vocabularies to read
  * their own history. So each view's map is drawn in that view's own material.
  *
  * Colour still carries nothing — the whole design has given it up. What
@@ -193,21 +69,24 @@ function plot(history: NavNode[]): Plot {
  *
  *   wall   a square face, as one side of the dice
  *   deck   a card on a table, with the lip the table has
- *   rooms  a room in plan, walls drawn and a doorway left open
+ *   rooms  a room in plan, walls drawn and a doorway per corridor
  */
 function NodeGlyph({
   view,
   here,
   hover,
+  doors,
 }: {
   view: string;
   here: boolean;
   hover: boolean;
+  /** rooms only: the walls a corridor meets, which are left open. */
+  doors?: readonly Side[];
 }) {
   const theme = useTheme();
   const ink = here || hover ? theme.headingCol : theme.bodyCol;
   const strength = here ? 1 : hover ? 0.9 : 0.62;
-  const u = NODE_R * 2;
+  const u = U;
 
   /** A filled bar — the one part every glyph below is built from. */
   const bar = (
@@ -240,20 +119,42 @@ function NodeGlyph({
       );
     }
     case "rooms": {
-      // A room in plan: four walls with a gap left in the near one, because a
-      // room you cannot get into is a box.
+      // A room in plan: four walls, with a gap left in every wall a corridor
+      // meets, because a room you cannot get into is a box and a corridor that
+      // stops at a solid wall is a wire. A room with no corridor at all — one
+      // document, which the map does not draw anyway — keeps the near door.
       const w = u * 1.6;
       const h = u * 1.2;
       const t = u * 0.16;
-      const jamb = (w - u * 0.5) / 2;
+      const open: readonly Side[] = doors && doors.length ? doors : ["s"];
+      const wall = (side: Side) => {
+        const horizontal = side === "n" || side === "s";
+        const len = horizontal ? w : h;
+        const x = side === "e" ? w / 2 : side === "w" ? -w / 2 : 0;
+        const y = side === "n" ? h / 2 : side === "s" ? -h / 2 : 0;
+        if (!open.includes(side)) {
+          return horizontal
+            ? bar(side, len, t, x, y)
+            : bar(side, t, len, x, y);
+        }
+        // Two jambs with the doorway between them.
+        const jamb = (len - Math.min(u * 0.5, len * 0.5)) / 2;
+        const off = (len - jamb) / 2;
+        return (
+          <React.Fragment key={side}>
+            {horizontal
+              ? bar(`${side}-a`, jamb, t, x - off, y)
+              : bar(`${side}-a`, t, jamb, x, y - off)}
+            {horizontal
+              ? bar(`${side}-b`, jamb, t, x + off, y)
+              : bar(`${side}-b`, t, jamb, x, y + off)}
+          </React.Fragment>
+        );
+      };
       return (
         <group>
           {here && bar("floor", w, h, 0, 0, 0.3)}
-          {bar("far", w, t, 0, h / 2)}
-          {bar("left", t, h, -w / 2, 0)}
-          {bar("right", t, h, w / 2, 0)}
-          {bar("near-a", jamb, t, -(w - jamb) / 2, -h / 2)}
-          {bar("near-b", jamb, t, (w - jamb) / 2, -h / 2)}
+          {(["n", "s", "e", "w"] as Side[]).map(wall)}
         </group>
       );
     }
@@ -295,13 +196,58 @@ function MinimapPanel({
   const fontType = React.useContext(FontContext);
   const [hovered, setHovered] = React.useState<number | null>(null);
 
-  const { points: nodes, scale } = React.useMemo(() => plot(nav.history), [nav.history]);
+  const { points: nodes, scale, gx, gy, cell } = React.useMemo(
+    () => plot(nav.history, viewMode),
+    [nav.history, viewMode],
+  );
   const byIndex = React.useMemo(() => new Map(nodes.map((p) => [p.historyIndex, p])), [nodes]);
+
+  // Edges, and — in rooms — the walls each corridor asks to be let through.
+  const { edges, doors } = React.useMemo(() => {
+    const edges: { key: string; pts: [number, number, number][] }[] = [];
+    const doors = new Map<number, Side[]>();
+    const openDoor = (index: number, side: Side) => {
+      const sides = doors.get(index) ?? [];
+      if (!sides.includes(side)) sides.push(side);
+      doors.set(index, sides);
+    };
+    for (const p of nodes) {
+      const from = p.node.from >= 0 ? byIndex.get(p.node.from) : undefined;
+      if (!from) continue;
+      const key = `edge-${p.historyIndex}`;
+      if (viewMode !== "rooms") {
+        edges.push({
+          key,
+          pts: [
+            [from.x, from.y, Z_EDGE],
+            [p.x, p.y, Z_EDGE],
+          ],
+        });
+        continue;
+      }
+      const run = corridor(from, p, gx, gy, cell, nodes);
+      edges.push({
+        key,
+        pts: run.pts.map(([x, y]) => [x, y, Z_EDGE] as [number, number, number]),
+      });
+      openDoor(from.historyIndex, run.fromSide);
+      openDoor(p.historyIndex, run.toSide);
+    }
+    return { edges, doors };
+  }, [nodes, byIndex, viewMode, gx, gy, cell]);
 
   const here = nav.at;
   const shown = hovered ?? here;
   const shownNode = byIndex.get(shown)?.node;
   const noun = NODE_NOUN[viewMode] ?? "pages";
+
+  // One hit target per node: at least the glyph, never wider than the spacing.
+  // Sized to be reachable rather than to the shape — a room plan is mostly
+  // empty and a ray through its middle would otherwise hit nothing — but
+  // capped at the pitch, because a target that outgrows the spacing answers
+  // for its neighbour.
+  const hitW = Math.min(cell * 0.95, Math.max(gx * 2, NODE_R * 4.6));
+  const hitH = Math.min(cell * 0.95, Math.max(gy * 2, NODE_R * 3.4));
 
   return (
     <group>
@@ -331,25 +277,18 @@ function MinimapPanel({
 
       {/* Edges: each node back to the one it was reached from. Drawn under the
           glyphs so a face is never cut by its own connector. */}
-      {nodes.map((p) => {
-        const from = p.node.from >= 0 ? byIndex.get(p.node.from) : undefined;
-        if (!from) return null;
-        return (
-          <Line
-            key={`edge-${p.historyIndex}`}
-            points={[
-              [from.x, from.y, 0.0005],
-              [p.x, p.y, 0.0005],
-            ]}
-            color={theme.mutedTextCol}
-            // Rooms joins its nodes with corridors rather than wires, so its
-            // connectors are drawn heavier — the same thing the reader walks.
-            lineWidth={viewMode === "rooms" ? 3.2 : 1.4}
-            transparent
-            opacity={viewMode === "rooms" ? 0.5 : 0.7}
-          />
-        );
-      })}
+      {edges.map((e) => (
+        <Line
+          key={e.key}
+          points={e.pts}
+          color={theme.mutedTextCol}
+          // Rooms joins its nodes with corridors rather than wires, so its
+          // connectors are drawn heavier — the same thing the reader walks.
+          lineWidth={viewMode === "rooms" ? 3.2 : 1.4}
+          transparent
+          opacity={viewMode === "rooms" ? 0.5 : 0.7}
+        />
+      ))}
 
       {/* Nodes, in the view's own material. */}
       {nodes.map((p) => (
@@ -359,12 +298,9 @@ function MinimapPanel({
               view={viewMode}
               here={p.historyIndex === here}
               hover={p.historyIndex === hovered}
+              doors={doors.get(p.historyIndex)}
             />
           </group>
-          {/* One hit target per node, sized to be reachable rather than to the
-              glyph — a room plan is mostly empty and a ray through its middle
-              would otherwise hit nothing. Capped at the fitted pitch, because
-              a target that outgrows the spacing answers for its neighbour. */}
           <mesh
             position={[0, 0, 0.004]}
             onPointerOver={(e) => {
@@ -377,12 +313,7 @@ function MinimapPanel({
               if (p.historyIndex !== here) onJump(p.historyIndex);
             }}
           >
-            <planeGeometry
-              args={[
-                Math.min(NODE_R * 4.6, PITCH * scale * 0.95),
-                Math.min(NODE_R * 3.4, PITCH * scale * 0.95),
-              ]}
-            />
+            <planeGeometry args={[hitW, hitH]} />
             <meshBasicMaterial transparent opacity={0} depthWrite={false} />
           </mesh>
         </group>

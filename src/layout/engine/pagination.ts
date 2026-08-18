@@ -48,9 +48,7 @@ import {
   isInlineOwningNode,
   isFlattenedIntoProse,
 } from "./classify";
-import {
-  stackChildrenSimple,
-} from "../engine";
+import { stackChildrenSimple } from "../engine";
 
 function advanceOverflowPages(
   currentPageHeight: number,
@@ -667,7 +665,11 @@ export function paginateContentPanel(
         const page = pageIndexMap[c.id];
         const pos = positionMap.get(c.id);
         if (page !== undefined && pos !== undefined) {
-          if (best === null || page < best.page || (page === best.page && pos.y > best.y))
+          if (
+            best === null ||
+            page < best.page ||
+            (page === best.page && pos.y > best.y)
+          )
             best = { page, y: pos.y };
         }
         walk(c);
@@ -1630,11 +1632,3 @@ export function paginateContentPanel(
     syntheticPrimitives,
   };
 }
-// ─────────────────────────────────────────────────────────────
-// Strategy attachment
-// ─────────────────────────────────────────────────────────────
-
-/**
- * Attach resolved table strategy or card grid column count to a LayoutEntry
- * if the primitive requires it.
- */

@@ -8,22 +8,6 @@ import type {
 } from "../mapper/types";
 
 // ─────────────────────────────────────────────────────────────
-// Re-exported template type (was previously in mapper.ts)
-// ─────────────────────────────────────────────────────────────
-
-/**
- * High-level scene archetype that controls landmark slot placement.
- *
- * Moved from mapper.ts to engine.ts: template selection requires layout
- * geometry knowledge (panel sizes, child counts) that the mapper must not
- * know about.
- */
-export type LayoutTemplate =
-  | "document" // Long-form article / blog / docs
-  | "landing" // Hero + feature sections, marketing
-  | "generic"; // Safe fallback
-
-// ─────────────────────────────────────────────────────────────
 // Output types (LayoutEntry, PaginationMeta, LayoutPlan)
 // ─────────────────────────────────────────────────────────────
 
@@ -137,7 +121,6 @@ export interface PaginationMeta {
 export interface LayoutPlan {
   /** Flat registry: primitive ID → LayoutEntry. Covers every node. */
   entries: Record<string, LayoutEntry>;
-  template: LayoutTemplate;
   config: LayoutConfig;
   /**
    * The resolved landmark slot map (post-override) that drove placement. The
@@ -146,7 +129,7 @@ export interface LayoutPlan {
   slots: SlotMap;
   /**
    * The slots a landmark was actually placed into, in the order they were
-   * claimed. `slots` is the roster the template offers; this is the subset the
+   * claimed. `slots` is the roster the desk offers; this is the subset the
    * document filled. A page with no `<nav>` still gets a navigation slot, and
    * anything drawn from the roster alone (a mount, a backing) would appear as
    * an empty panel hanging in the workspace.
@@ -460,7 +443,7 @@ export interface LayoutConfig {
   sectionStartsOnNewPage?: boolean; // default: true
   /**
    * Set by computeLayoutPlan (not a device profile knob): true when the active
-   * template exposes a complementary slot, so every XRComplementary flowed
+   * desk exposes a complementary slot, so every XRComplementary flowed
    * inside a content panel will be extracted to that slot at layout time. When
    * true, paginateContentPanel treats those asides as zero-space floats — they
    * still receive a pageIndex (so the extraction pass can find them) but never
@@ -488,10 +471,10 @@ export interface LandmarkSlot {
  * Live tuning override for a single landmark slot.
  *
  * When present in LayoutConfig.slotOverrides (set by the DOM tuning HUD), these
- * values are stamped onto the resolved slot AFTER the template/arrangement
+ * values are stamped onto the resolved slot AFTER the desk/arrangement
  * produces it — so you can dial in a panel's placement in the running scene and
  * export the numbers into a slot definition. Every field is optional; only the
- * fields that are set are applied, leaving the rest at the template's value.
+ * fields that are set are applied, leaving the rest at the desk's value.
  *
  * Angles are in radians (WebXR). Distances/radii are in metres. `x` is the
  * panel's LEFT edge (top-left anchor), matching LandmarkSlot.position.
@@ -556,8 +539,8 @@ export type DeviceClass = "headset-6dof" | "headset-roomscale" | "glasses";
 
 /**
  * A single landmark slot's size + reading priority, WITHOUT a position.
- * Produced by the content template (`rosterFor`) and consumed by an
- * arrangement's distribution to compute the final SlotMap.
+ * Produced by the desk (`rosterFor`) and consumed by an arrangement's
+ * distribution to compute the final SlotMap.
  */
 export interface SlotSpec {
   role: SlotName;
@@ -571,8 +554,7 @@ export type SlotRoster = SlotSpec[];
 
 /**
  * A declarative view: a reference frame + a distribution algorithm, composed
- * over whatever content template the scene auto-selects. Adding a view is data,
- * not a new SlotMap function.
+ * over the desk. Adding a view is data, not a new SlotMap function.
  */
 export interface Arrangement {
   /** Stable id — matches the ViewMode string in the UI. */

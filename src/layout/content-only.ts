@@ -25,6 +25,7 @@
  * construction since it builds from the original scene each time).
  */
 import type { SemanticScene, XRPrimitive } from "../mapper/types";
+import type { Arrangement } from "./types";
 
 const FOLDED_TYPES = new Set(["XRBanner", "XRComplementary", "XRFooter"]);
 
@@ -105,4 +106,26 @@ export function foldSceneContentOnly(scene: SemanticScene): SemanticScene {
       [foldedPanel.id]: foldedPanel,
     },
   };
+}
+
+/**
+ * Fold a scene for an arrangement, if that arrangement is a page view.
+ *
+ * The condition — a `pageDistribution` that isn't `"flip"` — is the SAME test
+ * `resolveArrangementSlots` uses to collapse the slot roster to [main] and
+ * `computeLayoutPlan` uses to set `contentOnly`. Those three must agree: fold
+ * without the collapse and the landmarks are laid out twice; collapse without
+ * the fold and their content is suppressed instead of flowed. Callers that
+ * build a plan themselves (the renderer's pipeline, the offline eval scripts)
+ * go through here rather than re-deriving the condition.
+ */
+export function foldForArrangement(
+  scene: SemanticScene,
+  arrangement: Arrangement | undefined,
+): SemanticScene {
+  const pageView =
+    !!arrangement?.pageDistribution && arrangement.pageDistribution !== "flip";
+  return pageView && sceneHasFoldableLandmarks(scene)
+    ? foldSceneContentOnly(scene)
+    : scene;
 }

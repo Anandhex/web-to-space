@@ -273,10 +273,12 @@ avoidance, and interaction history. **Fatigue-aware VR interfaces** (arXiv 2603.
 optimise layouts against a biomechanical muscle-fatigue model.
 
 **Comparison — this is the clearest gap.** Web-to-Space's layout engine is
-**rule-and-template-based, not optimisation-based**: `selectLayoutTemplate()`
-classifies the scene (`document | landing | generic | carousel`) via simple
-thresholds (banner present, `sectionCount <= 3`, `totalWordCount < 600`), then
-slots landmarks deterministically. There is no cost function and no solver.
+**rule-based, not optimisation-based**: one hand-tuned desk (`selectSlots()`)
+derives its panel widths from the device profile's comfort cone, and landmarks
+are slotted into it deterministically. There is no cost function and no solver.
+(An earlier `selectLayoutTemplate()` classified the scene as `document |
+landing | generic` first; the classes differed only in main-panel width, one of
+them was structurally unreachable, and it was removed 2026-08-19.)
 
 | | Optimisation family | Web-to-Space |
 |---|---|---|

@@ -17,11 +17,9 @@ import {
   imageCaptionBandHeight,
 } from "./positionConfigs";
 import { selectSlots, resolveArrangementSlots } from "./placement";
-import { selectLayoutTemplate } from "./templates";
 import type {
   Arrangement,
   DeviceProfile,
-  LayoutTemplate,
   RenderMetrics,
   LayoutEntry,
   LayoutDiagnostics,
@@ -347,9 +345,28 @@ export function attachResolvedStrategies(
 // Recursive layout walker
 // ─────────────────────────────────────────────────────────────
 
+// Container types that call paginateContentPanel when at the top level (not
+// already inside another paginated panel). XRNavigationBar and
+// XRComplementary are excluded because they are fixed-height landmark
+// fixtures that must not scroll. XRBanner and XRFooter are intentionally
+// hidden in XR, so pagination is irrelevant for them.
+const PAGINATING_CONTAINER_TYPES = new Set([
+  "XRContentPanel",
+  "XRSection",
+  "XRArticle",
+  "XRFormPanel",
+  "XRGenericPanel",
+]);
+
 // Outside XRContentPanel: stackChildrenSimple computes positions.
 // Inside: reads from placedPositionMap/placedHeightMap — never re-estimates,
 // because split fragments have a truncated height that differs from estimateHeight.
+//
+// Dispatches to one of three child-placement strategies below, depending on
+// where this primitive sits relative to pagination:
+//   - layoutPaginatingContainer   — top-level paginating container (starts pagination)
+//   - layoutInsidePaginatedPanel  — descendant of an already-paginated panel
+//   - layoutStackedChildren       — outside any XRContentPanel entirely
 export function layoutPrimitive(
   primitive: XRPrimitive,
   worldPosition: Vec3,
@@ -381,314 +398,375 @@ export function layoutPrimitive(
     entry.pageIndex = inheritedPageIndex;
   }
 
-  attachResolvedStrategies(
-    entry,
-    primitive,
-    // worldSize.width is already panel-padding-reduced once we're a descendant
-    // inside a paginated panel (placedPositionMap set) — matching the basis
-    // placeListGrid uses for the SAME list (see childWidth/usableW there).
-    // Subtracting panelPaddingX*2 again here would narrow the width used to
-    // resolve column count below what placeListGrid actually placed items
-    // with, causing entry.listColumns to disagree with the real column count
-    // and rendered cards to overlap/gap relative to their true slot pitch.
-    // Outside a paginated panel (top-level call), worldSize.width is still
-    // full/unreduced and needs the single reduction to match
-    // stackChildrenSimple's own ownsXPadding-driven reduction.
-    placedPositionMap
-      ? Math.max(0.025, worldSize.width)
-      : Math.max(0.025, worldSize.width - config.panelPaddingX * 2),
-    metrics,
-  );
-
-  // Container types that call paginateContentPanel when at the top level
-  // (not already inside another paginated panel). XRNavigationBar and
-  // XRComplementary are excluded because they are fixed-height landmark
-  // fixtures that must not scroll. XRBanner and XRFooter are intentionally
-  // hidden in XR, so pagination is irrelevant for them.
-  const PAGINATING_CONTAINER_TYPES = new Set([
-    "XRContentPanel",
-    "XRSection",
-    "XRArticle",
-    "XRFormPanel",
-    "XRGenericPanel",
-  ]);
+  // worldSize.width is already panel-padding-reduced once we're a descendant
+  // inside a paginated panel (placedPositionMap set) — matching the basis
+  // placeListGrid uses for the SAME list (see childWidth/usableW there).
+  // Subtracting panelPaddingX*2 again here would narrow the width used to
+  // resolve column count below what placeListGrid actually placed items
+  // with, causing entry.listColumns to disagree with the real column count
+  // and rendered cards to overlap/gap relative to their true slot pitch.
+  // Outside a paginated panel (top-level call), worldSize.width is still
+  // full/unreduced and needs the single reduction to match
+  // stackChildrenSimple's own ownsXPadding-driven reduction.
+  const strategyWidth = placedPositionMap
+    ? Math.max(0.025, worldSize.width)
+    : Math.max(0.025, worldSize.width - config.panelPaddingX * 2);
+  attachResolvedStrategies(entry, primitive, strategyWidth, metrics);
 
   if (primitive.children.length > 0) {
     if (PAGINATING_CONTAINER_TYPES.has(primitive.type) && !placedPositionMap) {
-      // ── Paginating path ──────────────────────────────────────────────────
-      // Called for XRContentPanel (unchanged) AND for XRSection, XRArticle,
-      // XRFormPanel, XRGenericPanel when they appear at the top level (not
-      // already inside a paginated container). Children receive panel-absolute
-      // positions; the renderer wraps them in a group at this primitive's
-      // world position.
-      entry.paginatedByEngine = true;
-      const {
-        pagination,
-        pageIndexMap: newPageIndexMap,
-        placedPositionMap: newPlacedPositionMap,
-        placedHeightMap: newPlacedHeightMap,
-        placedWidthMap: newPlacedWidthMap,
-        syntheticPrimitives: newSyntheticPrimitives,
-      } = paginateContentPanel(
-        primitive.children,
-        worldSize.width,
+      layoutPaginatingContainer(
+        primitive,
+        entry,
+        worldSize,
+        worldLocked,
         scene,
         config,
         metrics,
+        entries,
         diag,
       );
-
-      // Inject paragraph continuation nodes into the scene registry and the
-      // panel's children list so the renderer dispatches them as positioned
-      // siblings with their own LayoutEntries.
-      for (const synth of newSyntheticPrimitives) {
-        (scene.primitives as Record<string, XRPrimitive>)[synth.id] = synth;
-        (primitive.children as XRPrimitive[]).push(synth);
-      }
-
-      if (pagination) {
-        entry.pagination = pagination;
-        diag.paginatedPanelCount += 1;
-        diag.paginatedPanels.push({
-          id: primitive.id,
-          pageCount: pagination.pageCount,
-        });
-      }
-
-      const usableWidth = Math.max(
-        0.025,
-        worldSize.width - config.panelPaddingX * 2,
-      );
-      for (const child of primitive.children) {
-        const childPos =
-          newPlacedPositionMap.get(child.id) ?? topOfPagePos(config);
-        const childPageIndex = newPageIndexMap[child.id] ?? 0;
-
-        let childHeight = newPlacedHeightMap.get(child.id);
-        if (childHeight === undefined) {
-          diag.missingHeightMapEntries =
-            (diag.missingHeightMapEntries ?? 0) + 1;
-          childHeight = estimateHeight(
-            child,
-            usableWidth,
-            metrics,
-            config,
-            new Set(),
-            scene,
-          );
-        }
-
-        layoutPrimitive(
-          child,
-          childPos,
-          zeroRotation(),
-          { width: usableWidth, height: childHeight },
-          0,
-          worldLocked,
-          scene,
-          config,
-          metrics,
-          entries,
-          diag,
-          childPageIndex,
-          newPageIndexMap,
-          newPlacedPositionMap,
-          newPlacedHeightMap,
-          newPlacedWidthMap,
-        );
-      }    } else if (placedPositionMap && placedHeightMap) {
-      // ── Inside a paginated panel ──────────────────────────────────────────────
-      // paginateContentPanel's stampDescendants pass has written panel-absolute
-      // positions for EVERY descendant into placedPositionMap. There is one
-      // coordinate system: always look up from the map, never call
-      // stackChildrenSimple. The renderer uses entry.position uniformly for
-      // every node with no special cases.
-      //
-      // Inline-owning nodes (XRParagraph, XRHeading, XRListItem, XRBlockQuote,
-      // and an all-inline-children XRGenericPanel wrapper) render their inline
-      // children (XRText, XRLink, XRButton) as text runs internally — those
-      // children are NOT independent 3D nodes and must NOT get LayoutEntries.
-      // stampDescendants already skips stamping positions for them (see
-      // isInlineOwningNode); here we skip producing LayoutEntries for them
-      // too. Must use the exact same check as stampDescendants
-      // (isFlattenedIntoProse) — a narrower check (e.g. isInlinePrimitive
-      // alone) misses XRGenericPanel wrappers that flatten into prose (like
-      // a Wikipedia <span class="frac">), leaving those children with bogus
-      // fallback entries (top-of-page position, every one of them landing on
-      // the exact same point) instead of no entry at all.
-      if (isInlineOwningNode(primitive)) {
-        // Only recurse into block (non-inline) children — e.g. a sub-list or
-        // image inside a list item, which ARE dispatched via renderChild.
-        for (const child of primitive.children) {
-          if (isFlattenedIntoProse(child)) continue;
-          const childPos =
-            placedPositionMap.get(child.id) ?? topOfPagePos(config);
-          const childPageIndex = pageIndexMap?.[child.id] ?? inheritedPageIndex;
-          const childHeight =
-            placedHeightMap.get(child.id) ??
-            estimateHeight(
-              child,
-              Math.max(0.025, worldSize.width),
-              metrics,
-              config,
-              new Set(),
-              scene,
-            );
-          layoutPrimitive(
-            child,
-            childPos,
-            zeroRotation(),
-            { width: worldSize.width, height: childHeight },
-            0,
-            worldLocked,
-            scene,
-            config,
-            metrics,
-            entries,
-            diag,
-            childPageIndex,
-            pageIndexMap,
-            placedPositionMap,
-            placedHeightMap,
-            placedWidthMap,
-          );
-        }
-        entries[primitive.id] = entry;
-        diag.totalPlaced += 1;
-        return;
-      }
-
-      const listCols =
-        primitive.type === "XRList" && (entry.listColumns ?? 1) > 1
-          ? entry.listColumns!
-          : null;
-
-      // worldSize.width is already the panel-padding-reduced usable width at
-      // this point (see the attachResolvedStrategies call above) — matches
-      // placeListGrid's `usableW = childWidth` basis. No further panelPaddingX
-      // subtraction here, or cards render narrower than their actual slot
-      // pitch and drift out of sync with where placeListGrid put them.
-      const listCardWidth = listCols
-        ? Math.max(
-            0.025,
-            (worldSize.width - config.childGapY * (listCols - 1)) / listCols,
-          )
-        : null;
-
-      for (const child of primitive.children) {
-        const childPos =
-          placedPositionMap.get(child.id) ?? topOfPagePos(config);
-        const childPageIndex = pageIndexMap?.[child.id] ?? inheritedPageIndex;
-
-        let childHeight = placedHeightMap.get(child.id);
-
-        // A list item placeListGrid promoted to a full-width row (too tall
-        // for its normal grid column even on an empty page) carries an
-        // override in placedWidthMap — it must win over the uniform
-        // per-column listCardWidth, or the height computed for it upstream
-        // (at the wider width) won't match the narrower box it's squeezed
-        // back into here, reintroducing the same overflow it was meant to fix.
-        const childWidth =
-          placedWidthMap?.get(child.id) ??
-          listCardWidth ??
-          Math.max(0.025, worldSize.width);
-        if (childHeight === undefined) {
-          diag.missingHeightMapEntries =
-            (diag.missingHeightMapEntries ?? 0) + 1;
-          childHeight = estimateHeight(
-            child,
-            childWidth,
-            metrics,
-            config,
-            new Set(),
-            scene,
-          );
-        }
-
-        layoutPrimitive(
-          child,
-          childPos,
-          zeroRotation(),
-          { width: childWidth, height: childHeight },
-          0,
-          worldLocked,
-          scene,
-          config,
-          metrics,
-          entries,
-          diag,
-          childPageIndex,
-          pageIndexMap,
-          placedPositionMap,
-          placedHeightMap,
-          placedWidthMap,
-        );
-      }
-    } else {
-      // ── Outside any XRContentPanel — stackChildrenSimple ─────────────────
-      // Children get PARENT-RELATIVE positions here. Flag the container so the
-      // renderer nests its child dispatch in a positioned group (see
-      // LayoutEntry.childrenParentRelative) — otherwise a nested container like
-      // an XRList inside a landmark slot loses its own offset and its items
-      // detach from it.
-      entry.childrenParentRelative = true;
-      const resolvedListColumns =
-        primitive.type === "XRList" ? (entry.listColumns ?? 1) : undefined;
-
-      const { childEntries, totalHeight } = stackChildrenSimple(
-        primitive.children,
-        worldSize.width,
+    } else if (placedPositionMap && placedHeightMap) {
+      layoutInsidePaginatedPanel(
+        primitive,
+        entry,
+        worldSize,
+        worldLocked,
+        scene,
         config,
         metrics,
-        primitive.type,
-        resolvedListColumns,
-        primitive.label,
+        entries,
+        diag,
+        inheritedPageIndex,
+        pageIndexMap,
+        placedPositionMap,
+        placedHeightMap,
+        placedWidthMap,
       );
-
-      const OVERFLOW_TOLERANCE_M = 0.001;
-      if (totalHeight > worldSize.height + OVERFLOW_TOLERANCE_M) {
-        diag.slotOverflows = diag.slotOverflows ?? [];
-        diag.slotOverflows.push({
-          id: primitive.id,
-          type: primitive.type,
-          declaredHeight: worldSize.height,
-          actualHeight: totalHeight,
-          overflowBy: totalHeight - worldSize.height,
-        });
-      }
-
-      for (let i = 0; i < primitive.children.length; i++) {
-        const child = primitive.children[i];
-        const childLayoutEntry = childEntries[i];
-        if (!childLayoutEntry) continue;
-        // Inline children of inline-owning parents (including synthetic XRText
-        // added by normalizeLabelNodes, and XRGenericPanel wrappers that
-        // flatten into prose — see isFlattenedIntoProse) are rendered as text
-        // runs by the mesh component — they must not get independent
-        // LayoutEntries.
-        if (isInlineOwningNode(primitive) && isFlattenedIntoProse(child))
-          continue;
-
-        layoutPrimitive(
-          child,
-          childLayoutEntry.position,
-          childLayoutEntry.rotation,
-          childLayoutEntry.size,
-          0,
-          worldLocked,
-          scene,
-          config,
-          metrics,
-          entries,
-          diag,
-          inheritedPageIndex,
-        );
-      }
+    } else {
+      layoutStackedChildren(
+        primitive,
+        entry,
+        worldSize,
+        worldLocked,
+        scene,
+        config,
+        metrics,
+        entries,
+        diag,
+        inheritedPageIndex,
+      );
     }
   }
 
   entries[primitive.id] = entry;
   diag.totalPlaced += 1;
+}
+
+// ── Paginating path ─────────────────────────────────────────────────────
+// Called for XRContentPanel (unchanged) AND for XRSection, XRArticle,
+// XRFormPanel, XRGenericPanel when they appear at the top level (not already
+// inside a paginated container). Children receive panel-absolute positions;
+// the renderer wraps them in a group at this primitive's world position.
+function layoutPaginatingContainer(
+  primitive: XRPrimitive,
+  entry: LayoutEntry,
+  worldSize: Size2,
+  worldLocked: boolean,
+  scene: SemanticScene,
+  config: LayoutConfig,
+  metrics: RenderMetrics,
+  entries: Record<string, LayoutEntry>,
+  diag: LayoutDiagnostics,
+): void {
+  entry.paginatedByEngine = true;
+  const {
+    pagination,
+    pageIndexMap: newPageIndexMap,
+    placedPositionMap: newPlacedPositionMap,
+    placedHeightMap: newPlacedHeightMap,
+    placedWidthMap: newPlacedWidthMap,
+    syntheticPrimitives: newSyntheticPrimitives,
+  } = paginateContentPanel(
+    primitive.children,
+    worldSize.width,
+    scene,
+    config,
+    metrics,
+    diag,
+  );
+
+  // Inject paragraph continuation nodes into the scene registry and the
+  // panel's children list so the renderer dispatches them as positioned
+  // siblings with their own LayoutEntries.
+  for (const synth of newSyntheticPrimitives) {
+    (scene.primitives as Record<string, XRPrimitive>)[synth.id] = synth;
+    (primitive.children as XRPrimitive[]).push(synth);
+  }
+
+  if (pagination) {
+    entry.pagination = pagination;
+    diag.paginatedPanelCount += 1;
+    diag.paginatedPanels.push({
+      id: primitive.id,
+      pageCount: pagination.pageCount,
+    });
+  }
+
+  const usableWidth = Math.max(
+    0.025,
+    worldSize.width - config.panelPaddingX * 2,
+  );
+  for (const child of primitive.children) {
+    const childPos =
+      newPlacedPositionMap.get(child.id) ?? topOfPagePos(config);
+    const childPageIndex = newPageIndexMap[child.id] ?? 0;
+
+    let childHeight = newPlacedHeightMap.get(child.id);
+    if (childHeight === undefined) {
+      diag.missingHeightMapEntries = (diag.missingHeightMapEntries ?? 0) + 1;
+      childHeight = estimateHeight(
+        child,
+        usableWidth,
+        metrics,
+        config,
+        new Set(),
+        scene,
+      );
+    }
+
+    layoutPrimitive(
+      child,
+      childPos,
+      zeroRotation(),
+      { width: usableWidth, height: childHeight },
+      0,
+      worldLocked,
+      scene,
+      config,
+      metrics,
+      entries,
+      diag,
+      childPageIndex,
+      newPageIndexMap,
+      newPlacedPositionMap,
+      newPlacedHeightMap,
+      newPlacedWidthMap,
+    );
+  }
+}
+
+// ── Inside a paginated panel ────────────────────────────────────────────
+// paginateContentPanel's stampDescendants pass has written panel-absolute
+// positions for EVERY descendant into placedPositionMap. There is one
+// coordinate system: always look up from the map, never call
+// stackChildrenSimple. The renderer uses entry.position uniformly for every
+// node with no special cases.
+function layoutInsidePaginatedPanel(
+  primitive: XRPrimitive,
+  entry: LayoutEntry,
+  worldSize: Size2,
+  worldLocked: boolean,
+  scene: SemanticScene,
+  config: LayoutConfig,
+  metrics: RenderMetrics,
+  entries: Record<string, LayoutEntry>,
+  diag: LayoutDiagnostics,
+  inheritedPageIndex: number | undefined,
+  pageIndexMap: Record<string, number> | undefined,
+  placedPositionMap: Map<string, Vec3>,
+  placedHeightMap: Map<string, number>,
+  placedWidthMap: Map<string, number> | undefined,
+): void {
+  // Inline-owning nodes (XRParagraph, XRHeading, XRListItem, XRBlockQuote,
+  // and an all-inline-children XRGenericPanel wrapper) render their inline
+  // children (XRText, XRLink, XRButton) as text runs internally — those
+  // children are NOT independent 3D nodes and must NOT get LayoutEntries.
+  // stampDescendants already skips stamping positions for them (see
+  // isInlineOwningNode); here we skip producing LayoutEntries for them
+  // too. Must use the exact same check as stampDescendants
+  // (isFlattenedIntoProse) — a narrower check (e.g. isInlinePrimitive
+  // alone) misses XRGenericPanel wrappers that flatten into prose (like
+  // a Wikipedia <span class="frac">), leaving those children with bogus
+  // fallback entries (top-of-page position, every one of them landing on
+  // the exact same point) instead of no entry at all.
+  if (isInlineOwningNode(primitive)) {
+    // Only recurse into block (non-inline) children — e.g. a sub-list or
+    // image inside a list item, which ARE dispatched via renderChild.
+    for (const child of primitive.children) {
+      if (isFlattenedIntoProse(child)) continue;
+      const childPos =
+        placedPositionMap.get(child.id) ?? topOfPagePos(config);
+      const childPageIndex = pageIndexMap?.[child.id] ?? inheritedPageIndex;
+      const childHeight =
+        placedHeightMap.get(child.id) ??
+        estimateHeight(
+          child,
+          Math.max(0.025, worldSize.width),
+          metrics,
+          config,
+          new Set(),
+          scene,
+        );
+      layoutPrimitive(
+        child,
+        childPos,
+        zeroRotation(),
+        { width: worldSize.width, height: childHeight },
+        0,
+        worldLocked,
+        scene,
+        config,
+        metrics,
+        entries,
+        diag,
+        childPageIndex,
+        pageIndexMap,
+        placedPositionMap,
+        placedHeightMap,
+        placedWidthMap,
+      );
+    }
+    return;
+  }
+
+  const listCols =
+    primitive.type === "XRList" && (entry.listColumns ?? 1) > 1
+      ? entry.listColumns!
+      : null;
+
+  // worldSize.width is already the panel-padding-reduced usable width at
+  // this point (see the attachResolvedStrategies call in layoutPrimitive) —
+  // matches placeListGrid's `usableW = childWidth` basis. No further
+  // panelPaddingX subtraction here, or cards render narrower than their
+  // actual slot pitch and drift out of sync with where placeListGrid put
+  // them.
+  const listCardWidth = listCols
+    ? Math.max(
+        0.025,
+        (worldSize.width - config.childGapY * (listCols - 1)) / listCols,
+      )
+    : null;
+
+  for (const child of primitive.children) {
+    const childPos = placedPositionMap.get(child.id) ?? topOfPagePos(config);
+    const childPageIndex = pageIndexMap?.[child.id] ?? inheritedPageIndex;
+
+    let childHeight = placedHeightMap.get(child.id);
+
+    // A list item placeListGrid promoted to a full-width row (too tall
+    // for its normal grid column even on an empty page) carries an
+    // override in placedWidthMap — it must win over the uniform
+    // per-column listCardWidth, or the height computed for it upstream
+    // (at the wider width) won't match the narrower box it's squeezed
+    // back into here, reintroducing the same overflow it was meant to fix.
+    const childWidth =
+      placedWidthMap?.get(child.id) ??
+      listCardWidth ??
+      Math.max(0.025, worldSize.width);
+    if (childHeight === undefined) {
+      diag.missingHeightMapEntries = (diag.missingHeightMapEntries ?? 0) + 1;
+      childHeight = estimateHeight(
+        child,
+        childWidth,
+        metrics,
+        config,
+        new Set(),
+        scene,
+      );
+    }
+
+    layoutPrimitive(
+      child,
+      childPos,
+      zeroRotation(),
+      { width: childWidth, height: childHeight },
+      0,
+      worldLocked,
+      scene,
+      config,
+      metrics,
+      entries,
+      diag,
+      childPageIndex,
+      pageIndexMap,
+      placedPositionMap,
+      placedHeightMap,
+      placedWidthMap,
+    );
+  }
+}
+
+// ── Outside any XRContentPanel — stackChildrenSimple ────────────────────
+// Children get PARENT-RELATIVE positions here. Flag the container so the
+// renderer nests its child dispatch in a positioned group (see
+// LayoutEntry.childrenParentRelative) — otherwise a nested container like an
+// XRList inside a landmark slot loses its own offset and its items detach
+// from it.
+function layoutStackedChildren(
+  primitive: XRPrimitive,
+  entry: LayoutEntry,
+  worldSize: Size2,
+  worldLocked: boolean,
+  scene: SemanticScene,
+  config: LayoutConfig,
+  metrics: RenderMetrics,
+  entries: Record<string, LayoutEntry>,
+  diag: LayoutDiagnostics,
+  inheritedPageIndex: number | undefined,
+): void {
+  entry.childrenParentRelative = true;
+  const resolvedListColumns =
+    primitive.type === "XRList" ? (entry.listColumns ?? 1) : undefined;
+
+  const { childEntries, totalHeight } = stackChildrenSimple(
+    primitive.children,
+    worldSize.width,
+    config,
+    metrics,
+    primitive.type,
+    resolvedListColumns,
+    primitive.label,
+  );
+
+  const OVERFLOW_TOLERANCE_M = 0.001;
+  if (totalHeight > worldSize.height + OVERFLOW_TOLERANCE_M) {
+    diag.slotOverflows = diag.slotOverflows ?? [];
+    diag.slotOverflows.push({
+      id: primitive.id,
+      type: primitive.type,
+      declaredHeight: worldSize.height,
+      actualHeight: totalHeight,
+      overflowBy: totalHeight - worldSize.height,
+    });
+  }
+
+  for (let i = 0; i < primitive.children.length; i++) {
+    const child = primitive.children[i];
+    const childLayoutEntry = childEntries[i];
+    if (!childLayoutEntry) continue;
+    // Inline children of inline-owning parents (including synthetic XRText
+    // added by normalizeLabelNodes, and XRGenericPanel wrappers that
+    // flatten into prose — see isFlattenedIntoProse) are rendered as text
+    // runs by the mesh component — they must not get independent
+    // LayoutEntries.
+    if (isInlineOwningNode(primitive) && isFlattenedIntoProse(child)) continue;
+
+    layoutPrimitive(
+      child,
+      childLayoutEntry.position,
+      childLayoutEntry.rotation,
+      childLayoutEntry.size,
+      0,
+      worldLocked,
+      scene,
+      config,
+      metrics,
+      entries,
+      diag,
+      inheritedPageIndex,
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -699,8 +777,9 @@ export function layoutPrimitive(
  * Compute a LayoutPlan for a SemanticScene.
  *
  * Steps:
- *   1. Select (or accept) the layout template.
- *   2. Build the slot map for that template from config + metrics.
+ *   1. Resolve the slot map: the arrangement's distribution over the desk's
+ *      roster, or — with no arrangement — the desk's own map. Pass one: every
+ *      shipped view does, and without it a nav/aside lands on the main slot.
  *   3. For each top-level primitive, classify to a slot and assign world-space
  *      placement from that slot.
  *   4. Recursively stack and paginate all children in local space.
@@ -708,16 +787,13 @@ export function layoutPrimitive(
  *
  * @param scene    SemanticScene from mapIRToScene.
  * @param profile  Device profile supplying both LayoutConfig and RenderMetrics.
- *                 Use one of QUEST_3_PROFILE, QUEST_PRO_PROFILE, RAY_BAN_META_PROFILE,
- *                 or a custom profile.
- * @param template Explicit template override. When omitted, selectLayoutTemplate is called.
+ *                 QUEST_3_PROFILE, or a custom profile.
  * @param configOverrides Optional partial LayoutConfig to merge over profile.layoutConfig.
  * @param metricsOverrides Optional partial RenderMetrics to merge over profile.renderMetrics.
  */
 export function computeLayoutPlan(
   scene: SemanticScene,
   profile: DeviceProfile,
-  template?: LayoutTemplate,
   configOverrides?: Partial<LayoutConfig>,
   metricsOverrides?: Partial<RenderMetrics>,
   arrangement?: Arrangement,
@@ -727,8 +803,6 @@ export function computeLayoutPlan(
     ...profile.renderMetrics,
     ...metricsOverrides,
   };
-
-  const resolvedTemplate = template ?? selectLayoutTemplate(scene);
 
   const entries: Record<string, LayoutEntry> = {};
   const diag: LayoutDiagnostics = {
@@ -741,15 +815,15 @@ export function computeLayoutPlan(
   };
 
   // Arrangement path (new two-axis views): compose the arrangement's spatial
-  // distribution over the auto-selected content template's slot roster. Legacy
-  // path (no arrangement): the template's own hand-tuned SlotMap.
+  // distribution over the desk's slot roster. Legacy path (no arrangement):
+  // the desk's own hand-tuned SlotMap.
   const slots = arrangement
-    ? resolveArrangementSlots(arrangement, resolvedTemplate, config, metrics)
-    : selectSlots(resolvedTemplate, config, metrics);
+    ? resolveArrangementSlots(arrangement, config, metrics)
+    : selectSlots(config, metrics);
 
   // Live tuning override: stamp the HUD's values onto each targeted slot.
   // Slots are freshly built each call, so mutating here is safe. Only fields the
-  // HUD actually set are applied; the rest keep the template's computed value.
+  // HUD actually set are applied; the rest keep the desk's computed value.
   if (config.slotOverrides) {
     for (const [name, ov] of Object.entries(config.slotOverrides)) {
       const s = slots[name as SlotName];
@@ -1074,12 +1148,12 @@ export function computeLayoutPlan(
   if (diag.slotOverflows && diag.slotOverflows.length > 0) {
     // Each entry here means a non-paginating slot (banner/toc/navigation/
     // footer/complementary/alert/dialog) received content taller than the
-    // fixed slot height the current template+profile assigns it. Since
+    // fixed slot height the current profile assigns it. Since
     // stackChildrenSimple cannot paginate, that content is rendered past
     // the slot's intended bounds — most likely overlapping whatever
     // neighboring slot sits below it. This is a real layout defect, not
     // just a diagnostic curiosity: either the content needs to be shorter,
-    // the template/profile needs a taller slot for this content, or this
+    // the profile needs a taller slot for this content, or this
     // primitive needs to be moved under an XRContentPanel so it can
     // paginate instead of silently overflowing.
     console.warn(
@@ -1089,11 +1163,10 @@ export function computeLayoutPlan(
   }
   return {
     entries,
-    template: resolvedTemplate,
     config,
     slots,
     // Which of those slots actually received a landmark. `slots` is the
-    // template's full roster and says nothing about whether the document has
+    // desk's full roster and says nothing about whether the document has
     // anything to put in each one — the renderer needs the difference so it
     // does not draw furniture around an empty rail.
     occupiedSlots: [...usedSlots],
