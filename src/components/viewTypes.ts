@@ -1,19 +1,21 @@
 import type { HomeSettings } from "./HomeScreen";
 import type { Axis, NavState } from "../links/memory";
 
-export type ViewMode =
-  // Legacy bespoke views (hand-tuned SlotMaps + renderer branches)
-  | "standard"
-  | "carousel"
-  // Page views (content-only): the page set becomes the spatial structure
-  | "elevator"
-  | "wall"
-  | "deck"
-  | "rooms";
+/**
+ * The three spatial concepts the browser offers. Each is a DIFFERENT kind of
+ * spatial interaction, not a different configuration of the same one:
+ *
+ *   • rooms — you navigate the site as an environment you walk through.
+ *   • wall  — you see the site as one spatial structure you survey at once.
+ *   • deck  — you handle the page's parts as objects on a surface.
+ *
+ * All three are page views: the page SET is the spatial structure, so the
+ * roster collapses to [main] and the renderer scatters the pages itself.
+ */
+export type ViewMode = "wall" | "deck" | "rooms";
 
 /** ViewModes that route through the arrangement (two-axis) path. */
 export const ARRANGEMENT_VIEW_MODES: ReadonlySet<ViewMode> = new Set<ViewMode>([
-  "elevator",
   "wall",
   "deck",
   "rooms",
@@ -21,7 +23,6 @@ export const ARRANGEMENT_VIEW_MODES: ReadonlySet<ViewMode> = new Set<ViewMode>([
 
 /** Page views: content-only mode with a spatialised page set. */
 export const PAGE_VIEW_MODES: ReadonlySet<ViewMode> = new Set<ViewMode>([
-  "elevator",
   "wall",
   "deck",
   "rooms",

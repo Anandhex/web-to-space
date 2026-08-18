@@ -133,7 +133,7 @@ export const DEFAULT_HOME_SETTINGS: HomeSettings = {
   parserBackend: "custom",
   ai: DEFAULT_AI_SETTINGS,
   aiRememberKey: false,
-  viewMode: "standard",
+  viewMode: "rooms",
 };
 
 /**

@@ -58,9 +58,10 @@ import {
 } from "@react-three/drei";
 
 import { getArrangement } from "../layout/placement";
+import { sectionRangesFor } from "./scene/page-ghosts";
 import { QUEST_3_PROFILE } from "../layout/profiles";
 import type { SemanticScene } from "../mapper/types";
-import type { LayoutPlan, LayoutConfig, SlotName } from "../layout/types";
+import type { LayoutPlan, LayoutConfig } from "../layout/types";
 import type { ParserConfig, ParserBackend } from "../ir/types";
 import type { ViewMode, Tab } from "../components/viewTypes";
 import type { Axis, NavState } from "../links/memory";
@@ -86,8 +87,6 @@ import { XRViewerAnchor, PreviewFieldOfView, AxisLook } from "./scene/camera";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
 import { Minimap } from "./scene/minimap";
 import { TransitionMark } from "./scene/transition";
-import { DeskDecor, slotsWithVisibleContent } from "./scene/desk-decor";
-import { sectionRangesFor } from "./scene/page-ghosts";
 import { ROOM_EYE_HEIGHT } from "./page-placements";
 import { SR_ONLY } from "../components/a11y";
 import { VRButton, styles } from "./scene/chrome";
@@ -217,24 +216,9 @@ export function XRSceneRenderer({
   // 1. Resolve Device Profile locally
   const deviceProfile = QUEST_3_PROFILE;
 
-  // Map view mode → explicit layout template override
-  const templateOverride = useMemo(():
-    | "document"
-    | "landing"
-    | "generic"
-    | "carousel"
-    | undefined => {
-    switch (viewMode) {
-      case "carousel":
-        return "carousel";
-      default:
-        return undefined; // "standard" / arrangement views → auto content template
-    }
-  }, [viewMode]);
-
-  // Two-axis arrangement views (focus/stack/orbital/palm/gallery) route through
-  // the arrangement path: the spatial distribution composes over whatever
-  // content template the scene auto-selects. Legacy views → undefined.
+  // Every view routes through the arrangement path: the spatial distribution
+  // composes over whatever content template the scene auto-selects, so there
+  // is no per-view template override left to make.
   const arrangement = useMemo(() => getArrangement(viewMode), [viewMode]);
 
   const {
@@ -254,7 +238,7 @@ export function XRSceneRenderer({
     },
     parserConfig,
     parserBackend,
-    templateOverride,
+    undefined,
     arrangement,
     aiSettings ?? null,
   );
@@ -322,17 +306,13 @@ export function XRSceneRenderer({
   // which aims the flat preview's OrbitControls at the same point. Panels are
   // top-left anchored, so the centre is half a viewport below the panel's top.
   /**
-   * What the desk's sign plate reports. `standard` and `carousel` both read a
-   * paginated panel, and neither told the reader which page of how many they
-   * were on or which section it belonged to — see scene/desk-decor.tsx.
+   * Where in the document the reader is, for the screen-reader description.
+   *
+   * Every view spatialises the same paginated panel, so this is the one fact
+   * that is true in all of them: which page of how many is focused, and which
+   * section it belongs to.
    */
-  const deskReading = useMemo(() => {
-    if (
-      viewMode !== undefined &&
-      viewMode !== "standard" &&
-      viewMode !== "carousel"
-    )
-      return null;
+  const reading = useMemo(() => {
     if (!plan || !mainPanelId) return null;
     const e = plan.entries[mainPanelId];
     if (!e) return null;
@@ -341,28 +321,18 @@ export function XRSceneRenderer({
       pageState[mainPanelId] ?? 0,
       Math.max(0, pageCount - 1),
     );
-    return {
-      pageCount,
-      page,
-      sectionRanges: sectionRangesFor(plan, pageCount),
-      // Not plan.occupiedSlots: that records where landmarks were *routed*,
-      // which mounts a rail even on pages where the landmark is gated off or
-      // where it turned out to carry nothing. See slotsWithVisibleContent.
-      occupied: scene
-        ? slotsWithVisibleContent(scene, plan, page)
-        : new Set<SlotName>(),
-    };
-  }, [viewMode, plan, scene, mainPanelId, pageState]);
+    return { pageCount, page, sectionRanges: sectionRangesFor(plan, pageCount) };
+  }, [plan, mainPanelId, pageState]);
 
   /** Accessible name for the scene region, and its live description. */
   const sceneLabel = useMemo(() => {
     const where = url ? ` of ${url}` : "";
-    return `3D spatial view${where}, ${viewMode ?? "standard"} arrangement`;
+    return `3D spatial view${where}, ${viewMode ?? "rooms"} arrangement`;
   }, [url, viewMode]);
 
   const sceneDescription = useMemo(() => {
-    if (!deskReading) return "";
-    const { pageCount, page, sectionRanges } = deskReading;
+    if (!reading) return "";
+    const { pageCount, page, sectionRanges } = reading;
     const i = sectionRanges.findIndex((r) => page >= r.start && page <= r.end);
     const section = i >= 0 ? sectionRanges[i].label : null;
     return [
@@ -371,7 +341,7 @@ export function XRSceneRenderer({
     ]
       .filter(Boolean)
       .join(" ");
-  }, [deskReading]);
+  }, [reading]);
 
   const panelCentre = useMemo((): [number, number, number] | null => {
     const cfg = deviceProfile.layoutConfig;
@@ -386,29 +356,7 @@ export function XRSceneRenderer({
   }, [deviceProfile, mainPanelId, plan]);
 
   /**
-   * The elevator's ring AXIS in world space — where the reader stands.
-   *
-   * The view builds a cylinder of pages around this point (see
-   * renderer/page-placements.ts: the ring centre is the panel slot pushed one
-   * viewing distance forward, so the axis runs through the reader), and every
-   * bearing on the ring is measured from it. Standing anywhere else is
-   * standing outside your own building, so this — not the panel's centre — is
-   * what both the headset and the flat preview are put on.
-   */
-  const elevatorAxis = useMemo((): [number, number, number] | null => {
-    if (viewMode !== "elevator") return null;
-    const e = mainPanelId ? plan?.entries[mainPanelId] : null;
-    if (!e || !plan) return null;
-    return [
-      e.position.x + e.size.width / 2,
-      e.position.y - e.size.height / 2,
-      e.position.z + plan.config.viewingDistance,
-    ];
-  }, [viewMode, mainPanelId, plan]);
-
-  /**
-   * The rooms view's standing point, for the same reason and with the same
-   * rig as the elevator's axis above.
+   * The rooms view's standing point in world space — where the reader stands.
    *
    * `rooms` carries the whole building so the reader's pose lands here, and
    * turning (Q/E) spins the building about the vertical line through it. The
@@ -421,6 +369,10 @@ export function XRSceneRenderer({
    * Fixing the ease in RoomWalk (which had the same shape of bug, in the
    * carrier rather than the camera) was necessary and not sufficient. This is
    * the other half.
+   *
+   * This — not the panel's centre — is what both the headset and the flat
+   * preview are put on: standing anywhere else is standing outside your own
+   * building.
    */
   const roomsAxis = useMemo((): [number, number, number] | null => {
     if (viewMode !== "rooms") return null;
@@ -438,10 +390,10 @@ export function XRSceneRenderer({
   }, [viewMode, mainPanelId, plan]);
 
   /**
-   * The views where the reader stands INSIDE what they are reading, and the
+   * The view where the reader stands INSIDE what they are reading, and the
    * camera therefore rotates in place instead of orbiting something.
    */
-  const standingAxis = elevatorAxis ?? roomsAxis;
+  const standingAxis = roomsAxis;
 
   /**
    * `deck` composes a reading page with a card table under it, and the page
@@ -574,9 +526,9 @@ export function XRSceneRenderer({
       {/* ── Text alternative for the scene ──────────────────────
           The document is drawn on a WebGL canvas, which carries no name, no
           role and no keyboard focus — to assistive technology the whole
-          reader was a blank element. This is the same "where am I" the sign
-          plate gives a sighted reader (scene/desk-decor.tsx), in the
-          accessibility tree, and it is announced politely as the page turns
+          reader was a blank element. This is the same "where am I" a sighted
+          reader gets from the field itself, in the accessibility tree, and it
+          is announced politely as the page turns
           rather than interrupting. It is a description of the view, not a
           replacement for it: the links and controls inside the scene are
           still canvas-drawn and remain out of reach, which is a larger piece
@@ -684,17 +636,16 @@ export function XRSceneRenderer({
                   "world" frame: body/head/hand frames already carry the scene
                   with the viewer, and their entries aren't world-space, so
                   there'd be nothing static to recentre against. */}
-              {/* Rooms recentres on its own standing point for the same
-                  reason the elevator does: the reader is in a building with a
-                  floor, and levelling the headset with the panel slot would
-                  stand them 0.95 m tall in it. */}
+              {/* Rooms recentres on its own standing point: the reader is in
+                  a building with a floor, and levelling the headset with the
+                  panel slot would stand them 0.95 m tall in it. */}
               <XRViewerAnchor
                 target={
                   (plan?.referenceFrame ?? "world") === "world"
                     ? (standingAxis ?? xrLevel)
                     : null
                 }
-                // The standing views place the eye in all three axes: their
+                // The standing view places the eye in all three axes: its
                 // geometry is built about one point and means nothing anywhere
                 // else. See XRViewerAnchor — leaving z alone there is what put
                 // readers inside the gallery's walls.
@@ -718,24 +669,7 @@ export function XRSceneRenderer({
                         : DEFAULT_PREVIEW_FOV
                 }
               />
-              {viewMode === "elevator" ? (
-                /* The atrium lights itself: a cove over every storey (see
-                   scene/elevator-decor.tsx) throwing a warm wash down that
-                   floor's ring, and a dimmer one over the floors above and
-                   below. So the global light here is only the bounce off the
-                   shaft — enough to keep the architecture readable, low
-                   enough that the coves still do the modelling. As in rooms,
-                   no environment map: a city HDR flattens the coves, and
-                   offline it never loads at all. */
-                <>
-                  <ambientLight intensity={0.34} color="#EDE9E2" />
-                  <hemisphereLight
-                    intensity={0.3}
-                    color="#FFEBD2"
-                    groundColor="#4A4C55"
-                  />
-                </>
-              ) : viewMode === "rooms" ? (
+              {viewMode === "rooms" ? (
                 /* A gallery is a BRIGHT room. The fittings in the building
                    (see scene/room-decor.tsx) give it pools and direction;
                    this is the light bouncing round a white box, and it has
@@ -792,24 +726,11 @@ export function XRSceneRenderer({
                       <ReferenceFrameGroup
                         frame={plan.referenceFrame ?? "world"}
                       >
-                        {/* The desk the front-facing views stand in. Derived
-                            wholly from the plan's slots, so it follows
-                            whatever `deskSlots` decided for this profile. */}
-                        {deskReading && plan.slots && (
-                          <DeskDecor
-                            slots={plan.slots}
-                            occupied={deskReading.occupied}
-                            pageCount={deskReading.pageCount}
-                            page={deskReading.page}
-                            sectionRanges={deskReading.sectionRanges}
-                          />
-                        )}
                         <XRSceneGraph
                           scene={scene}
                           plan={plan}
                           pageState={pageState}
                           setPage={setPage}
-                          viewMode={viewMode}
                           onExternalNavigate={onExternalNavigate}
                           onTraverse={onTraverse}
                           onTraverseBack={onTraverseBack}
@@ -879,23 +800,21 @@ export function XRSceneRenderer({
                           // makeDefault so the scene can find these controls
                           // (useThree(s => s.controls)) — the rooms view puts
                           // the camera back on the reading line when the reader
-                          // clicks a spot, and the elevator stands the reader
-                          // on the ring axis, neither of which it can do
-                          // without them.
+                          // clicks a spot, which it cannot do without them.
                           makeDefault
-                          // In the elevator and in rooms AxisLook owns the
-                          // pivot — it sits a centimetre ahead of the eye, not
-                          // on the axis itself, and two effects writing the
-                          // same target would race.
+                          // In rooms AxisLook owns the pivot — it sits a
+                          // centimetre ahead of the eye, not on the axis
+                          // itself, and two effects writing the same target
+                          // would race.
                           target={
                             standingAxis ? undefined : (deckLook ?? readingLook)
                           }
-                          // In the elevator and in rooms the reader is INSIDE
-                          // the scene: dragging turns the head (AxisLook parks
-                          // the pivot a centimetre ahead of the eye) and there
-                          // is nowhere to pan or dolly to — both views are
-                          // built around one standing point, and in rooms the
-                          // reader moves off it by WALKING, not by dragging.
+                          // In rooms the reader is INSIDE the scene: dragging
+                          // turns the head (AxisLook parks the pivot a
+                          // centimetre ahead of the eye) and there is nowhere
+                          // to pan or dolly to — the view is built around one
+                          // standing point, and the reader moves off it by
+                          // WALKING, not by dragging.
                           enablePan={!standingAxis}
                           enableZoom={!standingAxis}
                           minDistance={standingAxis ? 0.01 : 0}
@@ -905,8 +824,6 @@ export function XRSceneRenderer({
                           // eye, a drag that runs past straight up carries
                           // the view over the top and lands it upside down in
                           // the floor, with no horizon left to recover by.
-                          // The elevator is exempt — it is a shaft, and
-                          // looking up and down it is the whole view.
                           minPolarAngle={roomsAxis ? 0.35 : 0}
                           maxPolarAngle={roomsAxis ? Math.PI - 0.35 : Math.PI}
                           enableDamping

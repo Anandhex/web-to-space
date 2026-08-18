@@ -173,7 +173,6 @@ export const WINDOWS: Record<string, WindowBudget> = {
   // reader will actually walk to the end of: four a direction is two ranks of
   // eight doors, about ten metres.
   rooms: { up: 4, down: 4, left: 4, right: 4 },
-  elevator: { up: 2, down: 2, left: 2, right: 2 },
 };
 
 /**

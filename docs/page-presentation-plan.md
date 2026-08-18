@@ -5,6 +5,17 @@ link previews 2026-07-28; elevator redesigned as section rings and wall
 redesigned as an outline board 2026-08-01).
 Companion to `views-plan.md`.
 
+> **2026-08-18 — the elevator was removed.** It introduced no new spatial
+> concept: it was Rooms' "navigate the site as an environment" laid out
+> vertically — a different navigation configuration of the same idea, not a
+> different way of relating to the document — and keeping both weakened the
+> distinction the other views carry. The shipping page views are **rooms**,
+> **wall** and **deck**. The elevator material below is kept as the design
+> record of a view that was built and then dropped; its placement layer
+> (`elevator()`, `computeElevatorShell`, the `ELEVATOR_*`/`ATRIUM_*` constants)
+> and `scene/elevator-decor.tsx` no longer exist. The legacy `standard` and
+> `carousel` views went in the same pass.
+
 **Rooms → arriving is not passing through (2026-08-02, fourteenth pass):**
 
 - Squaring the reader up fired on "no movement key held THIS FRAME", which is

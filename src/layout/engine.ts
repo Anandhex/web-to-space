@@ -770,7 +770,7 @@ export function computeLayoutPlan(
   // page an overflowing aside lands on is left blank after extraction.
   config.complementaryExtractedToSlot = !!slots.complementary;
 
-  // Content-only page views (elevator/wall/deck/rooms): the roster collapsed
+  // Content-only page views (wall/deck/rooms): the roster collapsed
   // to [main], so top-level landmarks whose slot no longer exists must NOT
   // fall through to the main slot (they'd overlap the content panel).
   // Foldable landmarks (banner/aside/footer) were already re-parented into

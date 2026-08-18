@@ -2,8 +2,7 @@
  * scene/scene-graph.tsx
  *
  * <XRSceneGraph> — builds the primitive lookup map and reference frame, then
- * dispatches every top-level primitive; includes the reference-frame group and
- * carousel neighbour wiring.
+ * dispatches every top-level primitive; includes the reference-frame group.
  */
 import React, { useCallback, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
@@ -12,17 +11,8 @@ import { useXRInputSourceState } from "@react-three/xr";
 import * as THREE from "three";
 
 import type { SemanticScene, XRPrimitive } from "../../mapper/types";
-import type {
-  LayoutEntry,
-  LayoutPlan,
-  SlotMap,
-} from "../../layout/types";
-import type { ViewMode } from "../../components/viewTypes";
-import {
-  flattenInlineWrappers,
-  isInlinePrimitive,
-} from "../../layout/utils";
-import { carouselGhostPlacement } from "../../layout/placement";
+import type { LayoutPlan, SlotMap } from "../../layout/types";
+import { flattenInlineWrappers, isInlinePrimitive } from "../../layout/utils";
 import { NavigateContext } from "../primitives";
 import {
   CurrentPageContext,
@@ -39,10 +29,6 @@ import { directionOf } from "../../links/direction";
 import type { SpatialLink } from "../../links/types";
 import { hasDescendant } from "./dispatch-children";
 import { PrimitiveDispatcher } from "./dispatcher";
-import { CarouselGhostPanel } from "./panels";
-import { sectionRangesFor } from "./page-ghosts";
-import { isDarkTheme, sectionTint } from "./section-tint";
-import { useTheme } from "../theme";
 import { PageGhostField } from "./page-ghosts";
 import { MIN_PAGES_FOR_PAGE_VIEWS } from "../page-placements";
 import type { Axis, NavState } from "../../links/memory";
@@ -254,22 +240,11 @@ export function ReferenceFrameGroup({
 // Scene graph
 // ─────────────────────────────────────────────────────────────
 
-/** Absolute placement override for a carousel ghost panel (from the tuning HUD). */
-export interface GhostPose {
-  x: number;
-  y: number;
-  z: number;
-  rotX: number;
-  rotY: number;
-  rotZ: number;
-}
-
 export function XRSceneGraph({
   scene,
   plan,
   pageState,
   setPage,
-  viewMode,
   onExternalNavigate,
   onTraverse,
   onTraverseBack,
@@ -277,13 +252,11 @@ export function XRSceneGraph({
   nav,
   pending,
   sourceUrl,
-  ghostOverride,
 }: {
   scene: SemanticScene;
   plan: LayoutPlan;
   pageState: PageState;
   setPage: (id: string, page: number) => void;
-  viewMode?: ViewMode;
   onExternalNavigate?: (href: string) => void;
   /** Directional traversal — see XRSceneRendererProps.onTraverse. */
   onTraverse?: (url: string, axis: Axis, label?: string) => void;
@@ -293,8 +266,6 @@ export function XRSceneGraph({
   /** A directional move in flight — see XRSceneRendererProps.pending. */
   pending?: { url: string; axis: Axis | null } | null;
   sourceUrl?: string;
-  /** Live ghost overrides keyed "ghost-prev"/"ghost-next" (tuning HUD). */
-  ghostOverride?: Record<string, GhostPose>;
 }) {
   const primitiveMap = React.useMemo(() => {
     // Start with the tree walk so ordering is preserved for normal nodes,
@@ -403,28 +374,6 @@ export function XRSceneGraph({
     }
   }, [plan, scene]);
 
-  // ── Carousel: find the main XRContentPanel for 3× rendering ─────
-  const mainContentPanel = React.useMemo(() => {
-    if (viewMode !== "carousel") return null;
-    return (
-      scene.root.children.find(
-        (p) =>
-          p.type === "XRContentPanel" && plan.entries[p.id]?.paginatedByEngine,
-      ) ?? null
-    );
-  }, [viewMode, scene.root.children, plan.entries]);
-
-  const carouselTheme = useTheme();
-  const carouselDark = React.useMemo(
-    () => isDarkTheme(carouselTheme),
-    [carouselTheme],
-  );
-  const carouselRanges = React.useMemo(() => {
-    if (viewMode !== "carousel" || !mainContentPanel) return [];
-    const pc = plan.entries[mainContentPanel.id]?.pagination?.pageCount ?? 1;
-    return sectionRangesFor(plan, pc);
-  }, [viewMode, mainContentPanel, plan]);
-
   const navigate = useCallback(
     (href: string) => {
       if (href.startsWith("#")) {
@@ -474,7 +423,14 @@ export function XRSceneGraph({
         window.open(resolved, "_blank", "noopener,noreferrer");
       }
     },
-    [plan, primitiveMap, setPage, onExternalNavigate, sourceUrl, setFocusedRange],
+    [
+      plan,
+      primitiveMap,
+      setPage,
+      onExternalNavigate,
+      sourceUrl,
+      setFocusedRange,
+    ],
   );
 
   // The page-paginated content panel drives the current page for gating the
@@ -556,164 +512,80 @@ export function XRSceneGraph({
   return (
     <NavigateContext.Provider value={navigate}>
       <PageLinksContext.Provider value={pageLinks}>
-      <TraversalContext.Provider value={traversal}>
-      <LinkBindingContext.Provider value={linkBinding}>
-      <PageRangeContext.Provider value={focusedRange}>
-      {scene.root.children.map((primitive) => {
-        // In carousel mode, the main content panel is rendered via CarouselPanelGroup
-        if (viewMode === "carousel" && primitive === mainContentPanel) {
-          const entry = plan.entries[primitive.id];
-          if (!entry) return null;
-          // Ghost panels: default placement from the shared helper (so the
-          // tuning HUD seeds from the same values), overridable live per ghost.
-          // The arc is derived from the reading distance, not from the panel's
-          // own z: `main` is placed head-on at −d so the two agree today, but
-          // passing it explicitly keeps the neighbours on the arc if a slot
-          // override ever moves the panel.
-          const ghost = carouselGhostPlacement(
-            entry.position,
-            entry.size,
-            plan.config.viewingDistance,
-          );
-          const poseEntry = (
-            base: { position: { x: number; y: number; z: number }; rotation: LayoutEntry["rotation"] },
-            ov: GhostPose | undefined,
-          ): LayoutEntry => ({
-            ...entry,
-            position: ov ? { x: ov.x, y: ov.y, z: ov.z } : base.position,
-            rotation: ov ? { x: ov.rotX, y: ov.rotY, z: ov.rotZ } : base.rotation,
-          });
-          const prevEntry = poseEntry(ghost.prev, ghostOverride?.["ghost-prev"]);
-          const nextEntry = poseEntry(ghost.next, ghostOverride?.["ghost-next"]);
+        <TraversalContext.Provider value={traversal}>
+          <LinkBindingContext.Provider value={linkBinding}>
+            <PageRangeContext.Provider value={focusedRange}>
+              {scene.root.children.map((primitive) => {
+                // Page views (wall/deck/rooms): the ghost field REPLACES the
+                // panel — every page renders at its spatial placement. In
+                // deck/wall the focused page's ghost morphs forward to the
+                // stage (flat, full size, interactive); in rooms nothing moves
+                // but the reader, who is walked to the page. Falls back to the
+                // normal flip panel when there are too few pages for a spatial
+                // field to mean anything.
+                if (
+                  plan.pageDistribution &&
+                  plan.pageDistribution !== "flip" &&
+                  primitive === paginatedPanel
+                ) {
+                  const pageCount =
+                    plan.entries[primitive.id]?.pagination?.pageCount ?? 1;
+                  if (pageCount >= MIN_PAGES_FOR_PAGE_VIEWS) {
+                    return (
+                      <PageGhostField
+                        key={primitive.id}
+                        panel={primitive}
+                        plan={plan}
+                        pageState={pageState}
+                        setPage={setPage}
+                        primitiveMap={primitiveMap}
+                      />
+                    );
+                  }
+                  // fall through to the normal dispatcher below
+                }
 
-          const currentPage = pageState[primitive.id] ?? 0;
-          const pageCount = entry.pagination?.pageCount ?? 1;
-          const prevPage = Math.max(0, currentPage - 1);
-          const nextPage = Math.min(pageCount - 1, currentPage + 1);
-          // The hue each neighbour's edge band wears: the section that page
-          // belongs to, so the sliver says which page is over there AND
-          // whether it is still in the section being read.
-          const edgeHue = (p: number): string | undefined => {
-            const i = carouselRanges.findIndex(
-              (r) => p >= r.start && p <= r.end,
-            );
-            return i >= 0 ? sectionTint(i, carouselDark).accent : undefined;
-          };
-
-          return (
-            <React.Fragment key={primitive.id}>
-              {currentPage > 0 && (
-                <CarouselGhostPanel
-                  primitive={primitive}
-                  plan={plan}
-                  entry={prevEntry}
-                  targetPage={prevPage}
-                  primitiveMap={primitiveMap}
-                  opacity={0.45}
-                  scale={ghost.scale}
-                  edgeSide="right"
-                  edgeColor={edgeHue(prevPage)}
+                // A top-level complementary aside that the engine gated to a page
+                // range (pageIndex set) needs the paginated panel's current page in
+                // context so entryOnPage can hide it on excluded pages. Without this
+                // wrapper it renders under the default CurrentPageContext (-1) and is
+                // always visible, overlapping whichever section aside owns the slot.
+                const dispatcher = (
+                  <PrimitiveDispatcher
+                    key={primitive.id}
+                    primitive={primitive}
+                    plan={plan}
+                    pageState={pageState}
+                    setPage={setPage}
+                    primitiveMap={primitiveMap}
+                  />
+                );
+                if (
+                  primitive.type === "XRComplementary" &&
+                  plan.entries[primitive.id]?.pageIndex !== undefined &&
+                  paginatedPanelPage !== -1
+                ) {
+                  return (
+                    <CurrentPageContext.Provider
+                      key={primitive.id}
+                      value={paginatedPanelPage}
+                    >
+                      {dispatcher}
+                    </CurrentPageContext.Provider>
+                  );
+                }
+                return dispatcher;
+              })}
+              {focusedRange && (
+                <SectionResetChip
+                  slots={plan.slots}
+                  onClear={() => setFocusedRange(null)}
                 />
               )}
-              <PrimitiveDispatcher
-                primitive={primitive}
-                plan={plan}
-                pageState={pageState}
-                setPage={setPage}
-                primitiveMap={primitiveMap}
-              />
-              {currentPage < pageCount - 1 && (
-                <CarouselGhostPanel
-                  primitive={primitive}
-                  plan={plan}
-                  entry={nextEntry}
-                  targetPage={nextPage}
-                  primitiveMap={primitiveMap}
-                  opacity={0.45}
-                  scale={ghost.scale}
-                  edgeSide="left"
-                  edgeColor={edgeHue(nextPage)}
-                />
-              )}
-            </React.Fragment>
-          );
-        }
-
-        // Page views (elevator/wall/deck/rooms): the ghost field REPLACES the
-        // panel — every page renders at its spatial placement. In deck/wall
-        // the focused page's ghost morphs forward to the stage (flat, full
-        // size, interactive); in elevator it is emphasised in its ring slot;
-        // in rooms nothing moves but the reader, who is walked to the page.
-        // Falls back to the normal flip panel when there are too few pages
-        // for a spatial field to mean anything.
-        if (
-          plan.pageDistribution &&
-          plan.pageDistribution !== "flip" &&
-          primitive === paginatedPanel
-        ) {
-          const pageCount =
-            plan.entries[primitive.id]?.pagination?.pageCount ?? 1;
-          if (pageCount >= MIN_PAGES_FOR_PAGE_VIEWS) {
-            return (
-              <PageGhostField
-                key={primitive.id}
-                panel={primitive}
-                plan={plan}
-                pageState={pageState}
-                setPage={setPage}
-                primitiveMap={primitiveMap}
-              />
-            );
-          }
-          // fall through to the normal dispatcher below
-        }
-
-        // A top-level complementary aside that the engine gated to a page
-        // range (pageIndex set) needs the paginated panel's current page in
-        // context so entryOnPage can hide it on excluded pages. Without this
-        // wrapper it renders under the default CurrentPageContext (-1) and is
-        // always visible, overlapping whichever section aside owns the slot.
-        const dispatcher = (
-          <PrimitiveDispatcher
-            key={primitive.id}
-            primitive={primitive}
-            plan={plan}
-            pageState={pageState}
-            setPage={setPage}
-            primitiveMap={primitiveMap}
-          />
-        );
-        if (
-          primitive.type === "XRComplementary" &&
-          plan.entries[primitive.id]?.pageIndex !== undefined &&
-          paginatedPanelPage !== -1
-        ) {
-          return (
-            <CurrentPageContext.Provider
-              key={primitive.id}
-              value={paginatedPanelPage}
-            >
-              {dispatcher}
-            </CurrentPageContext.Provider>
-          );
-        }
-        return dispatcher;
-      })}
-      {focusedRange && (
-        <SectionResetChip
-          slots={plan.slots}
-          onClear={() => setFocusedRange(null)}
-        />
-      )}
-      </PageRangeContext.Provider>
-      </LinkBindingContext.Provider>
-      </TraversalContext.Provider>
+            </PageRangeContext.Provider>
+          </LinkBindingContext.Provider>
+        </TraversalContext.Provider>
       </PageLinksContext.Provider>
     </NavigateContext.Provider>
   );
 }
-
-// ─────────────────────────────────────────────────────────────
-// VR button
-// ─────────────────────────────────────────────────────────────
-

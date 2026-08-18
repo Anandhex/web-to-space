@@ -4,7 +4,7 @@
  * Every view opens links in the same four directions (docs/directional-links.md),
  * so what a door SAYS is one thing written once, and where a door STANDS is
  * each view's own answer: a strip on the wall's edge, a path off the deck's
- * table, a corridor in the building, a slot in the elevator's ring.
+ * table, a corridor in the building.
  *
  * This module owns the first half — the slot list a view fills, the plate a
  * slot is drawn as, and the traversal a selection performs. The geometry stays

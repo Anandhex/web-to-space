@@ -1,25 +1,21 @@
 /**
  * scene/page-ghosts.tsx
  *
- * The spatial page field for content-only page views (elevator / wall / deck
- * / rooms). It REPLACES the paginated panel — the panel itself is not
+ * The spatial page field for content-only page views (wall / deck / rooms). It REPLACES the paginated panel — the panel itself is not
  * dispatched — drawing every page at the placement computed by
  * renderer/page-placements.ts. The wall is a field over the same cells but a
  * different model (sections that open into pages), so it lives in
  * scene/wall-field.tsx and this component hands off to it.
  *
  *  • Pages near the focus render as full live ghosts (the whole primitive
- *    subtree pinned to that page — same mechanism as the carousel's
- *    prev/next ghosts, generalized with scale + click-to-focus).
+ *    subtree pinned to that page, with scale + click-to-focus).
  *  • Distant pages render as cheap imposter cards (page number + first
  *    heading) so a 100-page document stays drawable.
  *  • Every ghost/imposter is ONE hit target: clicking it focuses that page
  *    (links inside ghosts are deliberately inert until focused).
  *  • In deck the focused page flies to the stage and its vacated cell
- *    renders as a highlight frame — the "you are here" marker. The elevator
- *    has no stage: every page stays in its slot, and the page under the
- *    pointer is the one that grows and closes in. Rooms has no stage either
- *    and moves the READER instead: the field is wrapped in one eased
+ *    renders as a highlight frame — the "you are here" marker. Rooms has no
+ *    stage and moves the READER instead: the field is wrapped in one eased
  *    <RoomWalk> that carries the whole room rigidly until the reader stands
  *    in front of the focused exhibit.
  *
@@ -40,12 +36,10 @@ import {
   computeRoomStairs,
   computeRoomFixtures,
   computeReadingSpots,
-  computeElevatorShell,
+  corridorPageAt,
   roomAtPose,
   roomReadingPose,
   roomRailY,
-  elevatorEmphasis,
-  elevatorFloorTarget,
   LIVE_GHOST_RADIUS,
   MIN_PAGES_FOR_PAGE_VIEWS,
   type PagePlacement,
@@ -65,7 +59,6 @@ import {
 } from "./page-cells";
 import { WallField } from "./wall-field";
 import { DeckField } from "./deck-field";
-import { useDoorSlots, type DirSlots } from "./link-doors";
 import { usePageLinks } from "./contexts";
 import { buildSlots, drawable } from "../../links/slots";
 import { windowFor } from "../../links/memory";
@@ -81,16 +74,9 @@ import {
   useReadingView,
   useRoomWalking,
 } from "./room-walk";
-import { useXRStickSteps } from "./xr-locomotion";
 import { RoomShell, RoomSlabs, RoomLights, GALLERY_SIGN } from "./room-decor";
-import {
-  ElevatorShaft,
-  ElevatorDirectory,
-  ElevatorLinkRing,
-  ElevatorSlotMark,
-} from "./elevator-decor";
 
-// ── Section ranges (grouping for wall / deck / rooms / elevator) ──
+// ── Section ranges (grouping for wall / deck / rooms) ──
 //
 // The spans themselves come from `plan.sections`, which the layout engine
 // derives once (see layout/outline.ts) — only pagination knows which page a
@@ -168,36 +154,6 @@ export function sectionRangesFor(
   );
 }
 
-/**
- * Page ranges for EVERY named section, nested subsections included, in
- * reading order — the elevator gives each one its own floor. A section's
- * range runs from where its content starts to just before the next one
- * begins, so a parent that contains subsections keeps only its own intro
- * pages and each child gets the storey for its own.
- *
- * Unnamed sections are skipped, not floored: structural inference emits
- * sections for things like paragraph runs, which no reader would name, and
- * each of those became an anonymous storey with a blank sign. Their pages
- * belong to the named section enclosing them, which is where the reader
- * already thinks they are.
- */
-export function deepSectionRangesFor(
-  plan: LayoutPlan,
-  pageCount: number,
-): SectionPageRange[] {
-  const starts: { start: number; label: string }[] = [];
-  for (const s of plan.sections ?? []) {
-    if (!s.label) continue;
-    const prev = starts[starts.length - 1];
-    // A page can only live on one floor, and two storeys signed alike (a
-    // parent and its first child often resolve to the same heading) are
-    // worse than one.
-    if (prev && (prev.start === s.startPage || prev.label === s.label)) continue;
-    starts.push({ start: s.startPage, label: s.label });
-  }
-  return fillRanges(starts, pageCount);
-}
-
 
 /**
  * rooms: how close the reader has to be for a page to render for real rather
@@ -210,9 +166,7 @@ const ROOM_LIVE_RADIUS = 4.2;
 /**
  * A section plaque. Rooms marks it a `sign`: an illuminated plate over the
  * doorway, because the lintel it hangs on is the darkest surface in the
- * corridor and a lit sign is how a real building solves exactly that. (The
- * elevator's plaques are a floor directory rather than a name — they are part
- * of its shell, see ElevatorDirectory.)
+ * corridor and a lit sign is how a real building solves exactly that.
  */
 function FieldLabelText({
   label,
@@ -325,15 +279,11 @@ export function PageGhostField({
 
   const sectionRanges = React.useMemo(
     () =>
-      mode === "elevator"
-        ? // Every subsection is its own storey, so the elevator needs the
-          // deep section list, not just the panel's top-level ones.
-          deepSectionRangesFor(plan, pageCount)
-        : mode === "wall" || mode === "deck" || mode === "rooms"
-          ? // Root + 1: the panel's top-level sections are what the wall
-            // shows as tiles, and what the other three group by.
-            sectionRangesFor(plan, pageCount)
-          : [],
+      mode === "wall" || mode === "deck" || mode === "rooms"
+        ? // Root + 1: the panel's top-level sections are what the wall shows
+          // as tiles, and what the other two group by.
+          sectionRangesFor(plan, pageCount)
+        : [],
     [mode, plan, pageCount],
   );
 
@@ -353,17 +303,6 @@ export function PageGhostField({
   // The SAME list has to reach every rooms entry point below, because its
   // length sizes the stretch — a corridor built for one list and doored from
   // another disagrees with its own floor plan.
-  // Fit mode (every link, no window) for the ELEVATOR, whose corridor is a ring
-  // the reader turns to read; the WINDOW for rooms, whose corridor is one they
-  // have to walk. One Wikipedia page's 28 ascent links built a fifty-six-metre
-  // branch before this — the census had warned that a nav sidebar lands whole
-  // on one page, up to 167 of them, and "build the parent corridor flat and
-  // revisit if it bites" is exactly the revisit.
-  const { slots: roomSlots, take: takeDirectional } = useDoorSlots(
-    focus,
-    mode,
-    mode === "elevator",
-  );
 
   // ── rooms: every page's corridor, built with the building ──
   //
@@ -396,24 +335,33 @@ export function PageGhostField({
       return out;
     });
   }, [mode, pageCount, allPageLinks]);
-  // The elevator still takes one flat list for the page the reader is on — its
-  // corridor is a ring they turn to, opened one at a time.
-  const sectionLinks = React.useMemo(
-    () => (mode === "elevator" ? directionalSectionLinks(roomSlots) : undefined),
-    [mode, roomSlots],
-  );
+
+  /**
+   * Which page's corridor is BUILT OUT — its arms, its stair hall and its
+   * flights. See `PagePlacementOptions.activePage`.
+   *
+   * The VICINITY, not the mark. Anand, 2026-08-18: *"the corridors for the
+   * room activates when I am at the pointer, it should activate when I am in
+   * the vicinity"*. Gating it on `focus` meant the corridor arrived only once
+   * the reader had both feet inside the 0.55 m reading spot: walk up to a
+   * page, stand beside it, and the way on was still a blind vestibule. It is
+   * elected by proximity below (`VICINITY_REACH`), and it is deliberately NOT
+   * `focus` — which page is on show and which corridor is open are now two
+   * questions, because the reader is near a page long before they are on it.
+   */
+  const [corridorPage, setCorridorPage] = React.useState(focus);
 
   const roomOpts = React.useMemo(
     () => ({
       sectionRanges,
       viewingDistance,
-      sectionLinks,
       pageLinks: roomPageLinks,
+      activePage: corridorPage,
       // The floor is world y = 0, which in the panel-anchor space these
       // offsets live in sits the panel's own height below the anchor line.
       floorY: entry ? -entry.position.y : undefined,
     }),
-    [sectionRanges, viewingDistance, sectionLinks, roomPageLinks, entry],
+    [sectionRanges, viewingDistance, roomPageLinks, entry, corridorPage],
   );
 
   const placements = React.useMemo(
@@ -447,10 +395,40 @@ export function PageGhostField({
   // which case they are already standing in the right place and moving them
   // again would yank the floor out from under a walk in progress.
   const focusFromWalk = React.useRef(false);
-  if (readingPose && lastFocus.current !== focus) {
-    if (!focusFromWalk.current) poseRef.current = readingPose;
+  /**
+   * ── Arriving in a NEW DOCUMENT stands the reader in the new building ──
+   *
+   * This field does not remount when the document changes. The panel's id is
+   * `"main"` in every document, and it is the React key, so the same component
+   * instance — and every ref in it, the reader's pose included — carries
+   * straight over from one building into the next.
+   *
+   * The pose used to be reset only when `focus` CHANGED, and a new document
+   * resets paging to page 0. So the first move worked (the reader was standing
+   * at page 7, say, and 7 → 0 is a change) and the second in a row did not:
+   * page 0 → page 0 is no change, nothing reset the pose, and the reader was
+   * left at the coordinates they had in the PREVIOUS building — out in a
+   * corridor, or up on a landing — which in the new one is very often outside
+   * the building altogether. Anand, 2026-08-18: *"if i click one direction of
+   * links after second continuous link in the same direction i get teleported
+   * to void"*. Measured: a reader at page 24 of a 40-page document stands at
+   * z = −58 m, and a 14-page document has no room and no floor within reach
+   * of it.
+   *
+   * So arrival is its own trigger, and it lands rather than glides (`jumpRef`)
+   * — easing across the gap between two buildings would drag the reader
+   * through several rooms of the new one. `rise` is cleared with it: a landing
+   * one storey up in the document you left is thin air in the one you enter.
+   */
+  const lastPlan = React.useRef<LayoutPlan | null>(null);
+  const arrived = readingPose !== null && lastPlan.current !== plan;
+  if (readingPose) lastPlan.current = plan;
+  if (readingPose && (arrived || lastFocus.current !== focus)) {
+    if (arrived || !focusFromWalk.current)
+      poseRef.current = { ...readingPose, rise: 0 };
     focusFromWalk.current = false;
     lastFocus.current = focus;
+    if (arrived) jumpRef.current += 1;
   }
 
   /**
@@ -476,15 +454,16 @@ export function PageGhostField({
     },
     [isRooms, entry, mode, pageCount, roomOpts],
   );
-  // Re-derive on a focus change: being teleported into a room counts as
-  // having entered it, and as having arrived at that page's spot.
+  // Re-derive on a focus change — being teleported into a room counts as
+  // having entered it, and as having arrived at that page's spot — and on a
+  // new document, where the room the reader was in no longer exists.
   React.useEffect(() => {
     if (!isRooms) return;
     const pose = poseRef.current;
     updateRoom(pose);
     setReaderAt({ x: pose.x, z: pose.z });
     setStandingOn(focus);
-  }, [isRooms, focus, updateRoom]);
+  }, [isRooms, focus, plan, updateRoom]);
 
 
   // The walls: rooms, corridor, and the gaps left in them for the doors.
@@ -512,6 +491,40 @@ export function PageGhostField({
     () => sectionRanges.findIndex((r) => focus >= r.start && focus <= r.end),
     [sectionRanges, focus],
   );
+
+  // ── Which corridor is open: the page the reader is NEAR ──
+  //
+  // The two rules — vicinity opens it, crossing the wall line freezes it —
+  // are `corridorPageAt`'s, and the reasoning lives with them. Re-run whenever
+  // the reader's coarse position is re-reported, which walking does every
+  // PROXIMITY_STEP: a sixth of the vicinity, so the corridor of the page being
+  // walked towards opens several strides out.
+  const corridorRef = React.useRef(corridorPage);
+  corridorRef.current = corridorPage;
+  React.useEffect(() => {
+    if (!isRooms || !entry || !mode) return;
+    // `readerAt` is the TRIGGER, not the input: it is re-reported every
+    // PROXIMITY_STEP of walking, which is the cadence this wants, while the
+    // pose itself lives in a ref and is exact.
+    const next = corridorPageAt(
+      mode,
+      pageCount,
+      entry.size,
+      poseRef.current,
+      corridorRef.current,
+      roomOpts,
+    );
+    if (next !== corridorRef.current) setCorridorPage(next);
+  }, [isRooms, mode, entry, pageCount, roomOpts, roomIn, readerAt]);
+
+  // A focus change the reader did not walk into is a teleport onto that page's
+  // mark — from the minimap, a link, or a clicked spot across the room. The
+  // corridor goes where the reader goes, and a new document is the same thing
+  // written larger: page 0 of the building they have just walked into, even
+  // when the page NUMBER has not changed.
+  React.useEffect(() => {
+    setCorridorPage(focus);
+  }, [focus, plan]);
 
   /**
    * The spots worth showing: this room's, and the NEXT room's — so that
@@ -654,91 +667,11 @@ export function PageGhostField({
     [mode, entry, pageCount, focus, roomOpts],
   );
 
-  // elevator: the atrium the rings hang in — a deck and a lit soffit per
-  // storey, a balustrade round the well the reader stands in, and the shaft
-  // wall behind the pages. Scenery only; the rings themselves are unchanged.
-  const elevatorShell = React.useMemo(
-    () =>
-      mode && entry
-        ? computeElevatorShell(mode, pageCount, entry.size, focus, roomOpts)
-        : null,
-    [mode, entry, pageCount, focus, roomOpts],
-  );
-
-  // elevator: the page under the pointer/ray grows and closes in on its own
-  // bearing (see elevatorEmphasis) instead of anything flying to the reader.
-  const [pointedAt, setPointedAt] = React.useState<number | null>(null);
-
-  // The key handler reads the focus through a ref, not the closure: holding
-  // ↓ (or any burst faster than a render) would otherwise have every repeat
-  // compute its target from the same stale page and land on one storey.
+  // The walk handlers read the focus through a ref, not the closure: a burst
+  // faster than a render would otherwise have every repeat compute its target
+  // from the same stale page.
   const focusRef = React.useRef(focus);
   focusRef.current = focus;
-
-  /**
-   * ONE WAY TO RIDE THE SHAFT, whatever the reader is holding. `floor` is
-   * storeys up (positive) or down; `page` steps one page around the current
-   * ring. ↑↓←→, the thumbstick and the call buttons on the floor indicator all
-   * come through here, so none of them can drift into meaning something
-   * slightly different from the others.
-   *
-   * This is the elevator's WHOLE navigation — it has no pagination widget,
-   * because a page-at-a-time control makes no sense in a room you look around.
-   * Which is exactly why it had to grow more than a keyboard: until it did, a
-   * reader in a headset could see every storey of the shaft and reach none of
-   * them.
-   */
-  const rideShaft = React.useCallback(
-    (floor: number, page: number) => {
-      const at = focusRef.current;
-      const next =
-        floor !== 0
-          ? elevatorFloorTarget(at, pageCount, sectionRanges, floor > 0 ? -1 : 1)
-          : Math.max(0, Math.min(pageCount - 1, at + page));
-      if (next !== null && next !== at) {
-        // …through the ref, so a burst faster than a render keeps climbing
-        // instead of recomputing every step from the same stale floor.
-        focusRef.current = next;
-        setPage(panel.id, next);
-      }
-    },
-    [pageCount, sectionRanges, setPage, panel.id],
-  );
-
-  React.useEffect(() => {
-    if (mode !== "elevator") return;
-    const onKey = (e: KeyboardEvent) => {
-      // Never steal arrows from the URL bar or any other text field.
-      const t = e.target as HTMLElement | null;
-      if (
-        t &&
-        (t.isContentEditable ||
-          t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.tagName === "SELECT")
-      )
-        return;
-      const step: Record<string, [number, number]> = {
-        ArrowUp: [1, 0],
-        ArrowDown: [-1, 0],
-        ArrowLeft: [0, -1],
-        ArrowRight: [0, 1],
-      };
-      const s = step[e.key];
-      if (!s) return;
-      e.preventDefault();
-      rideShaft(s[0], s[1]);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [mode, rideShaft]);
-
-  /**
-   * …and the same ride from a thumbstick, because a headset has no arrow keys.
-   * Detented (see `useXRStickSteps`), with the stick's forward push standing in
-   * for ↑ — one push, one floor.
-   */
-  useXRStickSteps(mode === "elevator", (dx, dy) => rideShaft(dy, dx));
 
   if (!mode || mode === "flip" || !entry) return null;
   if (pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return null;
@@ -789,25 +722,6 @@ export function PageGhostField({
 
   const field = (
     <>
-      {elevatorShell && (
-        <>
-          <ElevatorShaft shell={elevatorShell} anchor={entry.position} />
-          <ElevatorDirectory
-            shell={elevatorShell}
-            anchor={entry.position}
-            onStep={rideShaft}
-          />
-          {/* The corridor off this storey: siblings on an arc inside the ring
-              of pages, parents and externals stacked on the plaque's own
-              bearing — the elevator's own up and down. */}
-          <ElevatorLinkRing
-            shell={elevatorShell}
-            anchor={entry.position}
-            slots={roomSlots}
-            onTake={takeDirectional}
-          />
-        </>
-      )}
       {roomShell.length > 0 && (
         <RoomShell
           walls={roomShell}
@@ -871,21 +785,7 @@ export function PageGhostField({
             raw.pageIndex > roomPages.end)
         )
           return null;
-        // Pointing at a ring page magnifies it in place — it grows to full
-        // size and closes in to reading distance without leaving its bearing,
-        // so a glance never rearranges the room.
-        const elevator = mode === "elevator";
-        const p =
-          elevator && pointedAt === raw.pageIndex
-            ? elevatorEmphasis(raw, entry.size, viewingDistance)
-            : elevator && pointedAt !== null
-              ? // A magnified page is full width where a slot is one ring-page
-                // wide, so it necessarily stands in front of the pages either
-                // side of it. Stepping those back while it is up makes that
-                // read as one page in front of the others rather than as two
-                // pages fighting over the same piece of wall.
-                { ...raw, recession: Math.min(1, raw.recession + 0.3) }
-              : raw;
+        const p = raw;
         const ghostEntry = ghostEntryFor(p);
         const w = entry.size.width;
         const h = entry.size.height;
@@ -904,15 +804,12 @@ export function PageGhostField({
           ) <= ROOM_LIVE_RADIUS;
         const live =
           p.isStage ||
-          pointedAt === p.pageIndex ||
           nearReader ||
-          (!isRooms &&
-            !p.offFloor &&
-            Math.abs(p.pageIndex - focus) <= LIVE_GHOST_RADIUS);
+          (!isRooms && Math.abs(p.pageIndex - focus) <= LIVE_GHOST_RADIUS);
         // One persistent eased group per page (stable key), so whenever a
-        // page's target transform changes — a new focus in the field views, a
-        // pointer entering or leaving in the elevator — AtPos morphs it there
-        // rather than cutting. The marker frame is a separate object.
+        // page's target transform changes — a new focus in the field views —
+        // AtPos morphs it there rather than cutting. The marker frame is a
+        // separate object.
         const key = p.isFocusCell
           ? `page-cell-marker-${p.pageIndex}`
           : `page-ghost-${p.pageIndex}`;
@@ -935,7 +832,7 @@ export function PageGhostField({
                     stage={p.isStage}
                     // rooms navigates by the blue spots on the floor, not by
                     // a page-at-a-time widget bolted to the page.
-                    controls={!elevator && !isRooms}
+                    controls={!isRooms}
                     setPage={setPage}
                   />
                 ) : (
@@ -947,48 +844,18 @@ export function PageGhostField({
                     recession={p.recession}
                   />
                 )}
-                {/* The elevator numbers every slot, and marks the one being
-                    read: nothing moves when the focus changes here, so a mark
-                    under the card is the only thing that can say where in the
-                    section the reader is. */}
-                {elevator && elevatorShell && (
-                  <ElevatorSlotMark
-                    width={cellW}
-                    height={cellH}
-                    trim={elevatorShell.trim}
-                    pageIndex={p.pageIndex}
-                    current={p.isStage}
-                    pointed={pointedAt === p.pageIndex}
-                    dim={!!p.offFloor}
-                  />
-                )}
                 {/* Never over the page being read. PageHitPlane is a
                     full-cell quad at z = 0.045 that stopPropagation()s its
                     click, so it sits in front of that page's links (z ≈ 0.004)
-                    and eats every one of them. The elevator used to keep it on
-                    the current page too — "it sits in the wall like every other
-                    one" — but the click it swallowed only ever re-selected the
-                    page that was already current, in exchange for making the
-                    one live, interactive page the only unclickable one.
-                    Losing it also costs the current page its `pointedAt`
-                    hover, which it does not need: `isStage` already forces
-                    `live`, and ElevatorSlotMark already marks it `current`. */}
+                    and eats every one of them — which on the focused page
+                    would make the one live, interactive page the only
+                    unclickable one, in exchange for a click that only ever
+                    re-selected the page already current. */}
                 {!p.isStage && (
                   <PageHitPlane
                     width={cellW}
                     height={cellH}
                     onSelect={() => setPage(panel.id, p.pageIndex)}
-                    onOver={
-                      elevator ? () => setPointedAt(p.pageIndex) : undefined
-                    }
-                    onOut={
-                      elevator
-                        ? () =>
-                            setPointedAt((cur) =>
-                              cur === p.pageIndex ? null : cur,
-                            )
-                        : undefined
-                    }
                   />
                 )}
               </EasedScale>
@@ -1016,28 +883,3 @@ export function PageGhostField({
   );
 }
 
-/**
- * The branch corridor's doors, from the directional slot model.
- *
- * ONE list, not one per section. The corridor belongs to the page the reader
- * is on — `computeRoomShell` builds it off the wall beside that page — so
- * there is nothing to bucket. The nesting survives only because
- * `PagePlacementOptions.sectionLinks` is still typed as a list of lists, which
- * the elevator and the older room plan both read.
- *
- * Order within it is `buildSlots`'s: the way back first, then the rest of the
- * walked corridor, then this page's own links. Nothing is dropped — the slots
- * were built in fit mode, so the branch is sized for every one of them.
- */
-function directionalSectionLinks(slots: DirSlots): SectionLink[][] {
-  const out: SectionLink[] = [];
-  for (const axis of ["left", "right", "up", "down"] as const)
-    for (const s of slots[axis])
-      out.push({
-        label: s.label,
-        href: s.url,
-        axis,
-        isReturn: s.kind === "return",
-      });
-  return [out];
-}

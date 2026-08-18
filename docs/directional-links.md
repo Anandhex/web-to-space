@@ -1,5 +1,14 @@
 # Directional links — spec and build plan
 
+> **Status note (2026-08-18): the elevator view has been removed.** It was not a
+> fourth spatial concept — it was Rooms' "navigate the site as an environment"
+> laid out vertically, a navigation configuration of the same idea rather than a
+> new way of relating to the document, and keeping both weakened the distinction
+> the remaining three carry. The three shipping views are **rooms**, **wall** and
+> **deck**. Everything below about the elevator's ring corridor is kept as the
+> design record of a view that was built and then dropped; the ring geometry, its
+> shell and its fit-mode budget are gone from the code.
+
 Replaces the abandoned "reference neighbourhood" design (stashed at
 `stash@{0}`, message `abandoned: reference-neighbourhood link design`).
 
@@ -32,8 +41,8 @@ legend and it holds everywhere.
 Two rules make the model work:
 
 1. **Same-page links never open anything.** The target is already drawn by the
-   current view — a storey of this elevator, a card on this table, a room in
-   this building, a page of this panel. A same-page link lights that object up
+   current view — a tile on this board, a card on this table, a room in this
+   building, a page of this panel. A same-page link lights that object up
    and moves the reader to it inside the current structure. Opening a corridor
    to it would draw the same content twice.
 2. **No blue text anywhere.** Links are doors, stairs, strips and paths. The
@@ -82,7 +91,6 @@ geometry.
 | wall | 3 lateral each side, 2 up, 2 down |
 | deck | 5 per direction (N/S/E/W) |
 | rooms | 2 per direction |
-| elevator | as rooms until measured otherwise |
 
 A view that has narrowed to ONE rendered page ignores the window and shows
 every link that page has (`fitBudget`) — there is nothing to ration, and the
@@ -119,23 +127,24 @@ that face, the deck slides to that table, the building changes floor.
 
 ### Rooms — a building
 
-- Each rendered page opens a **corridor to its right** carrying that page's
-  sibling links. Only the page the reader is on has a live corridor.
-- **Stairs up** to parent links, **stairs down** to external links.
-- The up-stairs open onto **a corridor of doors, one per parent link, flat and
-  ungrouped** — see *Decisions taken*, item 2.
+- Each rendered page opens a doorway in the gallery wall **beside** it, onto a
+  **crossing**: the square where the whole legend is read in one look.
+  - **Left and right** along the corridor's two arms to the siblings — a
+    "right" link is a door on the reader's right as they step out of the room,
+    on either wall of the building.
+  - **Straight ahead** into the stair hall: the flight **up** to the parents
+    and the flight **down** to the externals, side by side across its width,
+    starting at the crossing rather than at the end of a walk.
+- The arms run **along** the gallery wall, which every page on that wall
+  shares, so only the page the reader is at has its corridor built out. Every
+  other page keeps its doorway and the lit crossing behind it, so a reader
+  walking the gallery still sees which pages lead somewhere.
+- Each flight arrives on a landing that is **the whole stair hall at that
+  storey**, its doors hung past the head of the flight — **flat and
+  ungrouped**, see *Decisions taken*, item 2.
 - A **back door on every floor**, so a reader three rooms deep can leave from
   where they are rather than walking back to the one corridor that carries the
   return.
-
-### Elevator
-
-- Each rendered page opens a corridor to a **circular arrangement of its
-  sibling links**. Same-page links light the storey already drawn.
-- **Elevator up** to parents, **down** to externals. Windowed memory and a
-  quick floor switch inside the car.
-- **Redesign:** the reader currently has a fixed, rotated head. They should be
-  able to move freely around the ring and walk into the corridors.
 
 ## Decisions taken
 
@@ -153,18 +162,10 @@ that face, the deck slides to that table, the building changes floor.
 
 ## Deferred
 
-- **Elevator ring distance and legibility.** Measured, not acted on: ring body
-  text sits at **0.26°** cap-height at the tightest radius against a **0.29°**
-  floor (`src/eval/xr-quality.ts:9`), and h2 headings drop below the floor once
-  the ring passes **1.81 m** — which section size alone can trigger, since
-  radius grows with page count. `ELEVATOR_S = 0.6` and
-  `ELEVATOR_MAX_RADIUS = 3.2` in `src/renderer/page-placements.ts`. Holding
-  angular size constant needs ring scale to rise with radius (≈1.0 at a 3 m
-  ring, which also yields *more* slots per turn: ~12 against ~9). Revisit after
-  the views land.
 - **`panelCurveRadius` is 1.2 m**, so a page's curve assumes the reader at its
-  centre. Free movement breaks that assumption. Flatten ring pages or re-curve
-  per approach point — with the elevator work.
+  centre. Free movement breaks that assumption — a page in a room the reader
+  can walk around is read from wherever they stand, not from one authored
+  point. Flatten or re-curve per approach point.
 - **Sibling overflow.** p90 is 5 per page but max is 50. Default until
   measured: fill right, overflow to left, then paginate the lateral run.
 
@@ -324,12 +325,6 @@ travel, reserved return path.
 stairs up and down, flat parent corridor, back door. Locomotion already exists in `xr-locomotion.tsx` (thumbstick walk, snap
 turn, gaze teleport).
 
-## Phase 8 — elevator
-
-`src/renderer/scene/elevator-decor.tsx`, `page-placements.ts`. Corridor to a
-circular sibling arrangement, car up/down, and the
-free-movement redesign. Ring distance and curve stay deferred.
-
 ## Standing hazards
 
 - **An uncaught throw inside an XR frame ends rendering permanently** — the
@@ -363,7 +358,6 @@ are decisions, not slips.
 | 5 wall | done | `scene/wall-field.tsx` — edge strips, the turn, re-normalisation |
 | 6 deck | done | `scene/deck-field.tsx` — paths off the table, world slide |
 | 7 rooms | done | corridor doors directional and per-page, stair treads on the up/down doors, a back door in every stretch |
-| 8 elevator | partial | path → second circular corridor, with the contraction on opening; **free-movement redesign not built** |
 
 `npm run test:links` (92.2% region, 94.2% direction), `npm run test:memory`,
 `npm run test:slots`, `npm run build` all pass.
@@ -429,18 +423,13 @@ order. All four views were about to answer that question separately.
 
 ## Still open
 
-- **Elevator:** the free-movement redesign — the reader physically walking off
-  the ring and down a corridor rather than turning a fixed head — and with it
-  the deferred `panelCurveRadius` problem, since a page's curve assumes the
-  reader at the ring's centre and a reader who has walked is not there.
 - **Rooms** is still one storey on one floor plane. The up/down doors carry a
   flight of treads that reads as a level change, which is what a real building
   does at such a door, but there is no second floor to walk to.
-- **Elevator ring legibility**, unchanged from the Deferred section above.
 - **Sibling overflow** is still the stated default (fill right, overflow left,
   then mark) and still unmeasured.
-- **Verification:** the wall, the deck's table, the elevator's ring and the
-  minimap were checked in the flat preview. The rooms corridor was not seen
+- **Verification:** the wall, the deck's table and the minimap were checked in
+  the flat preview. The rooms corridor was not seen
   rendered — only type-checked and built — and no view has been checked in a
   headset.
 
@@ -508,15 +497,15 @@ preview a 60° lens crops away exactly what the strips exist to show.
 
 *"quick view should reflect the metaphor of the view rather than just dots"* —
 `NodeGlyph` draws a visited document as the thing that view is made of: a square
-FACE for the wall, a card with the table's lip for the deck, a room in plan with
-its doorway left open for rooms, a wide slab for the elevator's storeys. Rooms
-joins its nodes with corridors rather than wires. The caption says what the map
+FACE for the wall, a card with the table's lip for the deck, and a room in plan
+with its doorway left open for rooms. Rooms joins its nodes with corridors
+rather than wires. The caption says what the map
 is of ("4 rooms"), so the shapes read as shapes.
 
 Colour still carries nothing. What separates "visited" from "here" is weight and
-an outline; what separates the four views is shape.
+an outline; what separates the three views is shape.
 
-## 5. The elevator is two states, not an arc of plates
+## 5. The elevator is two states, not an arc of plates *(view since removed)*
 
 *"the user walks around the circular corridor and then checks a page and then
 finds on the right a path which opens to another circular corridor of links,
@@ -569,8 +558,8 @@ Two things that had to change with it:
   built a fifty-six-metre corridor. The wall can show every link a page has
   because they are all within a glance; a corridor has to be walked. Rooms'
   budget went to 4 a direction — two ranks of eight doors, about five metres —
-  and the elevator keeps fit mode, because its corridor is a ring you turn to
-  read. This is the revisit the spec's decision item 2 invited ("build it flat;
+  (the elevator, then still shipping, kept fit mode: its corridor was a ring
+  you turned to read rather than walked). This is the revisit the spec's decision item 2 invited ("build it flat;
   revisit only if it bites in practice"). It bit.
 - **The branch's door pitch is 62% of the spine's.** The spine is walked past
   at reading pace with a room of pages either side; the branch is a rank of
@@ -623,8 +612,8 @@ A departure from the spec, which says only the page the reader is on has a live
 corridor — and the right one for a view you WALK. A reader coming down a
 gallery has to see which pages lead somewhere BEFORE choosing which to stand
 at; a corridor that appears only once they are already there cannot be part of
-that choice. (The wall and the elevator still open one at a time. Their readers
-are not walking past anything.)
+that choice. (The wall still opens one at a time. Its reader is not walking
+past anything.)
 
 `PagePlacementOptions.focusPage` became `pageLinks`, indexed by page, and
 `branchesOf` returns one branch per page that has links — 38 of them on the
@@ -788,11 +777,74 @@ on the landing, and the reader now stops against the end wall instead of
 leaving the building. From the head of the flight the landing reads as a
 corridor of doors with the stairwell open in its floor.
 
+## 14. A corridor opens as you approach, and holds while you are in it
+
+Two faults, one walking session.
+
+**It opened on the mark, not on approach.** The build-out was gated on `focus`,
+and `focus` only moves when the reader stands inside a page's 0.55 m reading
+spot — so the arms, the stair hall and the flights arrived only once both feet
+were on the disc. Anand: *"the corridors for the room activates when I am at
+the pointer, it should activate when I am the vicinity."* Which page is on show
+and which corridor is open are now two questions. `corridorPageAt` elects the
+latter by proximity: the nearest page within `VICINITY_REACH` (2.6 m — most of
+a bay), among the pages of the room the reader is actually in, so a spot the
+same distance off through a wall does not count. Walked and measured: along a
+wall the corridor opens **1.75–1.80 m** out, and for a facing pair (which is a
+walk across the room, the two marks only 1.3 m apart) at **0.66 m** — in both
+cases before the mark, never after it.
+
+**It could move while you were inside it.** The vicinity rule alone is worse
+than the old one: an arm runs ALONG the room wall and past the neighbouring
+bays, so a few strides down it the nearest reading spot belongs to a neighbour,
+and re-electing there would rebuild the floor, the walls and the very doorway
+the reader came in by while they stood on them. Anand: *"the corridor should
+have same entrance and exit."* So the election stops the moment the reader
+crosses the wall line — the room test is taken with **no** `ROOM_ENTERED_SLACK`,
+which means standing in the threshold already counts as committed — and a
+`VICINITY_MARGIN` of 0.5 m stops a reader hovering between two bays swapping
+the whole corridor back and forth on every reported step.
+
+Verified by walking it offline in 5 cm steps with the real collision, the real
+walking surface and the real election on every step, for pages on both walls
+and in both rooms: out through the doorway, down one arm, back down the other,
+and in again — the corridor is the same one throughout, and the door out is the
+door back in.
+
+## 15. The second move in a row landed the reader in the void
+
+*"If i click one direction of links after second continuous link in the same
+direction i get teleported to void."* One cause, and it is a lifetime problem
+rather than a geometry one.
+
+**The rooms field never remounts between documents.** Every document's main
+content panel has the id `"main"` — the parser numbers from the root — and that
+id is the React key, so the same `PageGhostField` instance, and every ref
+inside it, carries straight over from one building into the next. The reader's
+pose is one of those refs.
+
+**And the pose was reset only on a change of `focus`.** A new document resets
+paging to page 0, so the FIRST move worked by luck: the reader was standing at
+page 7, and 7 → 0 is a change. The second move in a row is 0 → 0, nothing fired,
+and the reader kept the coordinates they held in the previous building —
+usually out in a corridor, sometimes up on a landing. Measured on the corpus: a
+reader at page 24 of the 40-page Wikipedia page stands at z = −58 m, and the
+14-page MDN page has **no room and no floor** anywhere near it. Where the
+previous document was the shorter of the two the failure is quieter but the
+same — they arrive in room 4 of a document they have never read a word of.
+
+Arrival is now its own trigger, next to the focus one: a new `LayoutPlan` puts
+the reader at page 0's reading spot of the building they have just entered,
+lands rather than glides (easing across the gap would drag them through several
+rooms of the new document), and clears `rise` — a landing one storey up in the
+document you left is thin air in the one you enter. The room the reader is in,
+the coarse walking position and the open corridor are all re-derived on the
+same trigger, since each of them was keyed on the focus change too.
+
 ## Still open after this pass
 
-- The elevator's **free-movement redesign** — the reader physically walking off
-  the ring rather than turning a fixed head — and with it the deferred
-  `panelCurveRadius` problem.
+- The deferred `panelCurveRadius` problem: a page's curve still assumes one
+  authored reading point, and a reader who has walked is not there.
 - Nothing has been checked **in a headset**. Everything above was verified in
   the flat preview.
 - A couple of small seams remain in the corridor at grazing angles — much

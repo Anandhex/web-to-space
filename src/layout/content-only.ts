@@ -1,7 +1,7 @@
 /**
  * layout/content-only.ts
  *
- * Content-only folding for page views (elevator/wall/deck/rooms): the spatial
+ * Content-only folding for page views (wall/deck/rooms): the spatial
  * page set replaces the landmark side panels, so XRContentPanel becomes the
  * only panel. This pure scene→scene pass re-parents the top-level landmarks
  * that carry CONTENT into the content panel's child flow, in reading order:

@@ -21,8 +21,7 @@ import type {
 export type LayoutTemplate =
   | "document" // Long-form article / blog / docs
   | "landing" // Hero + feature sections, marketing
-  | "generic" // Safe fallback
-  | "carousel"; // Arc of panels: TOC, prev-page, main, next-page, aside
+  | "generic"; // Safe fallback
 
 // ─────────────────────────────────────────────────────────────
 // Output types (LayoutEntry, PaginationMeta, LayoutPlan)
@@ -185,7 +184,7 @@ export interface LayoutPlan {
 
 /**
  * One section of the document and the pages it occupies — the unit the page
- * views group by (an elevator storey, a wall tile, a deck pile, a room).
+ * views group by (a wall tile, a deck pile, a room).
  * Ranges are the section's own SUBTREE span, so a parent's range still
  * covers its children's; turning that into disjoint groups is a
  * presentation decision and stays with the renderer.
@@ -550,12 +549,7 @@ export type Distribution = "fan";
  * the slot roster collapses to [main], asides/banner/footer fold into the
  * content flow (they paginate inline), and nav/TOC entries are suppressed.
  */
-export type PageDistribution =
-  | "flip"
-  | "elevator"
-  | "wall"
-  | "deck"
-  | "rooms";
+export type PageDistribution = "flip" | "wall" | "deck" | "rooms";
 
 /** Device capability class, used to gate which views a profile may offer. */
 export type DeviceClass = "headset-6dof" | "headset-roomscale" | "glasses";

@@ -1,8 +1,9 @@
 # Spatial views — design & implementation plan
 
-Status: living document. The shipping views are `standard`, `carousel` and the
-four page views (`elevator`/`wall`/`deck`/`rooms`); the landmark-scattering
-arrangements this plan introduced have since been removed (see "Removed views").
+Status: living document. The shipping views are the three page views
+`rooms`, `wall` and `deck`; the landmark-scattering arrangements this plan
+introduced, the legacy `standard`/`carousel` path and the `elevator` have all
+since been removed (see "Removed views").
 
 ## Thesis framing
 
@@ -66,19 +67,22 @@ along with the `theatre` template — see "Removed views" below.
 
 ## Views
 
-| View       | Frame  | Distribution | Page distribution | Device gate |
-| ---------- | ------ | ------------ | ----------------- | ----------- |
-| `standard` | world  | (legacy auto)| flip              | all         |
-| `carousel` | world  | (legacy)     | flip              | all         |
-| `elevator` | world  | fan          | elevator          | all         |
-| `wall`     | world  | fan          | wall              | Quest       |
-| `deck`     | world  | fan          | deck              | Quest       |
-| `rooms`    | world  | fan          | rooms             | Quest       |
+| View    | Frame | Distribution | Page distribution | Device gate |
+| ------- | ----- | ------------ | ----------------- | ----------- |
+| `rooms` | world | fan          | rooms             | Quest       |
+| `wall`  | world | fan          | wall              | Quest       |
+| `deck`  | world | fan          | deck              | Quest       |
 
-`standard` and `carousel` are the legacy bespoke path (hand-tuned `SlotMap` +
-renderer branches). The four page views route through the arrangement path but
-use it only to collapse the roster to `[main]`; their spatial interest is in the
-PAGE set, not the landmark panels — see `docs/page-presentation-plan.md`.
+Three views, three *different* spatial concepts — not three configurations of
+one:
+
+- **rooms** — you navigate the site as an environment you walk through.
+- **wall** — you see the site as one spatial structure you survey at once.
+- **deck** — you handle the page's parts as objects on a surface.
+
+All three route through the arrangement path but use it only to collapse the
+roster to `[main]`; their spatial interest is in the PAGE set, not the landmark
+panels — see `docs/page-presentation-plan.md`.
 
 ### Removed views
 
@@ -89,6 +93,25 @@ distribution, and the `SlotTethers` renderer branch that drew hub-and-spoke
 lines for `exploded`/`constellation`. Earlier still-referenced-but-absent views
 (`focus`, `stack`, `orbital`, `palm`, `gallery`, `cards`, `door`) were removed
 before that.
+
+**`standard`, `carousel` and `elevator` (removed 2026-08-18).** `standard` and
+`carousel` were the last of the legacy bespoke path — a paginated panel read
+head-on at a desk, with `carousel` adding two reduced neighbour pages on the
+reading arc. Both went, and with them the `carousel` layout template and its
+`SlotMap`, `carouselGhostPlacement`/`CarouselGhostPanel`, `DeskDecor` and its
+sign plate, and the `XRSceneGraph` 3x-panel branch.
+
+`elevator` went for a different reason: it was not a fourth spatial concept.
+Rooms is *navigate the site as an environment*; the elevator was the same
+concept laid out vertically — a different navigation configuration of Rooms,
+not a different way of relating to the document. Keeping both weakened the
+distinction the other three carry. Removed with it: the `elevator`
+`PageDistribution` and `Arrangement`, the whole ring/atrium placement layer in
+`page-placements.ts` (`elevator()`, `computeElevatorShell`, `elevatorEmphasis`,
+`elevatorFloorTarget`, the `ELEVATOR_*`/`ATRIUM_*` constants and
+`PagePlacement.offFloor`), `scene/elevator-decor.tsx`, `deepSectionRangesFor`,
+the shaft's keyboard/thumbstick ride (`useXRStickSteps`) and its pointer
+emphasis.
 
 ## Architecture map (files)
 
@@ -116,8 +139,8 @@ before that.
   built on this path were deleted; see "Removed views". The `body`/`head`/`hand`
   frames survive in `ReferenceFrameGroup` but no shipping view selects them.
 - **Phase 4 — page views (done).** The interest moved from scattering the
-  landmark panels to spatialising the PAGE set: `elevator`, `wall`, `deck`,
-  `rooms`. Tracked in `docs/page-presentation-plan.md`.
+  landmark panels to spatialising the PAGE set: `wall`, `deck`, `rooms` (and
+  `elevator`, since removed). Tracked in `docs/page-presentation-plan.md`.
 - **Transitions (done).** `AtPos` now eases every primitive toward its target
   position/rotation with frame-rate-independent exponential smoothing
   (`MORPH_RATE`), so switching views morphs the panels between arrangements.
@@ -132,6 +155,7 @@ before that.
 
 ## Follow-ups / known gaps
 
-- **Legacy view migration.** `standard` and `carousel` still use bespoke slot
-  functions + renderer branches. They should migrate onto arrangements once the
-  new path is battle-tested, at which point the branches in `XRSceneGraph` shrink.
+- **Legacy view migration (settled by deletion).** `standard` and `carousel`
+  were the last bespoke slot functions + renderer branches. Rather than migrate
+  them onto arrangements, they were removed — every shipping view now routes
+  through the arrangement path, and `XRSceneGraph` has no per-view branch left.

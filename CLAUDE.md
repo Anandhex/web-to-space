@@ -5,14 +5,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run dev        # Start dev server (includes CORS proxy at /proxy?url=)
+npm run dev        # Start dev server (includes CORS proxy at /api/proxy?url=)
 npm run build      # Type-check + Vite production build
 npm run preview    # Serve the dist/ output locally
 ```
 
-There is no test runner or linter configured. TypeScript strictness (`noUnusedLocals`, `noUnusedParameters`, `erasableSyntaxOnly`) is enforced at build time.
+There is no linter and no test *runner*, but there are checks, and they are the
+gate on anything touching links or the parser:
 
-The dev server requires HTTPS for WebXR — `@vitejs/plugin-basic-ssl` is included.
+```bash
+npm run test:links    # link classification against the gold set
+npm run test:memory   # nav memory (reader-relative corridors)
+npm run test:slots    # door/slot budgets
+npm run benchmark     # offline parser benchmark: segmentation + XR legibility
+npm run census        # link census over the fetched corpus
+```
+
+TypeScript strictness (`noUnusedLocals`, `noUnusedParameters`, `erasableSyntaxOnly`) is enforced at build time. `npm run build` runs `tsc` over the WHOLE project, so it goes red on faults in files you did not touch — run `npx tsc --noEmit` and read which files the errors are in before assuming a change broke it.
+
+The dev server requires HTTPS for WebXR — `@vitejs/plugin-basic-ssl` is included. Set `NO_SSL=1` to serve plain HTTP instead, which is how the in-app browser preview and any tool that cannot follow a self-signed cert reach it (WebXR is unavailable in that mode; everything else renders).
 
 ## Architecture: 5-Stage Pipeline
 
@@ -24,7 +35,11 @@ Each stage is a pure function. Nothing mutates shared state between stages.
 
 ### Stage 1 — Parser (`src/ir/`)
 
-`parsePageToIR(html, config, url)` → `PageIR`
+`parsePageToIR(html, url, fallbackProvider?, config?)` → `Promise<PageIR>`
+
+Async, and `url` is the SECOND argument — it is the base every relative and
+protocol-relative asset URL is resolved against, so passing a config there
+throws `ERR_INVALID_URL` on the first `//host/…` image.
 
 Converts raw HTML into an accessibility-semantic intermediate representation using ARIA roles, labels, and structural inference. The IR is a flat dictionary (`PageIR.nodes: Record<string, IRNode>`) with string IDs to avoid reference cycles. `IRNode.readingDepth` tracks semantic containment depth (0 = top-level landmark).
 
@@ -47,7 +62,12 @@ The full mapping table is the `MappingRule` union type in `src/mapper/types.ts`.
 
 ### Stage 3 — Layout Engine (`src/layout/engine.ts`)
 
-`computeLayoutPlan(scene, config, metrics, profileOrTemplate?)` → `LayoutPlan`
+`computeLayoutPlan(scene, profile, template?, configOverrides?, metricsOverrides?, arrangement?)` → `LayoutPlan`
+
+The `DeviceProfile` supplies both the `LayoutConfig` and the `RenderMetrics`;
+the two override arguments are partials merged over it. `arrangement` is what
+the page views (rooms/wall/deck) pass — see `getArrangement` in
+`src/layout/placement.ts`.
 
 Places every primitive in 3D space. Outputs a flat `LayoutPlan.entries: Record<string, LayoutEntry>` — one entry per primitive. All measurements are in **metres**, WebXR right-handed coordinate system.
 
@@ -75,9 +95,20 @@ Key renderer rules:
 
 Primitive meshes are in `src/renderer/primitives.tsx`. Text rendering uses `troika-three-text` via `@react-three/drei`'s `<Text>`.
 
-### Stage 5 — XR Session (`src/xr/`)
+### Stage 5 — XR Session (`src/renderer/`)
 
-`createXRSessionManager()` wires up `THREE.WebGLRenderer.xr`, two controllers with raycaster hit-detection, and a per-frame ray update loop. Hit objects expose `userData.nodeId` / `userData.role` / `userData.controls` for interaction routing. The session bridge (`src/renderer/useXRSession.tsx`) integrates this with the React Three Fiber renderer.
+XR lives in the renderer, not in a module of its own. (An `src/xr/` existed until 2026-08-18 with its own session manager and controller raycasting; nothing had imported it in months and it was deleted. If you find it referenced anywhere, that reference is stale.)
+
+`<XR store>` mounts the controllers and hands itself — do not hand-roll target-ray/grip mounting. (A `scene/xr-input.tsx` doing exactly that survived the move to @react-three/xr v6 unreferenced, and was deleted with `src/xr/`.)
+
+The live path is:
+
+- `useXRSession.tsx` — owns the `@react-three/xr` store and adapts it to the DOM-side session API (VRButton) plus the flat-preview gating. The store is used rather than a raw `navigator.xr.requestSession()` precisely because R3F's declarative handlers (`onClick` / `onPointerOver`) are sourced from DOM pointer events, which an immersive session never delivers — every handler went dead inside VR under the old approach.
+- `xr-render-path.ts` — the baseLayer-vs-projection-layers decision, which must match the `layers` feature request or `setSession` throws mid-entry.
+- `scene/camera.tsx` — the reference space and where the reader's eye sits relative to the panels.
+- `scene/xr-locomotion.tsx` — thumbstick walk, snap turn and gaze teleport: the headset ends of the same actions the keyboard drives.
+
+One hazard worth knowing before touching any of it: **an uncaught throw inside an XR frame ends rendering permanently** — the headset falls back to its loading environment with nothing surfaced.
 
 ## Key Invariants
 
@@ -85,4 +116,4 @@ Primitive meshes are in `src/renderer/primitives.tsx`. Text rendering uses `troi
 - **Mapper never positions.** Any placement logic belongs in `engine.ts`.
 - **No nodes dropped.** Unmapped IR roles → `XRGenericPanel`. Missing entries break the renderer.
 - **`RenderMetrics` is the single source of dimensional truth.** The engine never hard-codes font sizes or element heights — they come from the active `DeviceProfile`.
-- **CORS proxy is dev-only.** `vite.config.ts` registers `/proxy?url=` as a Vite middleware. It is not available in the production build.
+- **CORS proxy is dev-only.** `vite.config.ts` registers **`/api/proxy?url=`** as a Vite middleware. It is not available in the production build.

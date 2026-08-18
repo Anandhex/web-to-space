@@ -4,11 +4,11 @@
  * THE INPUT THE HEADSET ACTUALLY HAS.
  *
  * Every page view in this app was navigated from the keyboard: W/A/S/D and the
- * arrow keys walk the `rooms` building, ↑/↓ ride the `elevator` shaft, ←/→ turn
- * a page. Inside an immersive session there is no keyboard — the reader has two
- * controllers, or two bare hands, and nothing else. So each of those views was
- * navigable at a desk and frozen in a headset: you could look around whatever
- * the view had put in front of you and never move through it.
+ * arrow keys walk the `rooms` building, ←/→ turn a page. Inside an immersive
+ * session there is no keyboard — the reader has two controllers, or two bare
+ * hands, and nothing else. So each of those views was navigable at a desk and
+ * frozen in a headset: you could look around whatever the view had put in
+ * front of you and never move through it.
  *
  * This module is the other end of those same actions, and nothing more. It does
  * not invent a second navigation model; it hands the existing ones the two
@@ -34,7 +34,6 @@
  * floor the reader could walk to, is a gesture nothing else in the scene makes.
  */
 import React from "react";
-import { useFrame } from "@react-three/fiber";
 import { useXR, useXRInputSourceState } from "@react-three/xr";
 import * as THREE from "three";
 
@@ -119,74 +118,6 @@ export function useXRThumbsticks(): () => { left: StickAxes; right: StickAxes } 
     () => ({ left: readStick(left), right: readStick(right) }),
     [left, right],
   );
-}
-
-/** How far a stick must be pushed before it counts as a deliberate step. */
-const STEP_THRESHOLD = 0.65;
-/** …and how far it must fall back before the next push counts. */
-const STEP_RELEASE = 0.35;
-/** Held over: the wait before a push starts repeating, and the repeat period. */
-const STEP_REPEAT_DELAY = 0.5;
-const STEP_REPEAT_PERIOD = 0.22;
-
-/**
- * Turns a thumbstick into discrete steps — the elevator's floors and pages,
- * and anything else that moves a whole item at a time.
- *
- * A raw axis would run the whole document past the reader in a second. This is
- * the keyboard's own behaviour instead: one step on the push, then a pause, then
- * an even repeat while it is held. `onStep` receives −1/0/+1 per axis, with the
- * same sign convention as the arrow keys it stands in for (`y` positive = up /
- * previous, matching ↑).
- */
-export function useXRStickSteps(
-  enabled: boolean,
-  onStep: (dx: number, dy: number) => void,
-) {
-  const sticks = useXRThumbsticks();
-  const handler = React.useRef(onStep);
-  handler.current = onStep;
-  /** The step currently latched on each axis, and its repeat clock. */
-  const latched = React.useRef({ x: 0, y: 0 });
-  const held = React.useRef({ x: 0, y: 0 });
-
-  useFrame((state, dt) => {
-    if (!enabled || !state.gl.xr.isPresenting) {
-      latched.current = { x: 0, y: 0 };
-      return;
-    }
-    const { left, right } = sticks();
-    // Either hand drives: a reader holds the controllers whichever way round
-    // they like, and a view with one job has no use for two different sticks.
-    const ax = Math.abs(left.x) > Math.abs(right.x) ? left.x : right.x;
-    const ay = Math.abs(left.y) > Math.abs(right.y) ? left.y : right.y;
-    const step = Math.min(dt, 0.1);
-
-    const axis = (v: number, key: "x" | "y") => {
-      const dir = v >= STEP_THRESHOLD ? 1 : v <= -STEP_THRESHOLD ? -1 : 0;
-      const cur = latched.current[key];
-      if (cur !== 0 && Math.abs(v) < STEP_RELEASE) {
-        latched.current[key] = 0;
-        return 0;
-      }
-      if (dir === 0) return 0;
-      if (dir !== cur) {
-        latched.current[key] = dir;
-        held.current[key] = -STEP_REPEAT_DELAY;
-        return dir;
-      }
-      held.current[key] += step;
-      if (held.current[key] >= STEP_REPEAT_PERIOD) {
-        held.current[key] -= STEP_REPEAT_PERIOD;
-        return dir;
-      }
-      return 0;
-    };
-
-    const sx = axis(ax, "x");
-    const sy = axis(ay, "y");
-    if (sx !== 0 || sy !== 0) handler.current(sx, sy);
-  });
 }
 
 // ── Gaze ─────────────────────────────────────────────────────

@@ -363,160 +363,6 @@ function genericSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
 }
 
 /**
- * CAROUSEL template — the reading arc.
- *
- * The page you are on reads head-on in the band; the pages either side of it
- * stand BESIDE it, clear of its edges, on the SAME user-centred cylinder as
- * the main panel and the side rails. Three pages in an unbroken row: you can
- * see what you have just read and what comes next, not merely that they
- * exist, and every one of them is the same reach and the same focal distance
- * away — one accommodation for the whole view, which is the invariant the
- * wrap geometry at the top of this file exists to keep.
- *
- * Nothing here steps back in depth and nothing gets an extra yaw of its own:
- * a panel placed tangent on the radius-`d` circle already faces the reader,
- * and a neighbour pushed onto its own arc — or turned further in than the
- * tangent — is the thing that made the earlier version read as a page hiding
- * behind the one being read.
- *
- * The room has to come from somewhere, since a panel the width of the comfort
- * cone fills ±33° by itself. Two concessions pay for it:
- *
- *  • the carousel's main panel is a little narrower than the front-facing
- *    templates' (CAROUSEL_MAIN_FILL) — this view trades reading width for
- *    context, which is the whole reason to be in it;
- *  • the neighbours are drawn at CAROUSEL_NEIGHBOUR_SCALE, as reduced
- *    previews rather than full pages. Standing them further back would shrink
- *    them the same amount and take them off the cylinder to do it.
- *
- * The result puts each neighbour's inner edge one WRAP_GAP_DEG past the main
- * panel's edge on every device profile, and the side rails one gap past the
- * neighbour's outer edge. `CarouselPageRail` in the renderer still says where
- * in the document you are; the arc says what is on either side of you.
- */
-
-/**
- * Size of a neighbour page relative to the one being read. A preview, not a
- * second reading surface — and, with everything on one cylinder, the only
- * lever left over how far round the arc the side rails end up.
- */
-export const CAROUSEL_NEIGHBOUR_SCALE = 0.5;
-
-/**
- * How much of the comfort cone the carousel's reading panel takes. Less than
- * the front-facing templates' full cone: what it gives up in width it buys
- * back as room for a whole page either side of it.
- */
-const CAROUSEL_MAIN_FILL = 0.85;
-
-/** Width of a neighbour page — the reading panel's, reduced. */
-function carouselNeighbourWidth(mainW: number): number {
-  return mainW * CAROUSEL_NEIGHBOUR_SCALE;
-}
-
-/**
- * Centre angle (degrees, unsigned) of a neighbouring page on the cylinder.
- *
- * Solved, not picked: the neighbour's INNER edge lands exactly one
- * `WRAP_GAP_DEG` past the main panel's edge, so the three pages sit side by
- * side with the same hairline between them whatever the device profile's
- * panel size and reading distance are. It is `outsideMainDeg` — the same rule
- * that lays out the rails — because a neighbour is now placed by the same
- * geometry as everything else on the cylinder.
- */
-export function carouselNeighbourDeg(mainW: number, d: number): number {
-  return outsideMainDeg(
-    1,
-    mainW,
-    carouselNeighbourWidth(mainW),
-    d,
-    [],
-    WRAP_GAP_DEG,
-  );
-}
-
-/**
- * Angle of a neighbour's OUTER edge — the first bearing past the arc that is
- * free for anything else, which is what the side rails are laid out from.
- */
-export function carouselArcOuterDeg(mainW: number, d: number): number {
-  return (
-    carouselNeighbourDeg(mainW, d) + halfArcDeg(carouselNeighbourWidth(mainW), d)
-  );
-}
-
-/**
- * Placement of the two carousel neighbour panels, derived from the main
- * content panel's own slot. Shared by the renderer (which draws them) and the
- * tuning HUD (which seeds its sliders here), so both agree before tuning.
- *
- * `pos` is the main slot's TOP-LEFT anchor, which the carousel always places
- * head-on at `z = −d`; that is where the reading distance comes from when the
- * caller does not pass one.
- *
- * `scale` comes back with the poses because a neighbour is the SAME panel
- * drawn smaller: its children keep the main panel's panel-absolute layout, so
- * the renderer shrinks the whole group about its top-left anchor rather than
- * re-laying anything out.
- */
-export function carouselGhostPlacement(
-  pos: { x: number; y: number; z: number },
-  size: { width: number; height: number },
-  viewingDistance?: number,
-): {
-  prev: { position: { x: number; y: number; z: number }; rotation: Rotation3 };
-  next: { position: { x: number; y: number; z: number }; rotation: Rotation3 };
-  scale: number;
-} {
-  const d = viewingDistance ?? Math.abs(pos.z);
-  const deg = carouselNeighbourDeg(size.width, d);
-  const scale = CAROUSEL_NEIGHBOUR_SCALE;
-  // A shorter page hung from the main panel's top edge would float above a
-  // band it no longer fills, so the neighbour is centred on the band instead:
-  // its anchor drops by half the height the scaling took off.
-  const topY = pos.y - (size.height * (1 - scale)) / 2;
-
-  // `wrapLandmark` is the cylinder placement every other panel gets: centre on
-  // the radius-`d` circle at ±deg, tangent, top-left anchor stepped back half
-  // the panel's own width. Passing the SCALED width is what keeps the drawn
-  // page — not the layout box it inherits from main — centred on that bearing.
-  const place = (side: 1 | -1) => {
-    const slot = wrapLandmark(
-      d,
-      side * deg,
-      topY,
-      carouselNeighbourWidth(size.width),
-      size.height * scale,
-    );
-    return { position: slot.position, rotation: slot.rotation };
-  };
-
-  return { prev: place(-1), next: place(1), scale };
-}
-
-/**
- * The carousel's own slots. Same desk as the front-facing templates — one
- * reading band, chrome attached above and below it — but with a narrower
- * reading panel and the side rails pushed outside the two neighbouring pages,
- * so the arc has room to stand beside it rather than behind it.
- */
-function carouselSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
-  const d = cfg.viewingDistance;
-  const mainW = mainWidth(cfg, CAROUSEL_MAIN_FILL);
-  const map = deskSlots(cfg, metrics, { mainW, rails: [] });
-  const band = readingBand(cfg);
-  const railW = railWidth(cfg, mainW);
-
-  // Clear the whole arc, not just the main panel: a rail laid out from main's
-  // edge would be drawn over by the page standing next to it.
-  const clearDeg =
-    carouselArcOuterDeg(mainW, d) + WRAP_GAP_DEG + halfArcDeg(railW, d);
-  map.toc = wrapLandmark(d, -clearDeg, band.topY, railW, band.height);
-  map.complementary = wrapLandmark(d, clearDeg, band.topY, railW, band.height);
-  return map;
-}
-
-/**
  * Landmark slots use a top-left x origin: `position.x` is the panel's LEFT
  * edge, so a slot authored at `x: 0` actually sits centred at `+width/2` —
  * pushing wide panels off to the right of the viewer. For the page-style
@@ -546,8 +392,6 @@ export function selectSlots(
       return centreStackedPanels(documentSlots(cfg, metrics));
     case "landing":
       return centreStackedPanels(landingSlots(cfg, metrics));
-    case "carousel":
-      return carouselSlots(cfg, metrics);
     default:
       return centreStackedPanels(genericSlots(cfg, metrics));
   }
@@ -573,13 +417,6 @@ export const ARRANGEMENTS: Record<string, Arrangement> = {
   // (see resolveArrangementSlots) and the renderer scatters page ghosts via
   // src/renderer/page-placements.ts. All world-framed: the page field is an
   // exocentric structure the user surveys, not a HUD.
-  elevator: {
-    id: "elevator",
-    frame: "world",
-    distribution: "fan",
-    deviceFit: ["headset-6dof", "headset-roomscale", "glasses"],
-    pageDistribution: "elevator",
-  },
   wall: {
     id: "wall",
     frame: "world",

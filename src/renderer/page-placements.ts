@@ -28,13 +28,6 @@ export interface PagePlacement {
   scale: number;
   /** 0 = focused, →1 = fully de-emphasized. Drives ghost dimming. */
   recession: number;
-  /**
-   * elevator: this page belongs to a ring OTHER than the one the reader is
-   * standing on. The renderer always draws these as dimmed imposters, never
-   * live ghosts, so a neighbouring storey reads as translucent scenery
-   * rather than a second page competing with the one you're reading.
-   */
-  offFloor?: boolean;
   /** True for the empty marker frame left at the focused page's field cell. */
   isFocusCell: boolean;
   /**
@@ -45,11 +38,9 @@ export interface PagePlacement {
    *
    * In wall/deck this is the STAGE — identity offset/rotation, scale 1,
    * always flat — and the page flies there from its field cell, leaving an
-   * isFocusCell marker behind. The elevator has no stage: the page keeps its
-   * bearing on the ring and is emphasised in place instead. Rooms has no
-   * stage either, for the opposite reason: nothing moves but the reader, who
-   * walks to the page (see computeRoomWalk), so the flag only marks which
-   * exhibit is being read.
+   * isFocusCell marker behind. Rooms has no stage: nothing moves but the
+   * reader, who walks to the page (see computeRoomWalk), so there the flag
+   * only marks which exhibit is being read.
    */
   isStage: boolean;
 }
@@ -65,11 +56,11 @@ export interface SectionPageRange {
 
 export interface PagePlacementOptions {
   /**
-   * elevator/deck/rooms: page ranges of the top-level sections, in
+   * wall/deck/rooms: page ranges of the top-level sections, in
    * reading order.
    */
   sectionRanges?: SectionPageRange[];
-  /** elevator/rooms: reading distance (LayoutConfig.viewingDistance). */
+  /** rooms: reading distance (LayoutConfig.viewingDistance). */
   viewingDistance?: number;
   /**
    * rooms only: the floor, as a panel-anchor-relative y — i.e. minus the
@@ -103,6 +94,18 @@ export interface PagePlacementOptions {
    * focused page's reading spot instead.
    */
   readerPose?: ReaderPose;
+  /**
+   * rooms only: the page the reader is AT, whose corridor is BUILT OUT.
+   *
+   * A page's corridor now runs ALONG the wall it opens through rather than
+   * away from it (see `LinkBranch`), so two pages on the same wall want the
+   * same ground and only one of them can have it. Every other page keeps its
+   * doorway and the lit crossing behind it — a reader walking the gallery
+   * still sees which pages lead somewhere, which is why all of them used to
+   * be built — and the arms, the hall and the flights arrive when the reader
+   * does. Omitted means no corridor is built out at all.
+   */
+  activePage?: number;
 }
 
 /** Section ranges as given, or one range covering the whole document. */
@@ -135,612 +138,6 @@ function stagePlacement(pageIndex: number): PagePlacement {
     recession: 0,
     isFocusCell: false,
     isStage: true,
-  };
-}
-
-// ── Elevator ─────────────────────────────────────────────────
-// A building of sections: every section — nested subsections included — is
-// its own FLOOR, and a floor is a cylinder of that section's pages built
-// AROUND the reader. The ring axis passes through the viewer, so every page
-// is at reading distance and faces inward. The focused section's floor is
-// the one the reader stands on; the neighbouring sections' rings hang one
-// storey above (earlier) and below (later), so the shaft reads as an atrium
-// you ride through.
-//
-// The ring is FIXED, not a lazy Susan, and the section's NAME IS ONE OF ITS
-// SLOTS: the plaque takes the slot dead ahead, then the pages follow it
-// clockwise — page 1 one slot to the RIGHT of the name, page 2 two slots, on
-// around the back, until the last page arrives one slot to the LEFT of the
-// name and closes the circle. Reading order therefore starts beside the
-// section name, wraps the whole room, and comes back to it; a page's arc
-// distance from the name is just its number × the slot arc. The slots divide
-// the FULL 360°, so this is a room you turn around in, not a wall you face.
-//
-// NOTHING flies to a reading position, and being the current page earns no
-// special treatment — it sits in its slot like the rest. Only the page under
-// the pointer/ray is emphasised, and even that stays on its own bearing: it
-// grows to full size and closes in to reading distance, see
-// elevatorEmphasis. So the room never rearranges itself, and a page's place
-// on the wall is stable enough to remember.
-//
-// Spacing: a slot is one page WIDE — page width at ring scale plus a small
-// gap — so neighbours sit next to each other however many there are, and the
-// pitch between them is that arc over the radius. The radius is whatever
-// makes one turn hold the name plus every page, floored at reading distance
-// plus the wall standoff so the reader is never inside a room smaller than
-// arm's reach. A section big enough to need it therefore gets a bigger room
-// (pages keep their size and spacing), and a section too small to fill a
-// turn simply leaves the arc behind the reader empty.
-
-const ELEVATOR_S = 0.6; // ring page scale (emphasis takes a page to 1)
-const ELEVATOR_ARC_GAP = 0.08; // gap between neighbouring slots along the arc
-const ELEVATOR_WALL_STANDOFF = 0.2; // ring wall sits this far beyond reading distance
-const ELEVATOR_MAX_RADIUS = 3.2; // metres — past here the ring windows instead
-const ELEVATOR_FLOOR_GAP = 0.16; // vertical clearance between storeys
-const ELEVATOR_FLOOR_WINDOW = 1; // floors drawn above/below the current one
-const ELEVATOR_NEIGHBOUR_PAGES = 8; // pages drawn on a non-focused floor
-const TWO_PI = Math.PI * 2;
-
-/**
- * Sections → floors, one storey per section, never merged. Ranges are only
- * clamped to stay disjoint and in-bounds: two sections that begin on the
- * same page must not put that page on two floors (it would be placed —
- * and keyed — twice). A section shorter than its neighbours simply makes a
- * sparser ring; the storey is still its own.
- */
-function elevatorFloors(
-  ranges: SectionPageRange[],
-  pageCount: number,
-): SectionPageRange[] {
-  const floors: SectionPageRange[] = [];
-  let prevEnd = -1;
-  for (const r of ranges) {
-    const start = Math.max(r.start, prevEnd + 1);
-    const end = Math.min(r.end, pageCount - 1);
-    if (end < start) continue; // wholly absorbed by an earlier floor
-    prevEnd = end;
-    floors.push({ start, end, label: r.label });
-  }
-  return floors.length
-    ? floors
-    : [{ start: 0, end: Math.max(0, pageCount - 1), label: "" }];
-}
-
-/** Arc length one slot consumes on a ring (page width at scale + gap). */
-function elevatorArcStep(panel: { width: number }): number {
-  return panel.width * ELEVATOR_S + ELEVATOR_ARC_GAP;
-}
-
-/**
- * Ring radius for a floor of `n` pages: whatever makes one turn hold the name
- * plaque plus every page at one slot each, floored at reading distance plus
- * the wall standoff and capped at ELEVATOR_MAX_RADIUS. Because the slot arc
- * is fixed, a bigger section buys a bigger room rather than tighter pages.
- */
-function elevatorRadius(
-  n: number,
-  panel: { width: number },
-  viewingDistance: number,
-): number {
-  const oneTurn = ((n + 1) * elevatorArcStep(panel)) / TWO_PI;
-  return Math.min(
-    Math.max(oneTurn, viewingDistance + ELEVATOR_WALL_STANDOFF),
-    ELEVATOR_MAX_RADIUS,
-  );
-}
-
-/** Angular pitch between adjacent slots: one slot arc over the radius. */
-function elevatorStep(radius: number, panel: { width: number }): number {
-  return elevatorArcStep(panel) / radius;
-}
-
-/**
- * Angle of the k-th page on a ring. Slot 0 is dead ahead and belongs to the
- * section name; the pages follow it CLOCKWISE, each one slot further round —
- * page 1 immediately to the RIGHT of the plaque, page 2 beside that, on
- * around the back, until the last page comes up on the plaque's LEFT. So a
- * page's arc distance from the name is simply its number × the slot arc, and
- * a section that fills a turn closes the circle back at its own name.
- */
-function elevatorAngle(
-  k: number,
-  radius: number,
-  panel: { width: number },
-): number {
-  return wrapAngle((k + 1) * elevatorStep(radius, panel));
-}
-
-/** How many slots fit one turn at `radius` without overlapping. */
-function elevatorRingCapacity(
-  radius: number,
-  panel: { width: number },
-): number {
-  return Math.max(2, Math.floor((TWO_PI * radius) / elevatorArcStep(panel)));
-}
-
-/**
- * Wrap to [−π, π) so a page takes the short way round the ring. Half-open at
- * the BACK: a full-turn ring puts its first page at exactly −π, and that page
- * has to stay on the left where reading order starts, not flip to the right.
- */
-function wrapAngle(a: number): number {
-  let x = a % TWO_PI;
-  if (x >= Math.PI) x -= TWO_PI;
-  if (x < -Math.PI) x += TWO_PI;
-  return x;
-}
-
-/**
- * One page's slot on a floor ring. θ = 0 is dead ahead of the reader, +θ
- * swings right. The page faces the axis (yaw = −θ), so it reads head-on from
- * the centre where the reader stands.
- */
-function elevatorCell(
-  theta: number,
-  radius: number,
-  centre: { x: number; y: number; z: number },
-  panel: { width: number; height: number },
-): {
-  offset: { x: number; y: number; z: number };
-  rotation: { x: number; y: number; z: number };
-  scale: number;
-} {
-  const pw = panel.width * ELEVATOR_S;
-  const ph = panel.height * ELEVATOR_S;
-  const cx = centre.x + radius * Math.sin(theta);
-  const cz = centre.z - radius * Math.cos(theta);
-  const yaw = -theta;
-  // centre → top-left anchor (rotation about the anchor):
-  // anchor = centre + Ry(yaw)·(−pw/2, +ph/2, 0)
-  return {
-    offset: {
-      x: cx - (pw / 2) * Math.cos(yaw),
-      y: centre.y + ph / 2,
-      z: cz + (pw / 2) * Math.sin(yaw),
-    },
-    rotation: { x: 0, y: yaw, z: 0 },
-    scale: ELEVATOR_S,
-  };
-}
-
-/** Pages drawn on one floor's ring, and the radius they need. */
-function elevatorFloorRing(
-  range: SectionPageRange,
-  isFocusFloor: boolean,
-  focus: number,
-  panel: { width: number; height: number },
-  viewingDistance: number,
-): { first: number; count: number; radius: number } {
-  const len = range.end - range.start + 1;
-  let count = isFocusFloor ? len : Math.min(len, ELEVATOR_NEIGHBOUR_PAGES);
-  let radius = elevatorRadius(count, panel, viewingDistance);
-  // A section longer than one capped turn windows around the focus rather
-  // than overlapping itself — a 98-page sectionless article shows the pages
-  // either side of where you are, not 98 slivers. One slot is the plaque's.
-  const cap = elevatorRingCapacity(radius, panel) - 1;
-  if (count > cap) {
-    count = cap;
-    radius = elevatorRadius(count, panel, viewingDistance);
-  }
-  const first = isFocusFloor
-    ? Math.min(
-        Math.max(focus - Math.floor((count - 1) / 2), range.start),
-        range.end - count + 1,
-      )
-    : range.start;
-  return { first, count, radius };
-}
-
-/**
- * Storey height. Any page on the ring can be emphasised up to FULL size — the
- * pointer does it, and it happens in place, on the ring — so the storey has
- * to be a bay a full-size page fits in, deck to soffit, not merely a shelf
- * the ring-scale ones sit on. Hence a whole page between the centres, plus
- * the trim at each end and the void between one storey's floor and the next
- * one's ceiling.
- *
- * Sized off the emphasised page rather than the ring page because the bay has
- * to hold the biggest thing that can happen in it: at ring height it held the
- * pages at rest and pointing at one drove it straight through the walkway.
- */
-function elevatorFloorStep(panel: { height: number }): number {
-  const trim = atriumTrim(panel);
-  return (
-    panel.height +
-    (ATRIUM_PAGE_CLEAR * 2 + ATRIUM_RAIL_HEIGHT) * trim +
-    ELEVATOR_FLOOR_GAP
-  );
-}
-
-/**
- * Riding the elevator: the page to land on when the reader goes one storey
- * up (`dir` −1, the previous section) or down (+1, the next one). Returns
- * null at the top and bottom of the shaft. Up lands on the previous
- * section's LAST page and down on the next section's first, so the two keys
- * are each other's inverse and stepping down then up returns you home.
- */
-export function elevatorFloorTarget(
-  focus: number,
-  pageCount: number,
-  sectionRanges: SectionPageRange[],
-  dir: -1 | 1,
-): number | null {
-  const floors = elevatorFloors(sectionRanges, pageCount);
-  const { index } = rangeOf(focus, floors, pageCount);
-  const next = floors[index + dir];
-  if (!next) return null;
-  return dir === 1 ? next.start : next.end;
-}
-
-/**
- * How far in front of its own ring the emphasised page keeps its corners.
- * Small — it only has to stop the page touching the wall it came off.
- */
-const ELEVATOR_EMPHASIS_CLEAR = 0.06;
-
-/**
- * Emphasis for the page the reader is pointing at. It does NOT fly to the
- * reading position — it stays on its own bearing and simply grows to full
- * size and closes in toward reading distance, so the room keeps its shape and
- * the page never loses its place in the section.
- *
- * Works off the placement alone: the page's inward normal is
- * (sin yaw, 0, cos yaw) because every ring page faces the axis, and the
- * axis is where the reader stands. The renderer eases the result — AtPos the
- * position, EasedScale the size — so this is a plain target transform.
- *
- * How far in it comes is NOT simply reading distance. The page is flat and it
- * has just grown to full width, so its corners stand further from the axis
- * than its centre does — by hypot(d, width/2) — while every page still on the
- * ring lies at or beyond the ring radius. On a Quest that put the corners at
- * 1.389 against a ring at 1.400: eleven millimetres, i.e. the magnified page
- * and its neighbours coplanar, interpenetrating and z-fighting. So it stops
- * at whichever is nearer: reading distance, or the distance that keeps its
- * CORNERS clear of the ring.
- */
-export function elevatorEmphasis(
-  p: PagePlacement,
-  panel: { width: number; height: number },
-  viewingDistance: number,
-): PagePlacement {
-  const yaw = p.rotation.y;
-  const cosY = Math.cos(yaw);
-  const sinY = Math.sin(yaw);
-  // anchor → page centre, at the placement's current scale
-  const cx = p.offset.x + ((panel.width * p.scale) / 2) * cosY;
-  const cy = p.offset.y - (panel.height * p.scale) / 2;
-  const cz = p.offset.z - ((panel.width * p.scale) / 2) * sinY;
-
-  // Close in along the inward normal, but no further out than the ring will
-  // let a full-width page sit without cutting into the pages either side.
-  const r = Math.hypot(cx - panel.width / 2, cz - viewingDistance);
-  const corners = Math.sqrt(
-    Math.max(
-      0,
-      (r - ELEVATOR_EMPHASIS_CLEAR) * (r - ELEVATOR_EMPHASIS_CLEAR) -
-        (panel.width / 2) * (panel.width / 2),
-    ),
-  );
-  // …and never closer than arm's reach, however tight the ring: a page on the
-  // reader's nose would be a worse answer than a page that overlaps one.
-  const target = Math.min(viewingDistance, Math.max(corners, 0.35));
-  const approach = Math.max(0, r - target);
-  const ecx = cx + sinY * approach;
-  const ecz = cz + cosY * approach;
-
-  return {
-    ...p,
-    scale: 1, // full size, whatever the ring scale was
-    offset: {
-      x: ecx - (panel.width / 2) * cosY,
-      y: cy + panel.height / 2,
-      z: ecz + (panel.width / 2) * sinY,
-    },
-    recession: 0,
-  };
-}
-
-/** Ring-axis centre of a floor, relative to the panel's top-left anchor. */
-function elevatorFloorCentre(
-  floorDelta: number,
-  panel: { width: number; height: number },
-  viewingDistance: number,
-): { x: number; y: number; z: number } {
-  return {
-    x: panel.width / 2,
-    // Reading order runs downward: later sections are lower floors.
-    y: -panel.height / 2 - floorDelta * elevatorFloorStep(panel),
-    z: viewingDistance, // the axis runs through the reader
-  };
-}
-
-function elevator(
-  pageCount: number,
-  panel: { width: number; height: number },
-  focus: number,
-  sectionRanges: SectionPageRange[],
-  viewingDistance: number,
-): PagePlacement[] {
-  const out: PagePlacement[] = [];
-  const ranges = elevatorFloors(sectionRanges, pageCount);
-  const { index: focusFloor } = rangeOf(focus, ranges, pageCount);
-
-  for (let s = 0; s < ranges.length; s++) {
-    const floorDelta = s - focusFloor;
-    if (Math.abs(floorDelta) > ELEVATOR_FLOOR_WINDOW) continue;
-    const isFocusFloor = floorDelta === 0;
-    const { first, count, radius } = elevatorFloorRing(
-      ranges[s],
-      isFocusFloor,
-      focus,
-      panel,
-      viewingDistance,
-    );
-    const centre = elevatorFloorCentre(floorDelta, panel, viewingDistance);
-
-    for (let k = 0; k < count; k++) {
-      const i = first + k;
-      if (i < 0 || i >= pageCount) continue;
-      const theta = elevatorAngle(k, radius, panel);
-      const cell = elevatorCell(theta, radius, centre, panel);
-      const turn = Math.abs(theta) / Math.PI; // 0 = ahead, 1 = behind you
-      if (isFocusFloor && i === focus) {
-        // The current page sits in its slot like every other page on the
-        // wall — it is NOT pulled out or blown up. Emphasis in this view is
-        // something the pointer does, not something being current earns.
-        // `isStage` only marks it as the live, interactive one.
-        out.push({
-          pageIndex: i,
-          ...cell,
-          recession: 0,
-          isFocusCell: false,
-          isStage: true,
-        });
-        continue;
-      }
-      out.push({
-        pageIndex: i,
-        ...cell,
-        // Storeys you are not standing on run out to full recession, and
-        // `offFloor` keeps them imposters, so the ring above and the ring
-        // below read as translucent scenery either side of your own.
-        recession: isFocusFloor
-          ? Math.min(1, 0.25 + turn * 0.45)
-          : Math.min(1, 0.85 + Math.abs(floorDelta) * 0.1 + turn * 0.1),
-        isFocusCell: false,
-        isStage: false,
-        offFloor: !isFocusFloor,
-      });
-    }
-  }
-  return out;
-}
-
-// ── Elevator shell (the atrium the rings hang in) ────────────
-//
-// Rings of pages floating in an empty void read as a debug view of a
-// cylinder, not as a place: there is nothing to tell the eye how far away a
-// page is, where one storey stops and the next begins, or which way is up.
-// So the shaft is BUILT — each storey gets the two horizontal lines a real
-// gallery floor has (a deck under its pages, a lit soffit over them), a
-// balustrade at the edge of the well, and a wall behind the pages closing the
-// void off. The reader stands in the well at the axis, which is what makes
-// this an atrium seen from the lift rather than a room.
-//
-// Sizes only. What the surfaces are MADE of — and the light on them — is the
-// renderer's business (scene/elevator-decor.tsx), exactly as with the rooms
-// shell above.
-
-// Every clearance below is quoted for a Quest-sized page and then scaled by
-// `trim` (see ATRIUM_TRIM_REF). The storeys are only ELEVATOR_FLOOR_GAP apart
-// on top of the pages themselves, so on a small-panel profile — a Ray-Ban
-// page is barely half a Quest's — absolute trim eats the entire gap between
-// one storey's deck and the next one's ceiling and the building closes up.
-
-/** The page height these clearances were drawn against (Quest 3 at ring scale). */
-const ATRIUM_TRIM_REF = 0.54;
-/** How far in from the ring the walkway's inner edge (the well) sits. */
-const ATRIUM_DECK_INNER = 0.55;
-/** …and how far past the ring its outer edge runs, up to the shaft wall. */
-const ATRIUM_DECK_OUTER = 0.26;
-/**
- * Headroom around a page at FULL size — which is what the pointer grows one
- * to, in place on the ring. Measured off the emphasised page, not the
- * ring-scale one: a bay sized to the pages at rest is a bay the page you are
- * pointing at sticks out of at both ends, and the deck is a solid annulus for
- * it to stick out THROUGH.
- */
-const ATRIUM_PAGE_CLEAR = 0.06;
-/**
- * The balustrade round the well, which hangs BELOW that headroom rather than
- * standing in it. The rail runs at the well's radius, half a metre nearer the
- * reader than the ring, so it draws a line across everything on the ring that
- * is lower than it is: with its top under the emphasised page's bottom edge
- * it crosses nothing, whatever the pointer is doing.
- */
-const ATRIUM_RAIL_HEIGHT = 0.16;
-/** Gap left between the storey plaque and the surfaces it stands between. */
-const ATRIUM_PLAQUE_REVEAL = 0.012;
-
-/**
- * How thick the atrium's trim may be on this build — see ElevatorShell.trim.
- * Both the storey pitch and the shell itself are sized through it, so it has
- * to be one function and not a number computed in two places.
- */
-function atriumTrim(panel: { height: number }): number {
-  return Math.min(
-    1,
-    Math.max(0.4, (panel.height * ELEVATOR_S) / ATRIUM_TRIM_REF),
-  );
-}
-/** The shaft wall stands this far behind the pages. */
-const ATRIUM_WALL_STANDOFF = 0.34;
-/** How far past the top and bottom storeys the shaft runs on before it fades.
- *  A shaft that stopped level with the last floor would be a tube, not a
- *  building you are riding through the middle of. */
-const ATRIUM_SHAFT_OVERRUN = 1.1;
-
-/** One storey of the atrium: its ring, the surfaces around it, its plaque. */
-export interface ElevatorFloorShell {
-  /** Storey offset from the reader's own: −1 is above (earlier), +1 below. */
-  delta: number;
-  /** Which section this is, and how many the document has. */
-  index: number;
-  floorCount: number;
-  label: string;
-  /** Pages the section holds, and how many of them fit on the ring. */
-  pageCount: number;
-  shownCount: number;
-  /** Ring axis centre, panel-anchor-relative (the axis is the reader). */
-  centre: { x: number; y: number; z: number };
-  radius: number;
-  /** The pages' own vertical extent — the band the storey's surfaces frame. */
-  bandTopY: number;
-  bandBottomY: number;
-  /** The walkway under the pages, and the lit ceiling over them. */
-  deckY: number;
-  soffitY: number;
-  /** The reserved slot dead ahead, where the storey's plaque hangs. */
-  plaque: {
-    /** Centre of the plate (not a top-left anchor — the plaque is a sign). */
-    offset: { x: number; y: number; z: number };
-    rotation: { x: number; y: number; z: number };
-    size: { width: number; height: number };
-  };
-}
-
-export interface ElevatorShell {
-  floors: ElevatorFloorShell[];
-  /** The shaft wall: one cylinder around every visible storey. */
-  shaft: { centreX: number; centreZ: number; radius: number; topY: number; bottomY: number };
-  /** Deck/soffit ring radii, as offsets from a storey's own ring radius —
-   *  which varies per storey, so they cannot be radii themselves. */
-  deckInner: number;
-  deckOuter: number;
-  /**
-   * How thick the renderer may draw the trim (fascias, rails, cove strips):
-   * 1 on a Quest-sized page, less on a smaller one. The gap left between two
-   * storeys scales with the page, so anything the renderer hangs off a deck
-   * has to scale with it too or the floors merge.
-   */
-  trim: number;
-  /**
-   * The balustrade standing on the deck's inner edge. It tops out below the
-   * bottom edge of a full-size page, so it never draws itself across anything
-   * on the ring — see ATRIUM_RAIL_HEIGHT.
-   */
-  railHeight: number;
-  /** Names of the storeys just off the top and bottom of the shaft, for the
-   *  directory's ▲/▼ lines — the whole point of a lift's floor indicator is
-   *  telling you what is on the floors you cannot see. */
-  above: string | null;
-  below: string | null;
-}
-
-/**
- * The atrium around the rings: one storey per visible floor, plus the shaft
- * wall enclosing all of them. Returns an empty shell for every other view.
- */
-export function computeElevatorShell(
-  mode: PageDistribution,
-  pageCount: number,
-  panel: { width: number; height: number },
-  focus: number,
-  opts: PagePlacementOptions = {},
-): ElevatorShell | null {
-  if (mode !== "elevator" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return null;
-  const viewingDistance = opts.viewingDistance ?? 1.2;
-  const ranges = elevatorFloors(
-    resolveRanges(opts.sectionRanges, pageCount),
-    pageCount,
-  );
-  const { index: focusFloor } = rangeOf(focus, ranges, pageCount);
-  const ph = panel.height * ELEVATOR_S;
-  const trim = atriumTrim(panel);
-
-  const floors: ElevatorFloorShell[] = [];
-  let maxRadius = 0;
-  for (let s = 0; s < ranges.length; s++) {
-    const delta = s - focusFloor;
-    if (Math.abs(delta) > ELEVATOR_FLOOR_WINDOW) continue;
-    const isFocusFloor = delta === 0;
-    const { count, radius } = elevatorFloorRing(
-      ranges[s],
-      isFocusFloor,
-      focus,
-      panel,
-      viewingDistance,
-    );
-    const centre = elevatorFloorCentre(delta, panel, viewingDistance);
-    maxRadius = Math.max(maxRadius, radius);
-    // The plaque fills its bay — from the top of the balustrade to the
-    // soffit, less a reveal at each end — rather than stopping level with the
-    // pages. It is the one slot on the ring that is architecture rather than
-    // content, and a floor indicator that fills the bay reads as built into
-    // the wall; at page height it read as a page with no page on it, and its
-    // rows of signage had nowhere to go. It stops AT the rail rather than
-    // running past it to the deck, because a plate whose last two rows sit
-    // behind the balustrade is a plate with its controls hidden.
-    // The bay holds whatever the pointer does to a page in it: a FULL-SIZE
-    // page, plus headroom at the ceiling, plus the balustrade's whole height
-    // below the page's bottom edge — the rail has to finish under the biggest
-    // page there can be, or it draws itself across the one being read. The
-    // ring pages, at 0.6 of full size, therefore hang in a tall bay with wall
-    // to spare above and below them.
-    const soffitY = centre.y + panel.height / 2 + ATRIUM_PAGE_CLEAR * trim;
-    const railTopY = centre.y - panel.height / 2 - ATRIUM_PAGE_CLEAR * trim;
-    const deckY = railTopY - ATRIUM_RAIL_HEIGHT * trim;
-    const plaqueBottom = centre.y - ph / 2 + ATRIUM_PLAQUE_REVEAL * trim;
-    const plaqueTop = soffitY - ATRIUM_PLAQUE_REVEAL * trim;
-    floors.push({
-      delta,
-      index: s,
-      floorCount: ranges.length,
-      label: ranges[s].label,
-      pageCount: ranges[s].end - ranges[s].start + 1,
-      shownCount: count,
-      centre,
-      radius,
-      bandTopY: centre.y + ph / 2,
-      bandBottomY: centre.y - ph / 2,
-      deckY,
-      soffitY,
-      plaque: {
-        // Slot 0 is dead ahead of the reader (see elevatorAngle), and a slot
-        // is one page wide — so the plaque is exactly as wide as the pages
-        // flanking it, part of the wall rather than floating in front of it.
-        offset: {
-          x: centre.x,
-          y: (plaqueBottom + plaqueTop) / 2,
-          z: centre.z - radius,
-        },
-        rotation: rot0, // θ = 0: facing the axis is facing the reader
-        size: {
-          width: panel.width * ELEVATOR_S,
-          height: plaqueTop - plaqueBottom,
-        },
-      },
-    });
-  }
-  if (floors.length === 0) return null;
-
-  const top = floors[0]; // ranges run top (earliest) to bottom
-  const bottom = floors[floors.length - 1];
-  return {
-    floors,
-    shaft: {
-      centreX: floors[0].centre.x,
-      centreZ: floors[0].centre.z,
-      radius: maxRadius + ATRIUM_WALL_STANDOFF * trim,
-      topY: top.soffitY + ATRIUM_SHAFT_OVERRUN,
-      bottomY: bottom.deckY - ATRIUM_SHAFT_OVERRUN,
-    },
-    deckInner: -ATRIUM_DECK_INNER * trim,
-    deckOuter: ATRIUM_DECK_OUTER * trim,
-    trim,
-    railHeight: ATRIUM_RAIL_HEIGHT * trim,
-    above: ranges[top.index - 1]?.label ?? null,
-    below: ranges[bottom.index + 1]?.label ?? null,
   };
 }
 
@@ -2601,8 +1998,8 @@ function roomCellOf(
 // right one for a view you WALK. A reader coming down a gallery needs to see
 // which pages lead somewhere before choosing which to stand at; a corridor
 // that only exists once you are already there cannot be part of that choice.
-// (The elevator and the wall still open one at a time; their readers are not
-// walking past anything.)
+// (The wall still opens one at a time; its reader is not walking past
+// anything.)
 //
 // Building them all also removes the hard part. The old single branch had to
 // hunt for a gap in a wall that was already full of pages, and the hunt
@@ -2646,6 +2043,34 @@ const BRANCH_PIER = 0.95;
 const BRANCH_STAGGER = 0.5;
 
 /**
+ * How far the corridor stands off the room wall — and, because the arms run
+ * ALONG that wall, the width of the arms themselves.
+ *
+ * The crossing is the square immediately outside a page's doorway, and it is
+ * where the whole legend is read in one look: step through, and the building
+ * offers three ways at once — left and right along the arms to the siblings,
+ * straight on into the stair hall for the storeys above and below. Anand,
+ * 2026-08-18: "the stairs are at the starting at corridor next to each other
+ * and left and right are doors to the siblings pages there by having similar
+ * direction to which links are pointing".
+ *
+ * The corridor that ran straight out from the wall could not say that. Its
+ * siblings hung down its two long walls in the order they happened to come
+ * in, so a "left" link was as likely to be on the reader's right as their
+ * left, and the flights were at the far end — four metres and a walk away
+ * from the choice they belong to.
+ */
+const BRANCH_CROSS = 2 * BRANCH_HALF;
+/** Where an arm's first door stands, measured out from the crossing's edge. */
+const ARM_DOOR_START = 0.95;
+/** Clear run past an arm's last door before its end wall. */
+const ARM_END_RUN = 0.7;
+/** Shortest arm, so a hand with one door is still a stretch of corridor. */
+const ARM_MIN = 2.4;
+/** Clear floor between the crossing and the first riser. */
+const STAIR_LIP = 0.2;
+
+/**
  * Floor-to-floor height of the building, metres.
  *
  * A storey is the wall height plus a slab, so the floor above starts where the
@@ -2673,8 +2098,6 @@ export const ROOM_STOREY_H = (ROOM_WALL_HEADROOM + 2.2) * 1.0 + 0.45;
 const STAIR_STEPS = 14;
 const STAIR_GOING = 0.29;
 const STAIR_RUN = STAIR_STEPS * STAIR_GOING;
-/** Clear floor at the foot of a flight, between it and the last door. */
-const STAIR_CLEAR = 0.3;
 /** Floor kept solid at the end a flight ARRIVES at — a stride, not a lip. */
 const STAIR_ARRIVE = 0.4;
 /** Balustrade round the opening a flight leaves in the floor it climbs through. */
@@ -2808,13 +2231,48 @@ export interface LinkBranch {
   side: 1 | -1;
   /** Centre of the opening down the wall — the middle of the page's own bay. */
   zCentre: number;
-  length: number;
   halfWidth: number;
-  /** x of the end wall that closes it. */
-  endX: number;
-  /** Siblings — this floor. */
-  links: SectionLink[];
-  /** Parents — the landing ABOVE, up the flight at the far end. */
+  /**
+   * The corridor's outer face, `BRANCH_CROSS` out from the room wall. The
+   * sibling doors hang on it, and the stair hall opens through it at the
+   * crossing.
+   */
+  crossX: number;
+  /**
+   * Built out, or a vestibule? Only the reader's own page gets its arms, its
+   * hall and its flights — see `PagePlacementOptions.activePage`.
+   */
+  full: boolean;
+  /**
+   * Standing INSIDE the built-out corridor, and so drawing nothing of its
+   * own: the arm running past supplies the floor, the ceiling and the outer
+   * wall already. Its doorway stays cut in the gallery wall, so what the
+   * reader sees from inside the room never changes.
+   */
+  hidden: boolean;
+  /** The corridor's extent along the wall: the crossing plus its arms. */
+  zLo: number;
+  zHi: number;
+  /**
+   * Reach of each arm from `zCentre`, 0 for a hand with no doors. Right and
+   * left are the READER'S, as they step out through the doorway and face away
+   * from the room — so right is +z off a right-hand wall and −z off a
+   * left-hand one, and a "right" link is a door on their right in both.
+   */
+  arm: { right: number; left: number };
+  /** Far face of the stair hall on the reading floor… */
+  hallEndX: number;
+  /**
+   * …and on the landings above and below, which run further out because the
+   * parents' and externals' doors hang there. Two lengths rather than one:
+   * built to the longer, the floor the reader actually walks would end in
+   * five metres of blank dead-end corridor past the flights.
+   */
+  landingEndX: number;
+  /** Siblings, split by the hand they are on. */
+  right: SectionLink[];
+  left: SectionLink[];
+  /** Parents — the landing ABOVE, up the flight straight ahead. */
   up: SectionLink[];
   /** Externals — the landing BELOW. */
   down: SectionLink[];
@@ -2845,17 +2303,60 @@ function branchLength(doorWidth: number, perWall: number): number {
   );
 }
 
+/** Reach of one arm from the corridor's centre line — 0 when it has no doors. */
+function armReach(n: number, doorWidth: number): number {
+  if (n <= 0) return 0;
+  const pitch = doorWidth + BRANCH_PIER;
+  return (
+    BRANCH_HALF +
+    Math.max(
+      ARM_MIN,
+      ARM_DOOR_START + (n - 1) * pitch + doorWidth / 2 + ARM_END_RUN,
+    )
+  );
+}
+
 /**
- * One branch per page that has links.
+ * The stair hall, out from the crossing's face — on the reading floor, and on
+ * a landing. See `LinkBranch.landingEndX` for why they differ.
+ */
+function hallLengths(
+  doorWidth: number,
+  up: number,
+  down: number,
+): { floor: number; landing: number } {
+  if (up === 0 && down === 0) return { floor: 0, landing: 0 };
+  const perWall = Math.max(Math.ceil(up / 2), Math.ceil(down / 2));
+  return {
+    // Far enough to stand at the head of a flight and turn round.
+    floor: STAIR_LIP + STAIR_RUN + STAIR_ARRIVE + 0.5,
+    // The doors start PAST the head of the flight: the near half of a landing
+    // is the stairwell, and a door over a stairwell has no floor in front of
+    // it to stand on (Anand, 2026-08-18: "can't reach this door").
+    landing: STAIR_LIP + STAIR_RUN + branchLength(doorWidth, perWall),
+  };
+}
+
+/**
+ * One corridor per page that has links: a crossing outside the page's own
+ * doorway, an arm to each hand carrying that hand's siblings, and the stair
+ * hall straight ahead.
  *
  * The opening sits in the BAY AFTER the page — half a slot along the wall in
  * the direction the pages advance — so it is beside its own page and clear of
  * the next. `ROOM_PAGE_GAP` is sized for exactly this, and the room's depth
  * carries one extra bay so the last page on a wall has one too.
+ *
+ * Only `activePage`'s corridor is built out. The arms run along the room wall,
+ * which every page on that wall shares, so two built-out corridors would want
+ * the same ground — Anand, 2026-08-18: "I know the other page corridors will
+ * overlap". What every page still has, always, is its doorway and the lit
+ * crossing behind it.
  */
 function branchesOf(
   m: Museum,
   pageLinks: SectionLink[][] | undefined,
+  activePage?: number,
 ): LinkBranch[] {
   if (!pageLinks) return [];
   const out: LinkBranch[] = [];
@@ -2872,51 +2373,95 @@ function branchesOf(
       // widened for it is worse than drawing none.
       const bay = room.bayZ[row];
       if (bay === null || bay === undefined) continue;
-      // ── One storey per direction ──
+      // ── The legend, laid out as a crossroads ──
       //
-      // Siblings are the same level and stay on this floor. Parents are UP and
-      // externals are DOWN, and in a building that means a flight of stairs at
-      // the end of the corridor and a landing at the top and bottom of it
-      // (Anand's floor plan, 2026-08-16: 0f / 1f / 2f, the dark and light
-      // blocks being the two flights).
-      //
-      // Which is the same legend the whole design uses, finally built out of
-      // the material the view is made of rather than approximated by a door
-      // with treads painted in front of it.
-      const siblings = links.filter((l) => l.axis === "left" || l.axis === "right");
+      // Siblings are lateral and stay on this floor, one hand each. Parents
+      // are UP and externals are DOWN, and in a building that means a flight
+      // of stairs and a landing at the top and bottom of it (Anand's floor
+      // plan, 2026-08-16: 0f / 1f / 2f, the dark and light blocks being the
+      // two flights). Both flights start at the same place, side by side, so
+      // up and down are one choice made once — and they start where the
+      // reader arrives rather than at the far end of a walk.
+      const right = links.filter((l) => l.axis === "right");
+      const left = links.filter((l) => l.axis === "left");
       const up = links.filter((l) => l.axis === "up");
       const down = links.filter((l) => l.axis === "down");
-      const perWall = Math.max(
-        siblings.filter((l) => l.axis === "right").length,
-        siblings.filter((l) => l.axis === "left").length,
-        Math.ceil(up.length / 2),
-        Math.ceil(down.length / 2),
-      );
+      const full = page === activePage;
+      const arm = {
+        right: full ? armReach(right.length, m.doorSize.width) : 0,
+        left: full ? armReach(left.length, m.doorSize.width) : 0,
+      };
+      const hall = full
+        ? hallLengths(m.doorSize.width, up.length, down.length)
+        : { floor: 0, landing: 0 };
       const wallX = m.spineX + side * (room.width / 2);
-      // Long enough for its doors AND for the flights at the end of it — a
-      // stair that starts past the end wall is a stair in the open air.
-      const flights = up.length > 0 || down.length > 0;
-      const length =
-        branchLength(m.doorSize.width, perWall) +
-        (flights ? STAIR_RUN + STAIR_CLEAR : 0);
+      const crossX = wallX + side * BRANCH_CROSS;
+      // Which way each hand runs. Facing out of the room, the reader's right
+      // is +z off the right-hand wall and −z off the left-hand one.
+      const rEnd = bay + side * (arm.right || BRANCH_HALF);
+      const lEnd = bay - side * (arm.left || BRANCH_HALF);
       out.push({
         page,
         wallX,
         side,
         // The bay belongs to the ROW, not to one page, so the openings for a
         // facing pair land at the same z — Anand, 2026-08-16: "I want the
-        // corridor opening of page 2 at same position as the page 3". One
-        // doorway in each wall, opposite each other, the way a corridor with
-        // rooms off both sides actually reads.
+        // corridor opening of page 2 at same position as the page 3".
         zCentre: bay,
-        length,
         halfWidth: BRANCH_HALF,
-        endX: wallX + side * length,
-        links: siblings,
+        crossX,
+        full,
+        hidden: false,
+        zLo: Math.min(rEnd, lEnd),
+        zHi: Math.max(rEnd, lEnd),
+        arm,
+        hallEndX: crossX + side * hall.floor,
+        landingEndX: crossX + side * hall.landing,
+        right,
+        left,
         up,
         down,
       });
     }
+  }
+
+  // ── An arm swallows the vestibules it runs past ──
+  //
+  // It runs along the wall those doorways are cut into, so it arrives at them
+  // from outside: the neighbour's crossing becomes a stretch of this corridor
+  // with a way back into the gallery in its inner wall. What must not happen
+  // is an arm stopping HALFWAY across one, which would leave half a vestibule
+  // drawn inside the corridor — so the ends snap out to take in any crossing
+  // they reach at all, and then a vestibule is either wholly inside the
+  // corridor (and draws nothing) or wholly outside it (and draws itself).
+  const active = out.find((b) => b.full);
+  if (active) {
+    const near = out.filter(
+      (b) => b !== active && Math.abs(b.wallX - active.wallX) < 0.01,
+    );
+    // Snapping to take in one crossing can bring the end within reach of the
+    // next, so repeat until it settles.
+    for (let pass = 0; pass < near.length + 1; pass++) {
+      let grew = false;
+      for (const b of near) {
+        const lo = b.zCentre - b.halfWidth;
+        const hi = b.zCentre + b.halfWidth;
+        if (hi <= active.zLo + 0.01 || lo >= active.zHi - 0.01) continue;
+        if (lo < active.zLo) {
+          active.zLo = lo;
+          grew = true;
+        }
+        if (hi > active.zHi) {
+          active.zHi = hi;
+          grew = true;
+        }
+      }
+      if (!grew) break;
+    }
+    for (const b of near)
+      b.hidden =
+        b.zCentre - b.halfWidth >= active.zLo - 0.01 &&
+        b.zCentre + b.halfWidth <= active.zHi + 0.01;
   }
   return out;
 }
@@ -2933,7 +2478,7 @@ export function computeLinkBranches(
   opts: PagePlacementOptions = {},
 ): LinkBranch[] {
   if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return [];
-  return branchesOf(planFor(pageCount, panel, opts), opts.pageLinks);
+  return branchesOf(planFor(pageCount, panel, opts), opts.pageLinks, opts.activePage);
 }
 
 /** The plan every rooms entry point works from, built from the same options. */
@@ -3086,6 +2631,12 @@ export function roomReadingPose(
  *
  * The test is generous by `ROOM_ENTERED_SLACK` so a reader in the doorway has
  * already arrived rather than popping the room in as they cross the threshold.
+ *
+ * `slack` overrides that for callers who need the opposite answer: pass 0 and
+ * a reader who has crossed the wall line — standing in a doorway, or out in
+ * the corridor — reads as OUT. That is the question "have they committed to
+ * leaving?", and it is not the same question as "which room's pages should be
+ * mounted?" (see the corridor election in `page-ghosts.tsx`).
  */
 export function roomAtPose(
   mode: PageDistribution,
@@ -3093,10 +2644,11 @@ export function roomAtPose(
   panel: { width: number; height: number },
   pose: ReaderPose,
   opts: PagePlacementOptions = {},
+  slack: number = ROOM_ENTERED_SLACK,
 ): number | null {
   if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return null;
   const m = planFor(pageCount, panel, opts);
-  const s = ROOM_ENTERED_SLACK;
+  const s = slack;
   for (const room of m.rooms) {
     if (
       pose.z <= room.zNear + s &&
@@ -3106,6 +2658,77 @@ export function roomAtPose(
       return room.index;
   }
   return null;
+}
+
+/**
+ * Close enough to a page to be AT it — which is what opens its corridor.
+ *
+ * Standing on the mark (`SPOT_REACH`, 0.55 m) is a much smaller thing than
+ * being at the page, and the corridor used to be gated on the mark: it arrived
+ * only once the reader had both feet on the disc. Anand, 2026-08-18: *"the
+ * corridors for the room activates when I am at the pointer, it should
+ * activate when I am the vicinity"*. This is most of a bay — the bays are
+ * `ROOM_PAGE_GAP` apart along the wall — so walking up to a page opens its
+ * corridor beside it, while the page one bay along keeps its own.
+ */
+export const VICINITY_REACH = 2.6;
+/**
+ * How much nearer a page must be than the one whose corridor is already open
+ * before it takes it over. A reader standing between two bays would otherwise
+ * swap the whole corridor — floor, walls, doors and flights — back and forth
+ * on every reported step.
+ */
+export const VICINITY_MARGIN = 0.5;
+
+/**
+ * Which page's corridor should be BUILT OUT, for a reader at `pose`.
+ *
+ * Two rules, and the second is the one that matters:
+ *
+ *  1. **Vicinity, not the mark.** The nearest page within `VICINITY_REACH`,
+ *     among the pages of the room the reader is in — a spot the same distance
+ *     off through a wall is not somewhere they are about to be.
+ *  2. **A corridor you entered is the corridor you leave by.** The moment the
+ *     reader crosses the gallery wall line — standing in the threshold counts,
+ *     which is why the room test is taken with NO slack — the election stops
+ *     and `held` is returned unchanged. Anand, 2026-08-18: *"the corridor
+ *     should have same entrance and exit"*. An arm runs along the room wall
+ *     and past the neighbouring bays, so a few strides down one the nearest
+ *     spot belongs to a neighbour; re-electing there would rebuild the floor,
+ *     the walls and the very doorway the reader came in by while they stood on
+ *     them, and the way back out would be somewhere else.
+ *
+ * Returns `held` when nothing is in reach, too: a reader crossing the middle
+ * of a long room is not asking for the building to close up behind them.
+ */
+export function corridorPageAt(
+  mode: PageDistribution,
+  pageCount: number,
+  panel: { width: number; height: number },
+  pose: ReaderPose,
+  held: number,
+  opts: PagePlacementOptions = {},
+): number {
+  if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return held;
+  // Past the wall line: committed to a corridor, so nothing may move.
+  const room = roomAtPose(mode, pageCount, panel, pose, opts, 0);
+  if (room === null) return held;
+  const range = resolveRanges(opts.sectionRanges, pageCount)[room];
+  if (!range) return held;
+  let best = held;
+  let bestD = VICINITY_REACH;
+  let heldD = Infinity;
+  for (const s of computeReadingSpots(mode, pageCount, panel, opts)) {
+    if (s.pageIndex < range.start || s.pageIndex > range.end) continue;
+    const d = Math.hypot(pose.x - s.centre.x, pose.z - s.centre.z);
+    if (s.pageIndex === held) heldD = d;
+    if (d < bestD) {
+      bestD = d;
+      best = s.pageIndex;
+    }
+  }
+  if (best === held) return held;
+  return bestD <= heldD - VICINITY_MARGIN ? best : held;
 }
 
 /**
@@ -3517,7 +3140,7 @@ export function computeRoomShell(
   // Every page's branch. The openings have to be cut into the room's side
   // walls as those walls are built, which is why they are resolved before the
   // rooms loop rather than added after it.
-  const branches = branchesOf(m, opts.pageLinks);
+  const branches = branchesOf(m, opts.pageLinks, opts.activePage);
   const stairs = computeRoomStairs(mode, pageCount, panel, opts);
   const doors = linkDoorsOf(m, opts, floorY);
 
@@ -3572,87 +3195,195 @@ export function computeRoomShell(
     );
   }
 
-  // ── The branches, and the landings above and below them ──
+  // ── The corridors, and the landings above and below their halls ──
   //
-  // A corridor per STOREY, all on the same footprint: siblings on the reading
-  // floor, parents on the landing one up, externals one down, with the flights
-  // at the far end joining them (`computeRoomStairs`).
+  // Each is a crossing outside a page's doorway, an arm to each hand running
+  // ALONG the room wall, and the stair hall straight ahead — with the hall
+  // repeated one storey up for the parents and one down for the externals.
   //
   // Openings are measured from each run's start and must be SORTED along it.
   // Unsorted, a run walks backwards over itself and emits overlapping and
   // negative-width pieces — invisible with one door, and most of the wall with
-  // a dozen.
+  // a dozen. `wallRun` sorts them; the measurements below still have to be
+  // taken from the same end the run starts at.
   for (const branch of branches) {
-    const zNear = branch.zCentre + branch.halfWidth;
-    const zFar = branch.zCentre - branch.halfWidth;
+    const zC = branch.zCentre;
+    const hw = branch.halfWidth;
+    const top0 = floorY + ROOM_STOREY_H;
     const mine = doors.filter((d) => d.sectionIndex === branch.page);
 
-    const storey = (level: number) => {
-      const fy = floorY + level * ROOM_STOREY_H;
-      // Floor to FLOOR, not floor to ceiling. Everything above the ceiling
-      // slab is hidden by it from inside the corridor — except through the
-      // stairwell, which is the one place a reader sees the band between one
-      // storey's ceiling and the next one's floor. Stopping at the ceiling
-      // left that band unwalled, so a flight climbed past a metre of black
-      // void on both sides. It stops exactly ON the next floor, which is what
-      // keeps `roomWalkStep`'s "a wall is solid to the storey it spans" test
-      // from handing this storey's piers to the reader on the one above.
-      const ty = fy + ROOM_STOREY_H;
-      const at = mine.filter(
-        (d) => Math.abs(d.centre.y - (fy + d.size.height / 2)) < 0.01,
+    // ── A vestibule: the crossing on its own, closed on three sides ──
+    //
+    // What every page that is not the reader's own still has, so the gallery
+    // shows which pages lead somewhere before the reader picks one to stand
+    // at. `hidden` ones are inside the built-out corridor, which supplies all
+    // of this and more.
+    if (!branch.full) {
+      if (branch.hidden) continue;
+      out.push(
+        ...wallRun(
+          { x: branch.crossX, z: zC + hw },
+          { x: branch.crossX, z: zC - hw },
+          (-branch.side * Math.PI) / 2,
+          [],
+          floorY,
+          top0,
+        ),
       );
-      for (const z of [zNear, zFar]) {
-        const wallDoors = at
-          .filter((d) => Math.abs(d.centre.z - z) < 0.01)
-          .map((d) => ({
-            at: Math.abs(d.centre.x - branch.wallX),
-            width: d.size.width,
-            height: d.size.height,
-          }))
-          .sort((a, b) => a.at - b.at);
+      for (const z of [zC + hw, zC - hw])
         out.push(
           ...wallRun(
             { x: branch.wallX, z },
-            { x: branch.endX, z },
-            // A wall's yaw states which way it FACES, and `wallRun` stamps it
-            // on every piece: the along-direction is (cos y, −sin y) and the
-            // normal is (sin y, cos y).
-            //
-            // These two run along X, so their yaw is 0 or π — the near wall
-            // faces −z into the corridor, the far wall faces +z. They were
-            // ±π/2, which declares a wall running along Z: every piece was
-            // turned a quarter, so its face pointed down the corridor instead
-            // of across it, and a single-sided plane seen edge-on is nothing at
-            // all. That is why the reader looked straight through both walls,
-            // through the void between corridors, and into the next one — the
-            // "colonnade of frames receding for ever".
-            z === zNear ? Math.PI : 0,
-            wallDoors,
+            { x: branch.crossX, z },
+            z > zC ? Math.PI : 0,
+            [],
+            floorY,
+            top0,
+          ),
+        );
+      continue;
+    }
+
+    // ── The outer wall: the whole length of the corridor, in one run ──
+    //
+    // It carries every sibling door and, at the crossing, the way into the
+    // stair hall. One run rather than one per arm, so the piers between the
+    // doors and the reveals either side of the hall's opening are cut from the
+    // same wall and cannot drift apart.
+    const outerDoors = mine
+      .filter((d) => Math.abs(d.centre.x - branch.crossX) < 0.01)
+      .map((d) => ({
+        at: Math.abs(d.centre.z - branch.zLo),
+        width: d.size.width,
+        height: d.size.height,
+      }));
+    // The way into the hall is the FULL width of the crossing, under a lintel
+    // — an arch, not a door. The two flights sit side by side across that
+    // width with a hair to spare, so a doorway narrower than the hall (which
+    // is what the way in from the gallery is, and rightly) would put a jamb
+    // over a quarter of each of them: the reader would step onto a stair whose
+    // outer edge was behind a pier.
+    if (Math.abs(branch.hallEndX - branch.crossX) > 0.01)
+      outerDoors.push({
+        at: Math.abs(zC - branch.zLo),
+        width: hw * 2,
+        height: BRANCH_DOORWAY_H,
+      });
+    out.push(
+      ...wallRun(
+        { x: branch.crossX, z: branch.zLo },
+        { x: branch.crossX, z: branch.zHi },
+        (-branch.side * Math.PI) / 2,
+        outerDoors,
+        floorY,
+        top0,
+      ),
+    );
+
+    // The two ends of it. An arm that was never built ends AT the crossing,
+    // which is exactly where its end wall belongs.
+    for (const zEnd of [branch.zLo, branch.zHi])
+      out.push(
+        ...wallRun(
+          { x: branch.wallX, z: zEnd },
+          { x: branch.crossX, z: zEnd },
+          zEnd > zC ? Math.PI : 0,
+          [],
+          floorY,
+          top0,
+        ),
+      );
+
+    // ── The inner wall, wherever the gallery's own is not there to serve ──
+    //
+    // An arm runs along the room wall and takes it as its inner face: the
+    // reader walks behind the pages they have been reading, and the doorways
+    // of the neighbouring pages open into the corridor along the way. Past the
+    // end of a room, though, the building narrows to the spine corridor and
+    // there is no wall on that line at all — so an arm that overruns a room
+    // has to bring its own, or it opens onto the void.
+    let spans = [{ a: branch.zLo, b: branch.zHi }];
+    for (const room of m.rooms) {
+      const next: typeof spans = [];
+      for (const sp of spans) {
+        if (room.zFar >= sp.b || room.zNear <= sp.a) {
+          next.push(sp);
+          continue;
+        }
+        if (room.zFar > sp.a) next.push({ a: sp.a, b: room.zFar });
+        if (room.zNear < sp.b) next.push({ a: room.zNear, b: sp.b });
+      }
+      spans = next;
+    }
+    for (const sp of spans)
+      if (sp.b - sp.a > 0.01)
+        out.push(
+          ...wallRun(
+            { x: branch.wallX, z: sp.a },
+            { x: branch.wallX, z: sp.b },
+            (branch.side * Math.PI) / 2,
+            [],
+            floorY,
+            top0,
+          ),
+        );
+
+    // ── The stair hall, straight ahead: one storey per direction ──
+    //
+    // The same footprint three times over — the hall itself, the parents'
+    // landing above it and the externals' below — joined by the flights at
+    // its mouth. Walls run floor to FLOOR, not floor to ceiling: a reader on a
+    // landing looks down the well and along the storey below over the tops of
+    // its walls, and anything that stopped at a ceiling was a band of black.
+    const hall = (level: -1 | 0 | 1) => {
+      const fy = floorY + level * ROOM_STOREY_H;
+      const ty = fy + ROOM_STOREY_H;
+      const endX = level === 0 ? branch.hallEndX : branch.landingEndX;
+      if (Math.abs(endX - branch.crossX) < 0.01) return;
+      const at = mine.filter(
+        (d) => Math.abs(d.centre.y - (fy + d.size.height / 2)) < 0.01,
+      );
+      for (const z of [zC + hw, zC - hw])
+        out.push(
+          ...wallRun(
+            { x: branch.crossX, z },
+            { x: endX, z },
+            // These run along X, so their yaw is 0 or π — the far wall faces
+            // −z into the hall, the near one +z. Declared as running along Z
+            // they were turned a quarter each, and a single-sided plane seen
+            // edge-on is nothing at all.
+            z > zC ? Math.PI : 0,
+            at
+              .filter((d) => Math.abs(d.centre.z - z) < 0.01)
+              .map((d) => ({
+                at: Math.abs(d.centre.x - branch.crossX),
+                width: d.size.width,
+                height: d.size.height,
+              })),
             fy,
             ty,
           ),
         );
-      }
-      // The end wall closes the run.
+      // The end wall closes the run…
       out.push(
         ...wallRun(
-          { x: branch.endX, z: zNear },
-          { x: branch.endX, z: zFar },
-          branch.side === 1 ? -Math.PI / 2 : Math.PI / 2,
+          { x: endX, z: zC + hw },
+          { x: endX, z: zC - hw },
+          (-branch.side * Math.PI) / 2,
           [],
           fy,
           ty,
         ),
       );
-      // A LANDING is a dead end but for its stair, so it also needs a wall
-      // where the corridor below meets the room. On the reading floor that is
-      // the doorway the reader came through and must stay open.
+      // …and a landing needs one where the crossing would be, too. Up here
+      // the corridor below does not exist, and a landing left open at that
+      // end is a reader stepping off it into their own stairwell.
       if (level !== 0)
         out.push(
           ...wallRun(
-            { x: branch.wallX, z: zNear },
-            { x: branch.wallX, z: zFar },
-            branch.side === 1 ? Math.PI / 2 : -Math.PI / 2,
+            { x: branch.crossX, z: zC + hw },
+            { x: branch.crossX, z: zC - hw },
+            (branch.side * Math.PI) / 2,
             [],
             fy,
             ty,
@@ -3660,61 +3391,51 @@ export function computeRoomShell(
         );
     };
 
-    storey(0);
-    if (branch.up.length > 0) storey(1);
-    if (branch.down.length > 0) storey(-1);
+    hall(0);
+    if (branch.up.length > 0) hall(1);
+    if (branch.down.length > 0) hall(-1);
 
     // ── The balustrade round the stairwell ──
     //
     // A flight leaves an opening in the floor it passes through, and an
-    // opening with nothing round it is a hole. Two things went wrong without
-    // one. Standing on the floor above, the well was a rectangle of the storey
-    // below let into the floor — Anand, 2026-08-18: "there is a gap". And from
-    // halfway up a flight the reader's head came through that opening at floor
-    // level with nothing beside it, so they looked straight out ACROSS the
-    // landing they were climbing to and down the well at the same time: "i can
-    // see the other side from the stairs part". A stairwell in a building is
-    // enclosed — that enclosure is what makes a flight a shaft you climb
-    // through rather than a plank over a gap.
+    // opening with nothing round it is a hole. Standing on the floor above,
+    // the well was a rectangle of the storey below let into the floor — Anand,
+    // 2026-08-18: "there is a gap". And from halfway up a flight the reader's
+    // head came through that opening at floor level with nothing beside it, so
+    // they looked straight out ACROSS the landing they were climbing to and
+    // down the well at the same time: "i can see the other side from the
+    // stairs part". A stairwell in a building is enclosed — that enclosure is
+    // what makes a flight a shaft you climb through rather than a plank over a
+    // gap.
     //
-    // Waist high, on the two sides that are open floor: the long side facing
-    // the walkway (the other long side is the corridor wall, a hand's breadth
-    // away) and the end the flight does NOT arrive at. Being walls, they are
-    // also solid to `roomWalkStep`, so a reader on the landing can no longer
-    // step sideways off it into the well.
+    // Being walls, they are also solid to `roomWalkStep`, so a reader on the
+    // landing can no longer step sideways off it into the well.
     for (const st of stairs) {
       if (st.page !== branch.page) continue;
       const ax = Math.sin(st.yaw);
-      const run = st.steps * st.going;
+      const climb = st.steps * st.going;
       const up = st.dir === 1;
       // The opening, in the floor the flight passes through: the shaft of
       // `computeRoomSlabs`, which these have to agree with piece for piece.
       const a0 = up ? -0.25 : STAIR_ARRIVE;
-      const a1 = up ? run - STAIR_ARRIVE : run + 0.25;
+      const a1 = up ? climb - STAIR_ARRIVE : climb + 0.25;
       const across = st.width + 0.04;
       const yOpen = floorY + (up ? ROOM_STOREY_H : 0);
       const xA = st.foot.x + ax * a0;
       const xB = st.foot.x + ax * a1;
-      // Which side of the corridor the flight is on, and so which of its long
+      // Which side of the hall the flight is on, and so which of its long
       // sides faces the walkway.
-      const inward = st.foot.z > branch.zCentre ? -1 : 1;
+      const inward = st.foot.z > zC ? -1 : 1;
       const zRail = st.foot.z + inward * (across / 2);
       // ── The long side is a WALL, not a rail ──
       //
       // It runs from the floor the flight starts on all the way up to a
       // balustrade's height above the floor it arrives at: a stair channel
-      // below, a parapet above, one surface.
-      //
-      // A rail that stood only on the upper floor left the flight climbing
-      // through open corridor beneath it — halfway up, the reader was in the
-      // air above the storey below with its whole length beside them and the
-      // landing above over the rail, both at once (Anand, 2026-08-18: "it is
-      // mid cliimb"). A stairwell is a channel you climb through, and the two
-      // halves of it are the same wall.
-      //
-      // It is solid to the storey below as well, so from that corridor the
-      // stair is a thing you walk to the end of and turn into, rather than a
-      // slope anybody can wander sideways onto.
+      // below, a parapet above, one surface. A rail that stood only on the
+      // upper floor left the flight climbing through open corridor beneath it
+      // — halfway up, the reader was in the air above the storey below with
+      // its whole length beside them and the landing above over the rail, both
+      // at once ("it is mid cliimb").
       const yFoot = floorY + (up ? 0 : -ROOM_STOREY_H);
       out.push(
         ...wallRun(
@@ -3935,29 +3656,68 @@ export function computeRoomSlabs(
     piece(hx0, hx1, hz1, z1); // beside it, far
   };
 
-  for (const branch of branchesOf(m, opts.pageLinks)) {
-    const overlap = 0.5;
+  for (const branch of branchesOf(m, opts.pageLinks, opts.activePage)) {
+    // Inside the built-out corridor: its arm lays this floor already.
+    if (branch.hidden) continue;
     // The slab runs UNDER the walls, not up to them.
     //
     // A floor whose edge lands exactly on the wall's centre line leaves a
     // sliver of nothing at every pier base, and a sliver onto nothing is a
     // black wedge — which down a corridor of a dozen piers is most of what the
-    // reader sees at a grazing angle. The ceiling has the same seam above every
-    // door head. A third of a metre of overrun buries both.
+    // reader sees at a grazing angle. The ceiling has the same seam above
+    // every door head. A third of a metre of overrun buries both.
     const under = 0.34;
-    const size = {
-      width: branch.length + overlap + under,
-      depth: branch.halfWidth * 2 + under,
+    // …and half a metre back THROUGH the room wall, so the corridor's floor
+    // and the room's overlap at the threshold. Butted exactly they leave a
+    // hairline of nothing at the join, which reads as a black seam across the
+    // doorway, and at a grazing angle as a hole.
+    const overlap = 0.5;
+    const hw = branch.halfWidth;
+
+    // ── The reading floor: the crossing and its arms, in one pair ──
+    //
+    // Pushed straight rather than through `slab()`: no flight crosses this
+    // ground (they are all past the crossing, in the hall), and the shaft
+    // bounds overrun a quarter of a metre back past the foot for headroom —
+    // enough for the hole test to bite on the corridor's own outer overrun and
+    // cut a slot out of the ceiling right over the hall's doorway.
+    const armSize = {
+      width: BRANCH_CROSS + overlap + under,
+      depth: branch.zHi - branch.zLo + under,
     };
-    const x = (branch.wallX + branch.endX) / 2 - (branch.side * overlap) / 2;
-    const levels: number[] = [0];
-    if (branch.up.length > 0) levels.push(1);
-    if (branch.down.length > 0) levels.push(-1);
-    for (const level of levels) {
+    const armCentre = {
+      x:
+        branch.wallX +
+        branch.side * (BRANCH_CROSS / 2) -
+        (branch.side * overlap) / 2,
+      y: floorY,
+      z: (branch.zLo + branch.zHi) / 2,
+    };
+    out.push({ centre: armCentre, size: armSize, facing: "up" });
+    out.push({
+      centre: { ...armCentre, y: topY },
+      size: armSize,
+      facing: "down",
+    });
+
+    // ── The stair hall, one pair per storey ──
+    //
+    // These DO go through `slab()`: a flight climbs from one storey to the
+    // next, so it crosses the ceiling of the one it leaves and the floor of
+    // the one it reaches, and without a hole in both it climbs into a slab.
+    const hall = (level: number) => {
+      const endX = level === 0 ? branch.hallEndX : branch.landingEndX;
+      const len = Math.abs(endX - branch.crossX);
+      if (len < 0.01) return;
+      const size = { width: len + overlap + under, depth: hw * 2 + under };
+      const x = (branch.crossX + endX) / 2 - (branch.side * overlap) / 2;
       const dy = level * ROOM_STOREY_H;
       slab({ x, y: floorY + dy, z: branch.zCentre }, size, "up");
       slab({ x, y: topY + dy, z: branch.zCentre }, size, "down");
-    }
+    };
+    hall(0);
+    if (branch.up.length > 0) hall(1);
+    if (branch.down.length > 0) hall(-1);
   }
   return out;
 }
@@ -4099,6 +3859,52 @@ export function computeRoomFixtures(
       });
     }
   }
+
+  // ── The link corridors ──
+  //
+  // A doorway onto an unlit space is a dead end, not a way on: from inside a
+  // lit gallery the crossing behind every door read as a black rectangle. So
+  // the corridors carry luminaires too — down the arms at the corridor pitch,
+  // and down the stair hall on each of its storeys.
+  for (const branch of branchesOf(m, opts.pageLinks, opts.activePage)) {
+    if (branch.hidden) continue;
+    const lamp = (x: number, z: number, dy: number) =>
+      out.push({
+        kind: "ceiling",
+        centre: { x, y: lampY + dy, z },
+        size: { width: CEILING_LIGHT_W, depth: CEILING_LIGHT_D },
+        yaw: 0,
+        target: { x, y: floorY + dy, z },
+        space: "corridor",
+      });
+    const armLen = branch.zHi - branch.zLo;
+    const armN = Math.max(1, Math.round(armLen / CORRIDOR_LIGHT_PITCH));
+    const armX = branch.wallX + (branch.side * BRANCH_CROSS) / 2;
+    for (let i = 0; i < armN; i++)
+      lamp(armX, branch.zLo + (armLen * (i + 0.5)) / armN, 0);
+    for (const level of [0, 1, -1] as const) {
+      if (level === 1 && branch.up.length === 0) continue;
+      if (level === -1 && branch.down.length === 0) continue;
+      // A landing's lamps hang over the stretch BEYOND the reading floor's own
+      // hall — which is the stretch its doors are on. Run over the whole
+      // landing and every one of them would stack directly above a hall lamp:
+      // `RoomLights` picks the handful nearest the reader in PLAN, knowing
+      // nothing about which storey they are standing on, so three lamps on one
+      // spot would take three of the six slots and light one storey between
+      // them.
+      const from = level === 0 ? branch.crossX : branch.hallEndX;
+      const to = level === 0 ? branch.hallEndX : branch.landingEndX;
+      const len = Math.abs(to - from);
+      if (len < 0.01) continue;
+      const n = Math.max(1, Math.round(len / CORRIDOR_LIGHT_PITCH));
+      for (let i = 0; i < n; i++)
+        lamp(
+          from + (branch.side * len * (i + 0.5)) / n,
+          branch.zCentre,
+          level * ROOM_STOREY_H,
+        );
+    }
+  }
   return out;
 }
 
@@ -4127,65 +3933,106 @@ function linkDoorsOf(
   const out: LinkDoor[] = [];
   const pitch = m.doorSize.width + BRANCH_PIER;
 
-  for (const branch of branchesOf(m, opts.pageLinks)) {
-    const rightWallZ = branch.zCentre - branch.side * branch.halfWidth;
-    const leftWallZ = branch.zCentre + branch.side * branch.halfWidth;
+  for (const branch of branchesOf(m, opts.pageLinks, opts.activePage)) {
+    if (!branch.full) continue;
+    const { side, zCentre, halfWidth, crossX } = branch;
 
     /**
-     * Hang a list down the two long walls of one storey.
+     * ── Siblings: one hand each, down the corridor's outer wall ──
      *
-     * The left-hand wall is staggered half a pitch, so every door faces a PIER
-     * rather than another door — two walls of paired openings cancel and the
-     * reader sees straight through both sides into the void.
+     * A "right" link is a door on the reader's right and a "left" one a door
+     * on their left, taken as they step out of the room and face away from
+     * it. That is the whole reason the corridor was turned to run along the
+     * wall: hung down the two long walls of a corridor running AWAY from the
+     * room, the two lists were simply the first half and the second half of
+     * whatever order the links came in, and the direction the mark on the
+     * anchor promised was true only by accident.
+     *
+     * One wall, not two: the corridor's inner face is the gallery wall the
+     * page itself hangs on, and a door cut through it would open behind a
+     * picture.
      */
-    const hang = (list: SectionLink[], level: number) => {
+    const hangArm = (list: SectionLink[], hand: 1 | -1) => {
+      list.forEach((link, i) => {
+        out.push({
+          ...link,
+          sectionIndex: branch.page,
+          centre: {
+            x: crossX,
+            y: floorY + m.doorSize.height / 2,
+            z: zCentre + hand * side * (halfWidth + ARM_DOOR_START + i * pitch),
+          },
+          // Faces back across the corridor, into it.
+          yaw: (-side * Math.PI) / 2,
+          size: { ...m.doorSize },
+        });
+      });
+    };
+    hangArm(branch.right, 1);
+    hangArm(branch.left, -1);
+
+    /**
+     * ── Parents and externals: the landing at the head or foot of a flight ──
+     *
+     * Down the two side walls of the stair hall, the far wall staggered half a
+     * pitch so every door faces a PIER rather than another door — two walls of
+     * paired openings cancel and the reader sees straight through both sides
+     * into the void.
+     *
+     * They start past the head of the flight, which is what `landingEndX` is
+     * measured for: the near half of a landing is the stairwell.
+     */
+    const hangLanding = (list: SectionLink[], level: 1 | -1) => {
       const y = floorY + level * ROOM_STOREY_H + m.doorSize.height / 2;
       const half = Math.ceil(list.length / 2);
       list.forEach((link, i) => {
-        const onRight = i < half;
-        const row = onRight ? i : i - half;
-        const stagger = onRight ? 0 : BRANCH_STAGGER;
+        const onFar = i < half;
+        const row = onFar ? i : i - half;
+        const stagger = onFar ? 0 : BRANCH_STAGGER;
         out.push({
           ...link,
           sectionIndex: branch.page,
           centre: {
             x:
-              branch.wallX +
-              branch.side * (BRANCH_DOOR_START + (row + stagger) * pitch),
+              crossX +
+              side *
+                (STAIR_LIP +
+                  STAIR_RUN +
+                  BRANCH_DOOR_START +
+                  (row + stagger) * pitch),
             y,
-            z: onRight ? rightWallZ : leftWallZ,
+            z: zCentre + (onFar ? 1 : -1) * halfWidth,
           },
-          // Faces across the branch, into it.
-          yaw: onRight === (branch.side === 1) ? 0 : Math.PI,
+          // A wall's yaw is which way it FACES: the far wall looks back at −z,
+          // the near one at +z.
+          yaw: onFar ? Math.PI : 0,
           size: { ...m.doorSize },
         });
       });
     };
-
-    // Siblings on the reading floor; parents on the landing above; externals
-    // on the one below. The legend, finally built out of storeys.
-    hang(branch.links, 0);
-    hang(branch.up, 1);
-    hang(branch.down, -1);
+    hangLanding(branch.up, 1);
+    hangLanding(branch.down, -1);
   }
   return out;
 }
 
 /**
- * The flights joining a branch to its landings.
+ * The flights joining a corridor to its landings.
  *
- * At the far end of the corridor, SIDE BY SIDE across it: up on one half of
- * the width, down on the other, both climbing out along the branch from the
- * same line. `BRANCH_END_RUN` is the clear run reserved for exactly this — the
- * reader walks past the siblings, reaches the end, and chooses to go up or
- * down at the same place, which is what the legend claims and what the end of
- * a corridor is for in a building.
+ * At the CROSSING, straight ahead as the reader steps out of the room, and
+ * side by side across the stair hall: up on one half of its width, down on
+ * the other, both climbing away from the room. Anand, 2026-08-18: "the stairs
+ * are at the starting at corridor next to each other".
  *
- * They used to be laid END TO END, the down flight first and the up one a full
- * run beyond it, on the grounds that half a corridor each was not wide enough
- * to walk. Half of 2.1 m is a domestic stair, so it is; and end to end cost
- * two things that mattered more — the corridor grew by a second run it did not
- * need, and the two directions stopped being one choice made at one place.
+ * They used to stand at the far end of a corridor that ran away from the
+ * room, which cost the thing the crossing is for: up, down, left and right
+ * are one choice with four answers, and a reader who has to walk four metres
+ * to find two of them is not choosing between four. Half the corridor's width
+ * each, even when only one direction has links, because the other half is the
+ * landing past the shaft — a flight the full width makes a stairwell the full
+ * width, and the reader who climbs it stands at the head with the opening
+ * between them and every door on that storey ("when I go up I can't reach the
+ * end").
  */
 export function computeRoomStairs(
   mode: PageDistribution,
@@ -4197,34 +4044,23 @@ export function computeRoomStairs(
   const m = planFor(pageCount, panel, opts);
   const floorY = opts.floorY ?? -panel.height * 2;
   const out: RoomStair[] = [];
-  for (const branch of branchesOf(m, opts.pageLinks)) {
-    // ── A flight climbs ALONG the corridor, on HALF of its width ──
-    //
-    // It used to be a narrow thing set across the corridor and turned by the
-    // wall's bearing, which drew as a plank stuck to the wall and put its sign
-    // on back to front. A stair runs the way you walk: up the corridor, so you
-    // meet it head-on and climb.
-    //
-    // Half the width even when a corridor has only one flight, because the
-    // other half is the LANDING PAST THE SHAFT. A flight the full width of the
-    // corridor makes a stairwell the full width of the corridor, and a reader
-    // who climbed it stood at the head with the opening between them and every
-    // door on that storey: the only way back was down the stair they had just
-    // come up. Anand, 2026-08-18: "when I go up I can't reach the end".
-    // `STAIR_CLEAR` is the gap between the last door of the run and the first
-    // riser, so it is measured from the DOOR end, not taken off the far end:
-    // subtracting it here as well as adding it to the corridor's length made
-    // the corridor longer at both ends and left the foot exactly on the last
-    // door's jamb.
-    const start = branch.endX - branch.side * (BRANCH_END_RUN + STAIR_RUN);
+  for (const branch of branchesOf(m, opts.pageLinks, opts.activePage)) {
+    if (!branch.full) continue;
+    // `STAIR_LIP` is clear floor between the crossing and the first riser —
+    // room to arrive at the foot of a flight before starting to climb it.
+    const start = branch.crossX + branch.side * STAIR_LIP;
     const headX = start + branch.side * STAIR_RUN;
     for (const dir of [1, -1] as const) {
       const list = dir === 1 ? branch.up : branch.down;
       if (list.length === 0) continue;
       const width = branch.halfWidth * 0.9;
-      // Up on the +z half, down on the −z half — a fixed convention, so the
-      // same direction is on the same hand in every corridor of the building.
-      const zOff = (dir === 1 ? 1 : -1) * branch.halfWidth * 0.5;
+      // Up on the reader's right half of the hall, down on their left — the
+      // reader's hand, not the world's +z, for the same reason the siblings
+      // are: on the far wall of the building an absolute convention puts the
+      // up flight on the opposite hand from the one it was on in the last
+      // corridor, and a legend that swaps sides halfway down a gallery is not
+      // a legend.
+      const zOff = dir * branch.side * branch.halfWidth * 0.5;
       out.push({
         page: branch.page,
         dir,
@@ -4234,25 +4070,24 @@ export function computeRoomStairs(
           y: floorY + dir * ROOM_STOREY_H,
           z: branch.zCentre + zOff,
         },
-        // The bearing the flight is CLIMBED in, which is out along the branch.
+        // The bearing the flight is CLIMBED in, which is out along the hall.
         yaw: branch.side === 1 ? Math.PI / 2 : -Math.PI / 2,
         signY: Math.min(floorY + LINK_DOOR_H + 0.18, ROOM_WALL_HEADROOM - 0.16),
         width,
         steps: STAIR_STEPS,
         going: STAIR_GOING,
-        // ── The landing is the WHOLE corridor at that level ──
+        // ── The landing is the WHOLE hall at that level ──
         //
-        // Not the patch beyond the head, which is what it was. The doors of a
-        // direction hang the full length of its storey, from the room wall
-        // outward (`linkDoorsOf`), so a reader who arrived at the top could
-        // stand on the last metre and a half of a corridor whose doors were
-        // all behind them, over the void — Anand, 2026-08-18: "when I go up I
-        // can't reach the end". Above and below the reading floor the whole
-        // footprint is floor, and `walkSurfaceAt` picks between the three by
-        // which one the reader is already standing on.
+        // Not the patch beyond the head, which is what it was: the doors of a
+        // direction hang the length of their storey, so a reader who arrived
+        // at the top could stand on the last metre and a half of a corridor
+        // whose doors were all behind them, over the void ("when I go up I
+        // can't reach the end"). It is the hall and NOT the arms — those are
+        // the reading floor's alone, and a landing that reached over them
+        // would hold the reader a storey up with nothing under their feet.
         landing: {
-          x0: Math.min(branch.wallX, branch.endX),
-          x1: Math.max(branch.wallX, branch.endX),
+          x0: Math.min(branch.crossX, branch.landingEndX),
+          x1: Math.max(branch.crossX, branch.landingEndX),
           z0: branch.zCentre - branch.halfWidth,
           z1: branch.zCentre + branch.halfWidth,
         },
@@ -4376,8 +4211,6 @@ export function computeFieldLabels(
   _focus: number,
   opts: PagePlacementOptions = {},
 ): FieldLabel[] {
-  // The elevator's plaques are part of its shell — a lift's floor indicator
-  // says more than a name (see ElevatorDirectory) — so it builds its own.
   if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return [];
   const m = planFor(pageCount, panel, opts);
   const floorY = opts.floorY ?? -panel.height * 2;
@@ -4430,19 +4263,7 @@ export function computePagePlacements(
   opts: PagePlacementOptions = {},
 ): PagePlacement[] {
   if (mode === "flip" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return [];
-  const ranges =
-    opts.sectionRanges && opts.sectionRanges.length > 0
-      ? opts.sectionRanges
-      : [{ start: 0, end: pageCount - 1, label: "" }];
   switch (mode) {
-    case "elevator":
-      return elevator(
-        pageCount,
-        panel,
-        focus,
-        ranges,
-        opts.viewingDistance ?? 1.2,
-      );
     case "wall":
       // The wall is an outline board, not a page field: its cells are
       // sections as well as pages and it reflows as levels open, so it has

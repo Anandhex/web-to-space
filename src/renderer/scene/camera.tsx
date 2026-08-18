@@ -35,9 +35,9 @@ import type * as THREE from "three";
  * standing-off distance the layout engine already authored via
  * `viewingDistance`.
  *
- * `standing` turns that off, and the views that need it are the ones the reader
- * is INSIDE. The elevator builds a cylinder about one point and `rooms` builds a
- * building about one point, and in both the reader has to be ON it. Leaving z to
+ * `standing` turns that off, and the view that needs it is the one the reader
+ * is INSIDE: `rooms` builds a building about one point, and the reader has to
+ * be ON it. Leaving z to
  * wherever the headset's own play space happened to put them stands them
  * anywhere up to a couple of metres up or down the corridor — which is inside a
  * wall about as often as it is not, and from inside a wall the view is whatever
@@ -100,15 +100,14 @@ export const LOOK_PIVOT = 0.01;
 
 /**
  * Stands the flat preview's camera AT `axis` and lets it look around from
- * there — the elevator's rig.
+ * there — the rooms rig.
  *
- * The elevator builds a cylinder of pages about the reader, so there is
- * exactly one right place for the eye: the axis. The default preview rig
- * orbits the camera around the main panel's centre, which is a point one
- * reading distance in FRONT of that axis, so the first drag carried the
- * reader out through the wall of their own building — the section plaque
- * stopped being dead ahead, the ring stopped being a ring, and the
- * balustrade started cutting across pages it is nowhere near.
+ * `rooms` builds a building about the reader, so there is exactly one right
+ * place for the eye: the axis. The default preview rig orbits the camera
+ * around the main panel's centre, which is a point one reading distance in
+ * FRONT of that axis, so the first drag carried the reader out through the
+ * wall of their own building — the section sign stopped being dead ahead and
+ * the walls started cutting across pages they are nowhere near.
  *
  * Rather than replace the controls (they own the drag, the damping, and the
  * gesture the whole app shares), this parks the pivot a centimetre ahead of

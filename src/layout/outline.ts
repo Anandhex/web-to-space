@@ -5,7 +5,7 @@
  *
  * Which pages a section occupies is only knowable AFTER pagination has
  * stamped a pageIndex on every primitive, so the engine is the stage that
- * owns it. Page views (elevator storeys, wall tiles, deck piles, rooms)
+ * owns it. Page views (wall tiles, deck piles, rooms)
  * all group by section, and without this they each re-walk the panel's whole
  * subtree — on every focus change — to rediscover the same spans.
  *

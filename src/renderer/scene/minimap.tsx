@@ -122,12 +122,11 @@ function plot(history: NavNode[], padX: number, padY: number): Plotted[] {
  *
  * Colour still carries nothing — the whole design has given it up. What
  * separates "visited" from "here" is WEIGHT and an outline, and what separates
- * the four views is SHAPE.
+ * the three views is SHAPE.
  *
- *   wall      a square face, as one side of the dice
- *   deck      a card on a table, with the lip the table has
- *   rooms     a room in plan, walls drawn and a doorway left open
- *   elevator  a storey, a wide flat slab in a stack
+ *   wall   a square face, as one side of the dice
+ *   deck   a card on a table, with the lip the table has
+ *   rooms  a room in plan, walls drawn and a doorway left open
  */
 function NodeGlyph({
   view,
@@ -191,18 +190,6 @@ function NodeGlyph({
         </group>
       );
     }
-    case "elevator": {
-      // A storey: a wide slab. The one the reader is on carries the car's own
-      // mark beside it rather than a different colour.
-      const w = u * 2.1;
-      const h = u * 0.46;
-      return (
-        <group>
-          {bar("slab", w, h, 0, 0, here ? 1 : strength * 0.8)}
-          {here && bar("car", u * 0.34, h * 1.9, -w / 2 - u * 0.34, 0, 0.95)}
-        </group>
-      );
-    }
     default: {
       // wall — a face of the dice. Square, because that is what a face is, and
       // the current one is drawn as a face turned to the front: filled, with
@@ -226,7 +213,6 @@ const NODE_NOUN: Record<string, string> = {
   wall: "faces",
   deck: "tables",
   rooms: "rooms",
-  elevator: "storeys",
 };
 
 function MinimapPanel({

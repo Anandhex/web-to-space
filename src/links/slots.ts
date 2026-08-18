@@ -2,15 +2,15 @@
  * links/slots.ts — what goes in each direction, and in what order.
  *
  * The one piece of the directional-link design that every view needs and none
- * of them should own. A wall's strips, a deck's paths, a building's corridors
- * and an elevator's ring are four geometries for one decision:
+ * of them should own. A wall's strips, a deck's paths and a building's
+ * corridors are three geometries for one decision:
  *
  *   1. the way back comes first, and its direction takes nothing else
  *   2. then the rest of the corridor the reader walked to get here
  *   3. then this page's own links, in reading order, until the window is full
  *   4. what does not fit is MARKED, never dropped
  *
- * Written once so the four views cannot drift apart on it — a reader who
+ * Written once so the three views cannot drift apart on it — a reader who
  * learns that the nearest door west is the way back must find that true in the
  * building and on the dice alike.
  *
@@ -180,8 +180,8 @@ export function buildSlots({ links, nav, budget }: SlotOptions): DirSlots {
  * A window sized to the links actually present, so nothing overflows.
  *
  * The per-view windows in `memory.ts` are budgets for a view that must hold a
- * whole SECTION's worth of pages at once — the wall's outline board, the
- * elevator's ring. A view that has narrowed to ONE rendered page is in a
+ * whole SECTION's worth of pages at once — the wall's outline board. A view
+ * that has narrowed to ONE rendered page is in a
  * different situation: the census puts outbound links at a median of 0 and a
  * p90 of 7 per rendered page, so there is usually nothing to ration, and a
  * reader looking at one page wants that page's doors, all of them.

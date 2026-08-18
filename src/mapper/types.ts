@@ -266,7 +266,7 @@ export interface XRParagraph extends XRPrimitiveBase {
   /**
    * Density score in range [0, 1].
    * 0 = very short (≤ 10 words), 1 = very long (≥ 200 words).
-   * Renderer can use this to decide panel vs. page vs. carousel layout.
+   * Renderer can use this to decide panel vs. page layout.
    */
   densityScore: number;
 }

@@ -442,7 +442,8 @@ export function useRoomWalking({
         const s = spots.find((sp) => sp.pageIndex === atSpot.current);
         if (
           s &&
-          Math.hypot(pose0.x - s.centre.x, pose0.z - s.centre.z) <= SQUARE_RADIUS
+          Math.hypot(pose0.x - s.centre.x, pose0.z - s.centre.z) <=
+            SQUARE_RADIUS
         )
           pose0.yaw = s.yaw;
         // Either way, do not keep trying: standing off the mark is a place a
@@ -505,15 +506,15 @@ export function useRoomWalking({
       // wall of the stairwell. Snapping to the nearest storey keeps them inside
       // one storey's walls for the whole climb, which is what a stairwell is.
       const storeyY =
-        floorY +
-        Math.round((pose.rise ?? 0) / ROOM_STOREY_H) * ROOM_STOREY_H;
+        floorY + Math.round((pose.rise ?? 0) / ROOM_STOREY_H) * ROOM_STOREY_H;
       const moved = roomWalkStep(pose, dx, dz, walls, storeyY);
       // The floor under the new position. Sampling it every step is what makes
       // a flight something the reader CLIMBS: they rise with the treads as
       // they walk onto it and are set down on the landing at the top, rather
       // than being put there.
       pose.rise =
-        walkSurfaceAt(stairs, moved.x, moved.z, floorY, pose.rise ?? 0) - floorY;
+        walkSurfaceAt(stairs, moved.x, moved.z, floorY, pose.rise ?? 0) -
+        floorY;
       // Walking into a link door is how you go through it: the leaf is solid,
       // so the reader stops against it rather than stepping into the void,
       // and leaning on it for a moment is the door opening. Facing matters —
@@ -526,7 +527,10 @@ export function useRoomWalking({
         const half = w.size.width / 2;
         const t = Math.max(
           -half,
-          Math.min(half, (moved.x - w.centre.x) * ax + (moved.z - w.centre.z) * az),
+          Math.min(
+            half,
+            (moved.x - w.centre.x) * ax + (moved.z - w.centre.z) * az,
+          ),
         );
         const d = Math.hypot(
           moved.x - (w.centre.x + ax * t),
@@ -568,8 +572,10 @@ export function useRoomWalking({
           break;
         }
       const far =
-        Math.hypot(pose.x - reportedAt.current.x, pose.z - reportedAt.current.z) >
-        PROXIMITY_STEP;
+        Math.hypot(
+          pose.x - reportedAt.current.x,
+          pose.z - reportedAt.current.z,
+        ) > PROXIMITY_STEP;
       if (on !== atSpot.current) squared.current = false;
       if (on !== atSpot.current || far) {
         atSpot.current = on;
@@ -905,9 +911,11 @@ export function RoomTeleport({
    * anywhere they could go. A ref, not state: it is recomputed every frame and
    * re-rendering the building at 90 Hz to move a ring is not on.
    */
-  const landing = React.useRef<{ x: number; z: number; blocked: boolean } | null>(
-    null,
-  );
+  const landing = React.useRef<{
+    x: number;
+    z: number;
+    blocked: boolean;
+  } | null>(null);
 
   useFrame((state) => {
     const g = group.current;
@@ -936,10 +944,19 @@ export function RoomTeleport({
       m.visible = false;
       return;
     }
-    const path = roomTeleportPath(poseRef.current, { x: bx, z: bz }, walls, floorY);
+    const path = roomTeleportPath(
+      poseRef.current,
+      { x: bx, z: bz },
+      walls,
+      floorY,
+    );
     landing.current = path;
     m.visible = true;
-    m.position.set(anchor.x + path.x, anchor.y + floorY + 0.014, anchor.z + path.z);
+    m.position.set(
+      anchor.x + path.x,
+      anchor.y + floorY + 0.014,
+      anchor.z + path.z,
+    );
     // A blocked aim still shows where the reader WOULD get to, quietly. Going
     // dark rather than vanishing is the difference between "not there" and
     // "not anywhere", and only one of those tells them to look further left.
@@ -1129,7 +1146,6 @@ export function useReadingView(
   }, [panelCentre, viewingDistance, camera, controls, gl]);
 }
 
-
 // ─────────────────────────────────────────────────────────────
 // Stairs
 // ─────────────────────────────────────────────────────────────
@@ -1167,7 +1183,11 @@ export function RoomStairs({
   return (
     <>
       {stairs.map((s, i) => (
-        <StairFlight key={`stair-${s.page}-${s.dir}-${i}`} stair={s} anchor={anchor} />
+        <StairFlight
+          key={`stair-${s.page}-${s.dir}-${i}`}
+          stair={s}
+          anchor={anchor}
+        />
       ))}
     </>
   );

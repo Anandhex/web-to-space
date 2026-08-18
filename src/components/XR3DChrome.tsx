@@ -106,33 +106,17 @@ export type ViewDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
 
 /**
  * View catalogue for the in-world switcher. `fit` lists the device types the
- * view is usable on (arrangement views gate on 6DoF / room-scale; legacy
- * front-facing views work everywhere).
+ * view is usable on — all three are page views built around a reader who can
+ * walk and look, so they gate on 6DoF / room-scale.
  */
 export const VIEW_MODES: {
   id: ViewMode;
   label: string;
   fit: ViewDeviceType[];
 }[] = [
-  {
-    id: "standard",
-    label: "Standard",
-    fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
-  },
-  {
-    id: "carousel",
-    label: "Carousel",
-    fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
-  },
-  // Page views (content-only)
-  {
-    id: "elevator",
-    label: "Elevator",
-    fit: ["QUEST_3", "QUEST_PRO", "RAY_BAN_META"],
-  },
+  { id: "rooms", label: "Rooms", fit: ["QUEST_3", "QUEST_PRO"] },
   { id: "wall", label: "Wall", fit: ["QUEST_3", "QUEST_PRO"] },
   { id: "deck", label: "Deck", fit: ["QUEST_3", "QUEST_PRO"] },
-  { id: "rooms", label: "Rooms", fit: ["QUEST_3", "QUEST_PRO"] },
 ];
 
 export interface XR3DViewToggleProps {

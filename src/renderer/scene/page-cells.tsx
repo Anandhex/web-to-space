@@ -306,9 +306,8 @@ export function PageImposter({
 
 /**
  * A full live ghost: the panel's whole primitive subtree pinned to
- * `targetPage`, rendered at the placement transform (the CarouselGhostPanel
- * mechanism, generalized with scale). Non-interactive and dimmed when it's a
- * field ghost; fully interactive (links live, pagination controls) when it's
+ * `targetPage`, rendered at the placement transform, scale and all.
+ * Non-interactive and dimmed when it's a field ghost; fully interactive (links live, pagination controls) when it's
  * the STAGE — the focused page that morphed forward to reading position.
  */
 export function LivePageGhost({
@@ -333,8 +332,8 @@ export function LivePageGhost({
   recession: number;
   clip: boolean;
   stage?: boolean;
-  /** Pagination arrows under the live page. The elevator navigates by
-   *  keyboard and by pointing, so it passes false. */
+  /** Pagination arrows under the live page. `rooms` navigates by walking to
+   *  the reading spots on the floor, so it passes false. */
   controls?: boolean;
   setPage?: (id: string, page: number) => void;
 }) {

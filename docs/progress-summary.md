@@ -71,22 +71,28 @@ content template (chosen automatically from semantics)  ×  spatial view (chosen
 ```
 
 Previously, picking a view *discarded* what we knew about the page — a news article and
-a data dashboard got the identical carousel. Now the page type and the spatial framing
+a data dashboard got the identical layout. Now the page type and the spatial framing
 are independent, so the reader's choice of view composes with, rather than overrides,
 the semantics.
 
-Six views ship. The first two are **reading views** (the page comes to you); the last
-four are **page views**, where the document's whole page set becomes the spatial
-structure you navigate.
+Three views ship, all of them **page views**: the document's whole page set becomes
+the spatial structure you navigate. Each is a *different kind of spatial interaction*
+with the document rather than a different layout of the same one — you walk it, you
+survey it, or you handle it.
+
+(An **Elevator** view also shipped and has since been removed. It was the document as
+a building ridden vertically — one storey per section, a ring of pages around an open
+well. The reason for dropping it is that it introduced no new spatial concept: it was
+Rooms' "navigate the site as an environment" laid out vertically, a different
+navigation configuration of the same idea, and keeping both weakened the distinction
+the remaining three carry. **Standard** and **Carousel** — a reading desk, and the
+same desk with the neighbouring pages on an arc — went at the same time.)
 
 | View | Idea | Devices |
 |---|---|---|
-| **Standard** | A reading desk. One page head-on, with a section/page plate and a progress rail across the whole document. | All |
-| **Carousel** | The same desk, with the neighbouring pages standing on an arc either side of the one being read. | All |
-| **Elevator** | The document as a *building*. Each top-level section is a storey — a ring of pages around an open well, with its own deck, lit soffit, balustrade and directory plate. You ride up and down between sections. | All |
+| **Rooms** | The document as a *gallery you walk through*. Each section is a room hung with its pages, joined by corridors whose walls carry that section's outbound links. You walk; the pages hold still. | Quest 3 / Pro |
 | **Wall** | The document's *outline* as a board that opens one level at a time: sections → pages → full-size page, each expanding in place. Nothing flies to a separate stage, so the sections you didn't open keep their position, and with it your spatial memory of them. | Quest 3 / Pro |
 | **Deck** | A *card table* you deal and re-deal by hand. Sections arrive as overlapping lanes of cards; you drag cards between lanes or onto a shelf, and the arrow keys then read the document **in your order rather than the author's**. | Quest 3 / Pro |
-| **Rooms** | The document as a *gallery you walk through*. Each section is a room hung with its pages, joined by corridors whose walls carry that section's outbound links. You walk; the pages hold still. | Quest 3 / Pro |
 
 Two details worth pointing out on the videos:
 
@@ -112,7 +118,7 @@ three shared principles:
    view*. A page is visibly *of* its section, and spatial memory built in one view carries
    into the next.
 
-Rooms and elevator go further with local lighting: pools of light under each fitting, a
+Rooms goes further with local lighting: pools of light under each fitting, a
 page brighter than the wall it hangs on, corridors that dim between doorways. A room lit
 by one flat global lamp reads as a diagram of a room.
 
@@ -190,9 +196,6 @@ renderer and evaluation harness.
 
 | Video | One-line caption |
 |---|---|
-| Standard | A reading desk: one page head-on, with section, page number and whole-document progress always visible. |
-| Carousel | The same desk, with the neighbouring pages standing on an arc — what's next, in peripheral vision. |
-| Elevator | The document as a building: one storey per section, ridden through an open well. |
+| Rooms | Walk a gallery of the document — one room per section, corridors hung with its links. |
 | Wall | The outline as a board that opens in place — sections, then pages, then the page itself. |
 | Deck | A card table: drag pages into your own order, then read the document that way. |
-| Rooms | Walk a gallery of the document — one room per section, corridors hung with its links. |

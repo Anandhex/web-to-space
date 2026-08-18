@@ -377,7 +377,6 @@ function useRoomMaterials(): RoomMaterials {
   return React.useMemo(() => roomMaterials(), []);
 }
 
-
 // ── One building, a handful of draw calls ────────────────────
 //
 // WHY THIS FILE BUILDS GEOMETRY INSTEAD OF WRITING <mesh> PER SURFACE.
@@ -567,7 +566,11 @@ export function buildShellGeometry(
         x: number,
         y: number,
         z: number,
-      ) => bucket.push({ geom: geometry, matrix: place.clone().multiply(at(x, y, z)) });
+      ) =>
+        bucket.push({
+          geom: geometry,
+          matrix: place.clone().multiply(at(x, y, z)),
+        });
 
       if (w.lintel) {
         /* The head over a doorway, a shade lighter than the wall it sits in —
@@ -610,7 +613,13 @@ export function buildShellGeometry(
            which sits exactly on this piece — so the piece drops a centimetre
            behind it rather than z-fighting with it, and still closes the wall
            from the far side. */
-        local(wall, new THREE.PlaneGeometry(width, height), 0, 0, w.portal ? -0.01 : 0);
+        local(
+          wall,
+          new THREE.PlaneGeometry(width, height),
+          0,
+          0,
+          w.portal ? -0.01 : 0,
+        );
       }
 
       if (isFullHeight(w)) {
@@ -671,7 +680,13 @@ const SOFFIT_BAND = ROOM_SOFFIT_BAND;
  * the ceiling an edge, so the eye can see how high the room is, and it gives
  * the luminaires in the recess something to wash against.
  */
-export function RoomSlabs({ slabs, anchor }: { slabs: RoomSlab[]; anchor: Anchor }) {
+export function RoomSlabs({
+  slabs,
+  anchor,
+}: {
+  slabs: RoomSlab[];
+  anchor: Anchor;
+}) {
   const mats = useRoomMaterials();
   const geom = React.useMemo(() => buildSlabGeometry(slabs), [slabs]);
 
@@ -918,8 +933,14 @@ export function RoomLights({
    */
   const bulbMats = React.useMemo(
     () => ({
-      warm: new THREE.MeshBasicMaterial({ color: LAMP_WARM, toneMapped: false }),
-      cool: new THREE.MeshBasicMaterial({ color: LAMP_COOL, toneMapped: false }),
+      warm: new THREE.MeshBasicMaterial({
+        color: LAMP_WARM,
+        toneMapped: false,
+      }),
+      cool: new THREE.MeshBasicMaterial({
+        color: LAMP_COOL,
+        toneMapped: false,
+      }),
       picture: new THREE.MeshBasicMaterial({
         color: LAMP_PICTURE,
         toneMapped: false,
@@ -1051,7 +1072,11 @@ export function buildFixtureGeometry(fixtures: RoomFixture[]) {
       const face = place.clone().multiply(at(0, 0, 0, 0, f.yaw, 0));
       const on = (b: Part[], g: THREE.BufferGeometry, m: THREE.Matrix4) =>
         b.push({ geom: g, matrix: face.clone().multiply(m) });
-      on(shade, new THREE.BoxGeometry(f.size.width, 0.07, f.size.depth), at(0, 0, 0));
+      on(
+        shade,
+        new THREE.BoxGeometry(f.size.width, 0.07, f.size.depth),
+        at(0, 0, 0),
+      );
       // The arm back to the wall — long enough to bury its far end in the
       // plaster rather than stop a finger's width short.
       on(
