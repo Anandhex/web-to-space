@@ -4,31 +4,14 @@
 // Merged from slots.ts (the SlotMap) + arrangements.ts (two-axis view
 // system). Two things live here:
 //   • The desk          → the one hand-tuned SlotMap (selectSlots)
-//   • Arrangement       → frame + distribution composed over the desk's slot
-//                         roster (resolveArrangementSlots)
+//   • Arrangement       → places the desk's main slot for a given arrangement
+//                         (resolveArrangementSlots)
 // Intra-panel layout (layoutPrimitive / pagination) lives in engine.ts and is
 // untouched — this file only places the top-level landmark panels.
 // ─────────────────────────────────────────────────────────────
 
-import type {
-  Arrangement,
-  LayoutConfig,
-  RenderMetrics,
-  SlotMap,
-  SlotName,
-  SlotSpec,
-  SlotRoster,
-} from "./types";
-import type { Size2 } from "../mapper/types";
-import { deg2rad, zeroRotation, angularPosition, angularRotation } from "./utils";
-
-/**
- * Peripheral rails are width-capped so a scattered arrangement never places a
- * full main-width (≈1.4 m) panel beside another — the cause of overlap. Both
- * the desk below and the arrangement path's `railSize` read it, so a
- * side rail is the same slab of the workspace whichever path placed it.
- */
-const RAIL_MAX_W = 0.5;
+import type { Arrangement, LayoutConfig, RenderMetrics, SlotMap } from "./types";
+import { deg2rad, zeroRotation } from "./utils";
 
 // ═════════════════════════════════════════════════════════════
 // The desk — the front-facing landmark geometry
@@ -49,20 +32,16 @@ const RAIL_MAX_W = 0.5;
 //  2. PAGE CHROME IS OUT OF THE WAY ENTIRELY. `footer.y = eyeY − height*0.6`
 //     put the footer's top edge 60 % of the way DOWN the main panel: the
 //     audit reported a 1.40 × 0.12 m overlap on every profile. There is no
-//     banner or footer SLOT any more (see `deskSlots`) — that content
+//     banner or footer SLOT any more (see `selectSlots`) — that content
 //     paginates in flow, so it cannot reach into the band at all.
-//  3. THE RAILS ARE ONE FAMILY. TOC and complementary were separately
-//     drag-tuned to 1.00 m / +71.5° and 1.05 m / −64.3° against a main panel
-//     at 1.20 m — three different accommodations, no symmetry, and a
-//     navigation rail at −14° azimuth, i.e. hidden behind the main panel. Every rail now sits on the one user-centred
-//     cylinder, laid outward from the main panel's edges in priority order,
-//     alternating sides.
-//
-// What it does NOT pretend to fix: a 1.4 m panel at 1.2 m subtends ±33°, so
-// it fills the ±30° comfort cone by itself and anything beside it is a head
-// turn by construction. The rails are peripheral because the geometry says
-// so — the goal is that turning to one puts it flat-on and legible, not that
-// it be readable out of the corner of your eye.
+//  3. THE RAILS ARE GONE. TOC and complementary were separately drag-tuned
+//     to 1.00 m / +71.5° and 1.05 m / −64.3° against a main panel at 1.20 m
+//     — three different accommodations, no symmetry, and a navigation rail
+//     at −14° azimuth, i.e. hidden behind the main panel. A shared rail
+//     cylinder replaced that for a while (see git history), but every
+//     reachable arrangement folds `nav`/`aside`/`header` into the main
+//     panel's flow instead (`foldForArrangement` in content-only.ts) — so
+//     `resolveArrangementSlots` only ever places `main`.
 // ═════════════════════════════════════════════════════════════
 
 /**
@@ -76,7 +55,7 @@ const READING_GAZE_DEG = 13;
 /** Vertical clearance between the reading band and anything above it. */
 const BAND_GAP = 0.035;
 
-/** The vertical span the main panel and its side rails share. */
+/** The vertical span the main panel hangs from. */
 interface ReadingBand {
   /** World y of the band's top edge — every panel in it hangs from here. */
   topY: number;
@@ -105,30 +84,24 @@ function readingBand(cfg: LayoutConfig): ReadingBand {
  * actually see.
  */
 function mainWidth(cfg: LayoutConfig, fill: number): number {
-  return 2 * cfg.viewingDistance * Math.tan(deg2rad(cfg.comfortHalfAngleDeg)) * fill;
-}
-
-interface DeskSpec {
-  /** Width of the main reading panel, from `mainWidth`. */
-  mainW: number;
-  /** Curve radius for the head-on stacked column. Defaults to the cylinder. */
-  mainCurve?: number;
+  return (
+    2 * cfg.viewingDistance * Math.tan(deg2rad(cfg.comfortHalfAngleDeg)) * fill
+  );
 }
 
 /**
- * Build the desk: a main reading panel head-on in the band, page chrome
- * attached above and below it, side rails arced outward on the shared
- * cylinder, and the two modal overlays pulled forward of the whole thing.
+ * Build the desk: a main reading panel head-on in the band, sized to exactly
+ * the comfort cone so it reads without turning your head, plus the two modal
+ * overlays pulled forward of it. No banner/footer/rail slots — see the
+ * comment on the `main` map entry below for why.
  */
-function deskSlots(
+export function selectSlots(
   cfg: LayoutConfig,
   metrics: RenderMetrics,
-  spec: DeskSpec,
 ): SlotMap {
   const d = cfg.viewingDistance;
   const band = readingBand(cfg);
-  const { mainW } = spec;
-  const curve = spec.mainCurve ?? d;
+  const mainW = mainWidth(cfg, 1);
   const leftX = -mainW / 2;
   const bandMidY = (band.topY + band.bottomY) / 2;
   // Overlay sizing, all relative to the desk it interrupts.
@@ -138,12 +111,12 @@ function deskSlots(
   /** How far in front of the desk an overlay floats — enough to separate. */
   const overlayLift = Math.min(0.25, d * 0.2);
 
-  const map: SlotMap = {
+  return {
     main: {
       position: { x: leftX, y: band.topY, z: -d },
       rotation: zeroRotation(),
       size: { width: mainW, height: band.height },
-      curveRadius: curve,
+      curveRadius: d,
       worldLocked: true,
     },
     // NO banner / footer slot.
@@ -185,43 +158,19 @@ function deskSlots(
       worldLocked: false,
     },
   };
-
-  return map;
-}
-
-/**
- * The desk's own slot map — an article panel with reading aids either side.
- *
- * ```
- *        ↖nav   ↖toc   [ main 1.4 m ]   aside↗
- * ```
- * Rails in priority order: the table of contents is what a reader reaches for
- * first, the aside next, site navigation last.
- *
- * `mainW` is exactly the comfort cone: an article panel you read without
- * turning your head.
- */
-function deskSlotMap(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
-  return deskSlots(cfg, metrics, { mainW: mainWidth(cfg, 1) });
-}
-
-export function selectSlots(cfg: LayoutConfig, metrics: RenderMetrics): SlotMap {
-  return deskSlotMap(cfg, metrics);
 }
 
 // ═════════════════════════════════════════════════════════════
-// Two-axis view system — arrangements & distributions
+// Arrangement registry
 //
-// A view = a reference frame + a distribution, composed over the desk.
-// selectSlots (above) provides the roster's slot sizing; a distribution turns
-// that roster into a positioned SlotMap.
+// A view = a reference frame + a page distribution, composed over the desk.
+// Every entry below sets a non-"flip" `pageDistribution`, which puts
+// `resolveArrangementSlots` in content-only mode: the page set replaces the
+// landmark rails, so `main` is the only slot it ever resolves (see below).
 // ═════════════════════════════════════════════════════════════
 
-// ── Arrangement registry ─────────────────────────────────────
-
 /**
- * The declarative view catalogue. Adding a spatial view is a data entry here
- * plus a distribution function below — no bespoke SlotMap.
+ * The declarative view catalogue. Adding a spatial view is a data entry here.
  */
 export const ARRANGEMENTS: Record<string, Arrangement> = {
   // ── Page views (content-only) ──────────────────────────────
@@ -259,130 +208,39 @@ export function getArrangement(
   return ARRANGEMENTS[id];
 }
 
-// ── Roster derivation (the desk → ordered slot specs) ───────
-
 /**
- * Reading-priority order. `main` is always primary; the rest descend so that
- * distributions can compress/recede/angle by importance deterministically.
- * `alert`/`dialog` are intentionally excluded — modal overlays are never
- * scattered by a distribution; they always come from the desk's own head-on
- * overlay slots (see resolveArrangementSlots).
+ * Resolve a fully-positioned SlotMap for an arrangement composed over the
+ * desk. This is the arrangement-path replacement for `selectSlots`.
+ *
+ * Every registered arrangement puts the layout engine in content-only mode
+ * (a non-"flip" `pageDistribution`), which collapses the desk's roster to
+ * `main` alone — the page set replaces the `complementary`/`toc`/`navigation`
+ * rails, so nothing ever scatters them (see `layout/content-only.ts`). The
+ * roster/distribution machinery that used to build those rails only to have
+ * this function discard them was removed 2026-08-19; `main` is placed
+ * head-on in front of the viewer directly.
  */
-const PRIORITY: SlotName[] = [
-  "main",
-  "complementary",
-  "toc",
-  "navigation",
-];
-
-/**
- * Build a SlotRoster from the desk. We reuse the desk's own slot sizing (so
- * its width/height intelligence is preserved) but drop its positions — those
- * are the arrangement's job.
- */
-export function rosterFor(
+export function resolveArrangementSlots(
+  _arrangement: Arrangement,
   cfg: LayoutConfig,
   metrics: RenderMetrics,
-): SlotRoster {
+): SlotMap {
   const base = selectSlots(cfg, metrics);
-  const present = PRIORITY.filter((role) => base[role] !== undefined);
-  return present.map((role, i) => ({
-    role,
-    size: { ...base[role]!.size },
-    weight: 1 - i / Math.max(present.length, 1),
-  }));
-}
-
-// ── Distribution algorithms ──────────────────────────────────
-
-type DistributeFn = (
-  roster: SlotRoster,
-  cfg: LayoutConfig,
-  metrics: RenderMetrics,
-) => SlotMap;
-
-// ── Shared helpers ───────────────────────────────────────────
-
-// `RAIL_MAX_W` is declared at the top of the file — the desk sizes its side
-// rails through it too, so a rail is the same slab of the workspace whichever
-// path placed it.
-
-function railSize(spec: SlotSpec, cfg: LayoutConfig): Size2 {
-  return {
-    width: Math.min(spec.size.width, RAIL_MAX_W),
-    height: Math.min(spec.size.height, cfg.maxPanelViewportHeight),
-  };
-}
-
-/** The panels a distribution scatters: everything except the primary. */
-function railsOf(roster: SlotRoster): SlotRoster {
-  return roster.filter((s) => s.role !== "main");
-}
-
-// ── Distribution implementations ─────────────────────────────
-
-/**
- * FAN — classic front-facing spread: primary centred at -d, peripheral rails
- * arced left/right by the comfort half-angle. Generic fallback for any roster.
- */
-const fan: DistributeFn = (roster, cfg) => {
-  const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
-  const d = cfg.viewingDistance;
-  const ha = cfg.comfortHalfAngleDeg;
   const map: SlotMap = {};
-  const main = roster.find((s) => s.role === "main");
-  const mainW = main?.size.width ?? 1.4;
-  if (main) {
+  if (base.main) {
+    const eyeY = cfg.eyeLevel + cfg.eyeLevelOffset;
+    const d = cfg.viewingDistance;
     map.main = {
-      position: { x: -mainW / 2, y: eyeY, z: -d },
+      position: { x: -base.main.size.width / 2, y: eyeY, z: -d },
       rotation: zeroRotation(),
-      size: main.size,
+      size: base.main.size,
       curveRadius: d * 0.8,
       worldLocked: true,
     };
   }
-  railsOf(roster).forEach((spec, i) => {
-    const goLeft = i % 2 === 0;
-    const step = Math.floor(i / 2) + 1;
-    const angle = (goLeft ? -1 : 1) * (ha - 4 + (step - 1) * 8);
-    map[spec.role] = {
-      position: angularPosition(d, angle, eyeY),
-      rotation: angularRotation(angle),
-      size: railSize(spec, cfg),
-      curveRadius: 0,
-      worldLocked: true,
-    };
-  });
-  return map;
-};
-
-const DISTRIBUTIONS: Record<string, DistributeFn> = {
-  fan,
-};
-
-/**
- * Resolve a fully-positioned SlotMap for an arrangement composed over the desk.
- * This is the arrangement-path replacement for `selectSlots`.
- */
-export function resolveArrangementSlots(
-  arrangement: Arrangement,
-  cfg: LayoutConfig,
-  metrics: RenderMetrics,
-): SlotMap {
-  let roster = rosterFor(cfg, metrics);
-  // Content-only page views: the page set replaces the landmark panels, so
-  // only the main slot survives. With no complementary/banner/footer slots
-  // in the map the engine's extraction passes never fire — folded landmarks
-  // paginate in-flow (see layout/content-only.ts).
-  if (arrangement.pageDistribution && arrangement.pageDistribution !== "flip") {
-    roster = roster.filter((s) => s.role === "main");
-  }
-  const distribute = DISTRIBUTIONS[arrangement.distribution] ?? fan;
-  const map = distribute(roster, cfg, metrics);
   // Modal overlays always sit head-on, near the viewer — reuse the desk's own
-  // alert/dialog slots so overlays are never lost by a distribution.
-  const base = selectSlots(cfg, metrics);
-  if (!map.alert && base.alert) map.alert = base.alert;
-  if (!map.dialog && base.dialog) map.dialog = base.dialog;
+  // alert/dialog slots directly.
+  if (base.alert) map.alert = base.alert;
+  if (base.dialog) map.dialog = base.dialog;
   return map;
 }

@@ -16,7 +16,7 @@ import {
   resolveImageDisplaySize,
   imageCaptionBandHeight,
 } from "./positionConfigs";
-import { selectSlots, resolveArrangementSlots } from "./placement";
+import { resolveArrangementSlots } from "./placement";
 import type {
   Arrangement,
   DeviceProfile,
@@ -518,8 +518,7 @@ function layoutPaginatingContainer(
     worldSize.width - config.panelPaddingX * 2,
   );
   for (const child of primitive.children) {
-    const childPos =
-      newPlacedPositionMap.get(child.id) ?? topOfPagePos(config);
+    const childPos = newPlacedPositionMap.get(child.id) ?? topOfPagePos(config);
     const childPageIndex = newPageIndexMap[child.id] ?? 0;
 
     let childHeight = newPlacedHeightMap.get(child.id);
@@ -595,8 +594,7 @@ function layoutInsidePaginatedPanel(
     // image inside a list item, which ARE dispatched via renderChild.
     for (const child of primitive.children) {
       if (isFlattenedIntoProse(child)) continue;
-      const childPos =
-        placedPositionMap.get(child.id) ?? topOfPagePos(config);
+      const childPos = placedPositionMap.get(child.id) ?? topOfPagePos(config);
       const childPageIndex = pageIndexMap?.[child.id] ?? inheritedPageIndex;
       const childHeight =
         placedHeightMap.get(child.id) ??
@@ -817,9 +815,11 @@ export function computeLayoutPlan(
   // Arrangement path (new two-axis views): compose the arrangement's spatial
   // distribution over the desk's slot roster. Legacy path (no arrangement):
   // the desk's own hand-tuned SlotMap.
-  const slots = arrangement
-    ? resolveArrangementSlots(arrangement, config, metrics)
-    : selectSlots(config, metrics);
+  const slots =
+    arrangement && resolveArrangementSlots(arrangement, config, metrics);
+  if (!slots) {
+    throw new Error("Failed to resolve slots from arrangement");
+  }
 
   // Live tuning override: stamp the HUD's values onto each targeted slot.
   // Slots are freshly built each call, so mutating here is safe. Only fields the
