@@ -3,6 +3,7 @@ import {
   INLINE_TAGS,
   INTERACTIVE_ROLES,
   LANDMARK_ROLES,
+  PRUNE_SELECTORS,
   SKIP_TAGS,
   WRAPPER_TAGS,
 } from "./defaults";
@@ -41,6 +42,7 @@ import {
   createBaseNode,
   getValidChildren,
   collectSiblingRun,
+  pruneResponsiveDuplicates,
 } from "./utils";
 import {
   shouldDecomposeContent,
@@ -620,7 +622,7 @@ async function createNode(
       return !hasBlockChild
         ? textNodes.length > 0
           ? textNodes.join(" ")
-          : (renderedTextContent(element) || null)
+          : renderedTextContent(element) || null
         : null;
     })(),
     source: resolvedSource,
@@ -1646,45 +1648,6 @@ function pruneUIChrome(
   includeSvg: boolean,
   includeCanvas: boolean,
 ): void {
-  const PRUNE_SELECTORS = [
-    ".mw-editsection",
-    ".mw-editsection-bracket",
-    ".mw-jump-link",
-    ".mw-cite-backlink",
-    ".reference",
-    ".noprint",
-    ".mw-ui-button",
-    "#toc",
-    "#catlinks",
-    ".catlinks",
-    ".navbox",
-    ".sistersitebox",
-    ".metadata",
-    // Wikipedia Vector-2022 skin chrome that lives *inside* <main>, as
-    // siblings of the real article body (#bodyContent) rather than outside
-    // it — pruning the outer skip-to-main slice doesn't remove these, so
-    // without this they get paginated ahead of the article as blank pages.
-    ".vector-page-titlebar-toc",
-    "#p-lang-btn",
-    ".vector-page-toolbar",
-    ".vector-column-end",
-    "svg[aria-hidden='true']",
-    "img[aria-hidden='true']",
-    "span[aria-hidden='true']:empty",
-    ".Z3988",
-    "span[title^='ctx_ver=']",
-    // Deferred-hydration skeletons. A site that renders islands client-side
-    // (the Guardian's <gu-island deferUntil="visible">, and the same pattern
-    // under other names) ships a placeholder subtree that its own JS swaps for
-    // the real content. We parse static HTML and never run that JS, so all
-    // that survives is a set of contentless boxes — which still reserve height
-    // and paginate, reading as empty tiles where "most viewed" or the comment
-    // thread should be.
-    '[data-name="placeholder"]',
-    '[data-testid="placeholder"]',
-    "style",
-    "script",
-  ];
   for (const sel of PRUNE_SELECTORS) {
     try {
       doc.querySelectorAll(sel).forEach((el) => el.parentNode?.removeChild(el));
@@ -1693,61 +1656,6 @@ function pruneUIChrome(
 
   pruneResponsiveDuplicates(doc);
   pruneEmptyContainers(doc, includeSvg, includeCanvas);
-}
-
-/** An element's text, whitespace-collapsed, for structural comparison. */
-function comparableText(el: Element): string {
-  return (el.textContent ?? "").replace(/\s+/g, " ").trim();
-}
-
-/**
- * The nearest enclosing "one piece of content" boundary. Duplicate detection is
- * scoped to it so that a headline legitimately appearing in two different parts
- * of a page (a feed and a "most viewed" rail) is never mistaken for a
- * responsive duplicate.
- */
-const DUPLICATE_SCOPE = "li, article, section, [data-link-name]";
-
-/**
- * Drop breakpoint duplicates.
- *
- * Responsive sites routinely emit the same content once per breakpoint and hide
- * all but one copy with a media query — the Guardian ships every card's
- * `<ul class="sublinks">` twice, in two differently-classed wrappers. A browser
- * shows one; we have no CSSOM, so both reach the IR. The cost is not only the
- * visible double: each duplicate doubles its card's estimated height, which is
- * what pushes a card past the page box and inflates the page count.
- *
- * Rule: within one content boundary, if two subtrees carry identical text and
- * neither contains the other, the later one is a duplicate. The length floor
- * keeps short repeats that are genuinely meant to appear twice ("Read more",
- * a byline echoed in a caption) out of scope.
- */
-function pruneResponsiveDuplicates(doc: Document): void {
-  const MIN_TEXT_LEN = 30;
-  const seen = new Map<string, Element>();
-
-  for (const el of Array.from(doc.body?.querySelectorAll("*") ?? [])) {
-    // Removing a subtree disconnects its descendants; they are still in this
-    // snapshot, so skip anything already detached.
-    if (!el.isConnected) continue;
-
-    const text = comparableText(el);
-    if (text.length < MIN_TEXT_LEN) continue;
-
-    const first = seen.get(text);
-    if (!first || !first.isConnected) {
-      seen.set(text, el);
-      continue;
-    }
-    // A wrapper always repeats its own child's text — never a duplicate.
-    if (first.contains(el) || el.contains(first)) continue;
-
-    const scope = el.closest(DUPLICATE_SCOPE);
-    if (!scope || scope !== first.closest(DUPLICATE_SCOPE)) continue;
-
-    el.parentNode?.removeChild(el);
-  }
 }
 
 /**
@@ -1772,9 +1680,22 @@ function pruneEmptyContainers(
   // empty cell still holds a column open), explicit separators, and the
   // document/landmark roots the walk needs to find.
   const KEEP_TAGS = new Set([
-    "HTML", "HEAD", "BODY", "MAIN", "TEMPLATE",
-    "TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TD", "TH", "COL", "COLGROUP",
-    "HR", "BR",
+    "HTML",
+    "HEAD",
+    "BODY",
+    "MAIN",
+    "TEMPLATE",
+    "TABLE",
+    "THEAD",
+    "TBODY",
+    "TFOOT",
+    "TR",
+    "TD",
+    "TH",
+    "COL",
+    "COLGROUP",
+    "HR",
+    "BR",
   ]);
 
   const CONTENTFUL =
@@ -1822,62 +1743,6 @@ function findSkipToMainTarget(doc: Document): string | null {
   }
   return null;
 }
-
-// async function buildExternalLinksSection(
-//   doc: Document,
-//   mainChildIds: string[],
-//   ctx: BuildContext,
-// ): Promise<void> {
-//   const containers = Array.from(
-//     doc.querySelectorAll(
-//       'header, footer, [role="banner"], [role="contentinfo"]',
-//     ),
-//   );
-//   if (containers.length === 0) return;
-
-//   const seen = new Set<string>();
-//   const links: Element[] = [];
-
-//   for (const container of containers) {
-//     for (const a of Array.from(container.querySelectorAll("a[href]"))) {
-//       const text = a.textContent?.trim() ?? "";
-//       const href = a.getAttribute("href") ?? "";
-//       const key = `${href}|${text}`;
-//       if (text && !seen.has(key)) {
-//         seen.add(key);
-//         links.push(a as Element);
-//       }
-//     }
-//   }
-
-//   if (links.length === 0) return;
-
-//   const sectionId = `main-section-${ctx.counters.section++}`;
-//   const listId = `${sectionId}-list-${ctx.counters.section++}`;
-//   const listChildren = await Promise.all(
-//     links.map((link) => createListItem(link, listId, "main", ctx, 2)),
-//   );
-//   ctx.nodes[listId] = createBaseNode(listId, "list", sectionId, ctx, {
-//     children: listChildren,
-//     attributes: { ...createEmptyAttributes(), listType: "unordered" },
-//     readingDepth: 1,
-//   });
-//   const linkChildren = [listId];
-
-//   ctx.landmarkRecords.push({
-//     id: sectionId,
-//     label: "External Links",
-//     parentId: "main",
-//   });
-//   ctx.nodes[sectionId] = createBaseNode(sectionId, "region", "main", ctx, {
-//     label: "External Links",
-//     unlabelledYet: false,
-//     landmark: true,
-//     children: linkChildren,
-//   });
-
-//   mainChildIds.push(sectionId);
-// }
 
 export const parsePageToIR = async (
   htmlString: string,
@@ -1993,35 +1858,7 @@ export const parsePageToIR = async (
 
   const allNodes = Object.values(nodes);
   let orderedNodes: IRNode[];
-
-  if (config.readingOrderStrategy === "landmark-first") {
-    orderedNodes = [
-      ...allNodes
-        .filter((n) => n.landmark)
-        .sort((a, b) => a.readingIndex - b.readingIndex),
-      ...allNodes
-        .filter((n) => !n.landmark)
-        .sort((a, b) => a.readingIndex - b.readingIndex),
-    ];
-  } else if (config.readingOrderStrategy === "flowto-aware") {
-    const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
-    const visited = new Set<string>();
-    const result: IRNode[] = [];
-    const visit = (node: IRNode): void => {
-      if (visited.has(node.id)) return;
-      visited.add(node.id);
-      result.push(node);
-      node.relations.flowTo.forEach((id) => {
-        if (nodeMap.get(id)) visit(nodeMap.get(id)!);
-      });
-    };
-    [...allNodes]
-      .sort((a, b) => a.readingIndex - b.readingIndex)
-      .forEach(visit);
-    orderedNodes = result;
-  } else {
-    orderedNodes = allNodes.sort((a, b) => a.readingIndex - b.readingIndex);
-  }
+  orderedNodes = allNodes.sort((a, b) => a.readingIndex - b.readingIndex);
 
   const analytics: IRAnalytics = {
     headingCount: 0,

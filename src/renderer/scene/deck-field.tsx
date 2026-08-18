@@ -41,6 +41,18 @@ import type { XRPrimitive } from "../../mapper/types";
 import type { LayoutEntry, LayoutPlan } from "../../layout/types";
 import { useTheme } from "../theme";
 import {
+  DoorPlate,
+  OverflowMark,
+  drawable,
+  overflowCount,
+  useDoorSlots,
+  type DirSlot,
+  type DirSlots,
+} from "./link-doors";
+import { useTraversal } from "./contexts";
+import { TravelGroup, TRAVEL_LEAD_MS } from "./travel";
+import type { Axis } from "../../links/memory";
+import {
   computeDeckLayout,
   deckApplyDrop,
   deckCardKey,
@@ -688,6 +700,7 @@ export function DeckField({
   setPage,
   primitiveMap,
   sectionRanges,
+  viewMode,
 }: {
   panel: XRPrimitive;
   plan: LayoutPlan;
@@ -695,6 +708,8 @@ export function DeckField({
   setPage: (id: string, page: number) => void;
   primitiveMap: Map<string, XRPrimitive>;
   sectionRanges: SectionPageRange[];
+  /** Selects this view's window budget — see links/memory.ts WINDOWS. */
+  viewMode?: string;
 }) {
   const theme = useTheme();
   const fontType = React.useContext(FontContext);
@@ -723,6 +738,43 @@ export function DeckField({
     setLanes(deckDefaultLanes(sectionRanges, pageCount));
     setWindows({});
   }, [panel.id, pageCount, sectionRanges]);
+
+  // ── Connected tables ──
+  //
+  // The deck always has a page on the stage, so unlike the wall there is no
+  // "nothing is open" state to gate on: `focus` is always a page somebody is
+  // reading. Its paths are fitted to it for the same reason the wall's strips
+  // are — one rendered page's links are few enough to show whole.
+  const { slots: linkSlots, take: takeLink } = useDoorSlots(focus, viewMode, true);
+  const traversal = useTraversal();
+  const traversalNav = traversal?.nav ?? null;
+  const slideResetKey = `${traversalNav?.at ?? 0}|${
+    traversalNav ? traversalNav.history[traversalNav.at]?.url : panel.id
+  }`;
+  const [sliding, setSliding] = React.useState<Axis | null>(null);
+  const slideTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(
+    () => () => {
+      if (slideTimer.current) clearTimeout(slideTimer.current);
+    },
+    [],
+  );
+  const takePath = React.useCallback(
+    (slot: DirSlot) => {
+      if (slideTimer.current) clearTimeout(slideTimer.current);
+      setSliding(slot.axis);
+      slideTimer.current = setTimeout(() => {
+        slideTimer.current = null;
+        takeLink(slot);
+      }, TRAVEL_LEAD_MS);
+    },
+    [takeLink],
+  );
+  // The slide ends when the move does — see the matching note in wall-field.
+  const arrived = traversal?.pending == null;
+  React.useEffect(() => {
+    if (arrived) setSliding(null);
+  }, [arrived, slideResetKey]);
 
   const [windows, setWindows] = React.useState<Record<string, number>>({});
   const [hoverKey, setHoverKey] = React.useState<string | null>(null);
@@ -1099,7 +1151,10 @@ export function DeckField({
   };
 
   return (
-    <>
+    // Travelling moves the WORLD, not the reader: the stage and the table
+    // leave together the way the door said, and the next document's table
+    // completes the same motion coming in from the far side.
+    <TravelGroup mode="slide" axis={sliding} resetKey={slideResetKey}>
       {/* ── The stage: the page being read ── */}
       <AtPos key="deck-stage" entry={stageEntry}>
         <LivePageGhost
@@ -1158,6 +1213,9 @@ export function DeckField({
         rotation={[layout.frame.tilt, 0, 0]}
       >
         <DeckSurface layout={layout} tones={tones} />
+        {/* Paths off the table: north to the level above, south off-site,
+            east and west to this site's other documents. */}
+        <DeckLinkPaths layout={layout} slots={linkSlots} onTake={takePath} />
         <DeckRail
           layout={layout}
           rearranged={rearranged}
@@ -1244,7 +1302,7 @@ export function DeckField({
           </>
         )}
       </group>
-    </>
+    </TravelGroup>
   );
 }
 
@@ -1277,3 +1335,130 @@ function FlyingCard({
     </group>
   );
 }
+
+// ─────────────────────────────────────────────────────────────
+// Connected tables: paths leading off this one
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Paths off the table (docs/directional-links.md, Phase 6).
+ *
+ *   north (up-slope, past the far edge)  parent / top-level
+ *   south (past the near lip)            external
+ *   east and west (past the side edges)  siblings
+ *
+ * Drawn in TABLE COORDINATES like everything else in this view — u across, v
+ * up-slope — so they lie flat on the surface and continue off it, which is
+ * what makes them read as paths rather than as signs standing on the table.
+ * The pitched group they hang in does the rest.
+ *
+ * The reverse path is reserved, exactly as on the wall: arriving from the west
+ * means the westward path is the way back and takes no sibling.
+ */
+/** How far past the table's edge a path runs before its first plate. */
+const PATH_LEAD = 0.06;
+/** Plate size for a path marker, metres. Wider than the wall's: a path is read
+ *  from above and a little off-axis, so it gets the room a strip does not. */
+const PATH_W = 0.24;
+const PATH_H = 0.056;
+const PATH_GAP = 0.014;
+
+function DeckLinkPaths({
+  layout,
+  slots,
+  onTake,
+}: {
+  layout: DeckLayout;
+  slots: DirSlots;
+  onTake: (slot: DirSlot) => void;
+}) {
+  const theme = useTheme();
+  const { frame } = layout;
+
+  /** One direction's plates, laid along a path with a line back to the table. */
+  const run = (
+    axis: Axis,
+    /** Table-space position of the nth plate, n from 0. */
+    at: (n: number) => [number, number],
+  ): React.ReactNode => {
+    const drawn = drawable(slots[axis]);
+    const extra = overflowCount(slots[axis]);
+    const items: (DirSlot | null)[] = drawn.slice();
+    if (extra > 0) items.push(null);
+    if (items.length === 0) return null;
+    return (
+      <group key={`path-${axis}`}>
+        {items.map((s, i) => {
+          const [u, v] = at(i);
+          return (
+            <group key={s ? s.key : `${axis}-overflow`} position={[u, v, 0.004]}>
+              {s ? (
+                <DoorPlate
+                  slot={s}
+                  width={PATH_W}
+                  height={PATH_H}
+                  recession={s.distance - 1}
+                  onSelect={() => onTake(s)}
+                />
+              ) : (
+                <OverflowMark count={extra} width={PATH_W} height={PATH_H} />
+              )}
+            </group>
+          );
+        })}
+      </group>
+    );
+  };
+
+  const halfW = frame.width / 2;
+
+  return (
+    <>
+      {/* A path is a path because something joins it to the table. One thin
+          strip per direction, under the plates. */}
+      {(["up", "down", "left", "right"] as Axis[]).map((axis) => {
+        const n = drawable(slots[axis]).length + (overflowCount(slots[axis]) > 0 ? 1 : 0);
+        if (n === 0) return null;
+        const runLen = PATH_LEAD + n * (PATH_H + PATH_GAP);
+        const vertical = axis === "up" || axis === "down";
+        const w = vertical ? PATH_W * 0.5 : runLen;
+        const h = vertical ? runLen : PATH_W * 0.5;
+        const cu = vertical
+          ? 0
+          : (axis === "right" ? 1 : -1) * (halfW + runLen / 2);
+        const cv = vertical
+          ? axis === "up"
+            ? frame.depth + runLen / 2
+            : -runLen / 2
+          : frame.depth / 2;
+        return (
+          <mesh key={`track-${axis}`} position={[cu, cv, 0.001]}>
+            <planeGeometry args={[w, h]} />
+            <meshBasicMaterial
+              color={theme.navBg}
+              transparent
+              opacity={0.4}
+              depthWrite={false}
+            />
+          </mesh>
+        );
+      })}
+
+      {run("up", (n) => [0, frame.depth + PATH_LEAD + PATH_H / 2 + n * (PATH_H + PATH_GAP)])}
+      {run("down", (n) => [0, -PATH_LEAD - PATH_H / 2 - n * (PATH_H + PATH_GAP)])}
+      {/* Lateral plates sit off the side edge and stack DOWN-SLOPE rather than
+          further out: a run of five siblings pushed out sideways would be
+          three metres from the table by the last one, and the reader has to
+          be able to read them all from where they sit. */}
+      {run("right", (n) => [
+        halfW + PATH_LEAD + PATH_W / 2,
+        frame.depth / 2 - n * (PATH_H + PATH_GAP),
+      ])}
+      {run("left", (n) => [
+        -halfW - PATH_LEAD - PATH_W / 2,
+        frame.depth / 2 - n * (PATH_H + PATH_GAP),
+      ])}
+    </>
+  );
+}
+

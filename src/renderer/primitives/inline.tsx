@@ -19,8 +19,9 @@ import {
 } from "../../layout/utils";
 import { useTheme, type XRTheme } from "../theme";
 import { FontContext } from "../XRSceneRenderer";
-import { useClipPlanes, useLinkColor, NavigateContext } from "./contexts";
-import { LinkPreviewContext } from "../scene/link-preview";
+import { useClipPlanes, NavigateContext } from "./contexts";
+import { useLinkBinding, usePageLinks } from "../scene/contexts";
+import { MARK_SEPARATOR, markFor } from "../../links/direction";
 import { useConsumeScrollDrag } from "./scroll-viewport";
 import {
   usePanelCurve,
@@ -142,7 +143,12 @@ export function ClippedText(
 // ─────────────────────────────────────────────────────────────
 
 type TextSeg = { kind: "text"; text: string; bold?: boolean; italic?: boolean };
-type LinkSeg = { kind: "link"; text: string; href?: string | null };
+/**
+ * `id` is the anchor primitive's id — the same key `links/collect.ts` gives a
+ * SpatialLink. It is what lets a mark find its direction, and what lets gaze
+ * light the mark and its door as one thing.
+ */
+type LinkSeg = { kind: "link"; text: string; href?: string | null; id?: string };
 export type InlineSeg = TextSeg | LinkSeg;
 
 export type InlineRow =
@@ -193,7 +199,7 @@ export function buildInlineRows(children: any[]): InlineRow[] {
         child.text ?? child.label ?? child.content ?? "",
       );
       if (child.type === "XRLink") {
-        push({ kind: "link", text, href: child.href ?? null });
+        push({ kind: "link", text, href: child.href ?? null, id: child.id });
       } else {
         // Bold/italic can come from a single componentType ("b"/"strong"/
         // "i"/"em") or from an accumulated styleTags stack (e.g. ["i","b"]
@@ -236,18 +242,33 @@ export function buildInlineRows(children: any[]): InlineRow[] {
  * a single mesh. Instead, styled (bold/italic) text segments are given the
  * theme's emphasisCol instead of the muted bodyCol, so they still stand
  * out from plain prose on the same line without forcing a line break.
+ *
+ * ── No blue text (docs/directional-links.md) ──
+ *
+ * A link is NOT drawn in the accent colour any more, and it carries no
+ * underline. Links are doors, stairs, strips and paths now; what is left at
+ * the anchor is a small directional mark whose ORIENTATION says which of those
+ * it opens, and the mark is appended to the anchor's own text here so it flows
+ * and wraps with it rather than floating beside it.
+ *
+ * Colour survives in exactly one place: `litId`. On gaze the anchor and its
+ * door light together, and lighting is the ONLY binding channel the design has
+ * left — the census says alignment cannot do the job, because 49.8% of anchors
+ * share a block with another anchor.
  */
 export function buildRowMeta(
   segments: InlineSeg[],
   theme: XRTheme,
   forceColor?: number,
   /**
-   * Link colour for the surface these rows sit on. The theme accent is tuned
-   * against the panel background and measures barely 2:1 on a list-item card,
-   * so callers pass the corrected colour from useLinkColor(); omitted, this
-   * falls back to the raw accent.
+   * Retained for callers that still tint a whole run (a nav card's label).
+   * Ordinary prose links no longer use it — see the note above.
    */
   linkColor?: string,
+  /** How to mark each anchor. Missing id or missing entry ⇒ no mark. */
+  markFor?: (linkId: string | undefined) => string,
+  /** The anchor currently lit by gaze, if it is in this row. */
+  litId?: string | null,
 ): {
   text: string;
   colorRanges: Record<number, number> | null;
@@ -256,15 +277,16 @@ export function buildRowMeta(
   const colorRanges: Record<number, number> = {};
   let hasColor = false;
 
-  const accentHex = parseInt(
-    (linkColor ?? theme.accentCol).replace("#", ""),
-    16,
-  );
   const bodyHex = parseInt(theme.bodyCol.replace("#", ""), 16);
   const emphasisHex = parseInt(theme.emphasisCol.replace("#", ""), 16);
+  const litHex = parseInt(theme.headingCol.replace("#", ""), 16);
+  void linkColor;
 
   const colorForSegment = (seg: InlineSeg): number => {
-    if (seg.kind === "link") return accentHex;
+    if (seg.kind === "link")
+      return litId !== undefined && litId !== null && seg.id === litId
+        ? litHex
+        : bodyHex;
     if (seg.kind === "text" && (seg.bold || seg.italic)) return emphasisHex;
     return bodyHex;
   };
@@ -274,6 +296,10 @@ export function buildRowMeta(
     const seg = segments[si];
     const charStart = text.length;
     text += seg.text;
+    // The mark rides inside the anchor's own colour range, so lighting the
+    // anchor lights its mark with it — one thing, not two that must be kept
+    // in step.
+    if (seg.kind === "link" && markFor) text += markFor(seg.id);
 
     const color = forceColor !== undefined ? forceColor : colorForSegment(seg);
     if (color !== prevColor) {
@@ -381,8 +407,10 @@ interface LinkHitRect {
   w: number;
   h: number;
   href: string;
-  /** The link's visible text, for the hover preview card. */
+  /** The link's visible text. */
   label: string;
+  /** The anchor primitive's id — the key the mark and its door share. */
+  id?: string;
 }
 
 function rectsEqual(a: LinkHitRect[], b: LinkHitRect[]): boolean {
@@ -393,6 +421,7 @@ function rectsEqual(a: LinkHitRect[], b: LinkHitRect[]): boolean {
       a[i].cy !== b[i].cy ||
       a[i].w !== b[i].w ||
       a[i].h !== b[i].h ||
+      a[i].id !== b[i].id ||
       a[i].href !== b[i].href
     ) {
       return false;
@@ -422,7 +451,13 @@ interface ProseRowProps {
  * character ranges into the exact string handed to troika.
  */
 export function useLinkRects(
-  linkRanges: { start: number; end: number; href: string; label: string }[],
+  linkRanges: {
+    start: number;
+    end: number;
+    href: string;
+    label: string;
+    id?: string;
+  }[],
   xInset: number,
   rowY: number,
 ) {
@@ -445,7 +480,7 @@ export function useLinkRects(
       // rect centre in group space is [xInset + midX, rowY + midY].
       const EPS = 1e-4;
       const rects: LinkHitRect[] = [];
-      for (const { start, end, href, label } of linkRanges) {
+      for (const { start, end, href, label, id } of linkRanges) {
         let minX = Infinity;
         let maxX = -Infinity;
         let bottom = 0;
@@ -460,6 +495,7 @@ export function useLinkRects(
             h: Math.max(top - bottom, 0.01),
             href,
             label,
+            id,
           });
           minX = Infinity;
           maxX = -Infinity;
@@ -520,6 +556,7 @@ export function useLinkRects(
             h: r.h,
             href: r.href,
             label: r.label,
+            id: r.id,
           },
         ];
       }
@@ -548,6 +585,7 @@ export function useLinkRects(
           h: r.h,
           href: r.href,
           label: r.label,
+          id: r.id,
         };
       });
     });
@@ -578,41 +616,68 @@ function ProseRow({
   clearCurvedBacking,
 }: ProseRowProps) {
   const navigate = useContext(NavigateContext);
-  const linkPreview = useContext(LinkPreviewContext);
   // A drag that scrolls a panel must not also follow the link it started
   // on. Returns true (and clears the flag) when this click is the tail of
   // a scroll gesture — see ScrollViewport.
   const consumeScrollDrag = useConsumeScrollDrag();
-  const clips = useClipPlanes();
   const theme = useTheme();
-  const linkColor = useLinkColor();
+  const pageLinks = usePageLinks();
+  const { lit, setLit } = useLinkBinding();
+
+  // The mark an anchor is drawn with. A link with no id, or one the classifier
+  // never saw, gets nothing rather than a guessed direction — a wrong mark is
+  // worse than none, because the reader would go looking the wrong way.
+  const markOf = React.useCallback(
+    (linkId: string | undefined): string => {
+      if (!linkId || !pageLinks) return "";
+      const d = pageLinks.directionOf(linkId);
+      return d ? MARK_SEPARATOR + markFor(d) : "";
+    },
+    [pageLinks],
+  );
+
   const { text, colorRanges } = buildRowMeta(
     segments,
     theme,
     forceColor,
-    linkColor,
+    undefined,
+    markOf,
+    lit,
   );
 
   // Char ranges (start inclusive, end exclusive) of each link segment within
   // the merged row string. Offsets match the string handed to troika, so they
-  // index directly into caretPositions.
+  // index directly into caretPositions — which means the mark has to be
+  // counted here exactly as `buildRowMeta` appended it, or every range past
+  // the first anchor in a row slides off its glyphs.
+  //
+  // The range COVERS the mark. The mark is part of the link as far as the
+  // reader is concerned: looking at it is looking at the anchor, and gaze on
+  // it should light the pair and click on it should follow the link.
   const linkRanges = React.useMemo(() => {
-    const ranges: { start: number; end: number; href: string; label: string }[] =
-      [];
+    const ranges: {
+      start: number;
+      end: number;
+      href: string;
+      label: string;
+      id?: string;
+    }[] = [];
     let offset = 0;
     for (const seg of segments) {
+      const mark = seg.kind === "link" ? markOf(seg.id) : "";
       if (seg.kind === "link" && seg.href) {
         ranges.push({
           start: offset,
-          end: offset + seg.text.length,
+          end: offset + seg.text.length + mark.length,
           href: seg.href,
           label: seg.text,
+          id: seg.id,
         });
       }
-      offset += seg.text.length;
+      offset += seg.text.length + mark.length;
     }
     return ranges;
-  }, [segments]);
+  }, [segments, markOf]);
 
   const { handleSync, hitQuads } = useLinkRects(linkRanges, xInset, rowY);
 
@@ -635,34 +700,11 @@ function ProseRow({
       >
         {text}
       </ClippedText>
-      {/* Link underline. Colour alone can't carry "this is a link": on a card
-          tile the accent has to be lightened so far to stay legible (see
-          useLinkColor) that it reads as plain light text next to the heading
-          beside it. The rule is the same one the web settled on — don't signal
-          with hue only. Drawn from the very rects the click targets use, so the
-          line tracks the real glyphs, wraps line by line, and follows the panel
-          curve. */}
-      {hitQuads.map((r) => (
-        <mesh
-          key={`ul-${r.key}`}
-          position={[
-            r.position[0],
-            r.position[1] - r.h / 2 + LINK_UNDERLINE_RISE,
-            r.position[2],
-          ]}
-          rotation={[0, r.yaw, 0]}
-          renderOrder={RENDER_ORDER_TEXT}
-        >
-          <planeGeometry args={[r.w, LINK_UNDERLINE_THICKNESS]} />
-          <meshBasicMaterial
-            color={linkColor}
-            transparent
-            opacity={0.75}
-            clippingPlanes={clips}
-            depthWrite={false}
-          />
-        </mesh>
-      ))}
+      {/* No underline. The web's "don't signal with hue alone" rule is met by
+          the MARK, which is a shape and not a colour, and an underline under
+          every anchor on top of that would be a third decoration doing the
+          same job — on a page where half the anchors share a block it reads as
+          ruled paper. Marks and gaze-lighting are the whole scheme. */}
       {navigate &&
         hitQuads.map((r) => (
           <mesh
@@ -671,20 +713,17 @@ function ProseRow({
             rotation={[0, r.yaw, 0]}
             onClick={(e) => {
               e.stopPropagation();
-              linkPreview?.clear();
               if (consumeScrollDrag()) return;
               navigate(r.href);
             }}
             onPointerOver={(e) => {
-              // Dwell-gated tethered preview of the link target (see
-              // scene/link-preview.tsx). e.point is the world-space hit.
-              linkPreview?.show(r.href, r.label, [
-                e.point.x,
-                e.point.y,
-                e.point.z,
-              ]);
+              e.stopPropagation();
+              // Light the anchor and, through the shared id, its door.
+              if (r.id) setLit(r.id);
             }}
-            onPointerOut={() => linkPreview?.clear()}
+            onPointerOut={() => {
+              if (r.id) setLit(null);
+            }}
           >
             <planeGeometry args={[r.w, r.h]} />
             <meshBasicMaterial transparent opacity={0} depthWrite={false} />

@@ -33,15 +33,7 @@ export type IRRole =
   | "slider"
   | "spinbutton"
   | "switch"
-  | "tab"
-  | "tablist"
-  | "tabpanel"
-  | "menu"
-  | "menubar"
-  | "menuitem"
   | "dialog"
-  | "tree"
-  | "treeitem"
   | "grid"
   | "progressbar"
   | "status"
@@ -52,17 +44,11 @@ export type IRRole =
   | "caption"
   | "video"
   | "audio"
-  | "application"
   | "article"
   | "document"
-  | "note"
-  | "log"
   | "marquee"
   | "timer"
-  | "toolbar"
   | "option"
-  | "menuitemcheckbox"
-  | "menuitemradio"
   | "presentation"
   | "none"
   | "text"
@@ -77,26 +63,16 @@ export type IRSource =
   | "generic";
 
 export interface IRNodeAttributes {
-  expanded: string | null;
   checked: string | null;
   selected: string | null;
   disabled: string | null;
-  pressed: string | null;
-  current: string | null;
   hidden: string | null;
-  busy: string | null;
   required: string | null;
-  controls: string | null;
   describedby: string | null;
   labelledby: string | null;
-  owns: string | null;
-  details: string | null;
-  errormessage: string | null;
-  flowto: string | null;
   haspopup: string | null;
   alt: string | null;
   src: string | null;
-  poster: string | null;
   intrinsicWidth: number | null;
   intrinsicHeight: number | null;
   href: string | null;
@@ -109,14 +85,9 @@ export interface IRNodeAttributes {
   valueNow: string | null;
   valueMin: string | null;
   valueMax: string | null;
-  orientation: string | null;
-  invalid: string | null;
   readonly: string | null;
-  modal: string | null;
-  multiselectable: string | null;
   captions: string[];
   componentType: string | null;
-  autoplay: string | null;
   content: string | null;
   styleTags: string[];
   /** Original HTML `id` attribute — the target of same-page `#fragment` links. */
@@ -124,7 +95,6 @@ export interface IRNodeAttributes {
 }
 
 export interface IRNodeState {
-  expanded: string | null;
   checked: string | null;
   selected: string | null;
   disabled: string | null;
@@ -136,9 +106,6 @@ export interface IRNodeState {
   live: string | null;
   invalid: string | null;
   readonly: string | null;
-  modal: string | null;
-  multiselectable: string | null;
-  orientation: string | null;
   valueNow: string | null;
   valueMin: string | null;
   valueMax: string | null;
@@ -151,15 +118,8 @@ export interface IRNodeState {
  * Consumers resolve IDs via `PageIR.nodes`.
  */
 export interface IRNodeRelations {
-  controls: string[];
   labelledBy: string[];
   describedBy: string[];
-  owns: string[];
-  details: string[];
-  errorMessage: string[];
-  flowTo: string[];
-  /** IDs of caption nodes that are direct children of a figure node. */
-  figureCaption: string[];
   /** IDs of header cells (th) associated with this cell via headers= or scope=. */
   headers: string[];
 }
@@ -444,25 +404,6 @@ export interface ParserConfig {
    */
   aiFallbackIncludeWrappers: boolean;
 
-  // ── Reading order strategy ────────────────────────────────────────────────
-
-  /**
-   * How the final `readingOrder` array is computed.
-   *
-   * - `"dom"` — nodes are ordered by DOM traversal sequence (default).
-   *   Produces the most faithful left-to-right, top-to-bottom reading order.
-   *
-   * - `"landmark-first"` — all landmark nodes are sorted before their
-   *   non-landmark children, preserving DOM order within each tier.
-   *   Useful for spatial layouts that render the navigation shell before
-   *   content panels.
-   *
-   * - `"flowto-aware"` — follows `aria-flowto` relationships via graph
-   *   traversal. Nodes with an outgoing flowTo relation are visited in
-   *   flowTo order; remaining nodes are appended in DOM order.
-   */
-  readingOrderStrategy: "dom" | "landmark-first" | "flowto-aware";
-
   /**
    * When true, semantic containers (landmarks, sections) will attempt to
    * resolve labels from headings, ARIA, etc.
@@ -535,4 +476,10 @@ export interface ParseContext {
  * - "vips"        Simplified VIPS visual block segmentation (Cai et al., 2003), then semantic pipeline.
  * - "web2vr"      Direct CSS layout → 3D mapping via getBoundingClientRect() (kikoano/web2vr approach).
  */
-export type ParserBackend = "custom" | "readability" | "naive" | "flat" | "vips" | "web2vr";
+export type ParserBackend =
+  | "custom"
+  | "readability"
+  | "naive"
+  | "flat"
+  | "vips"
+  | "web2vr";

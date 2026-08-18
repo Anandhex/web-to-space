@@ -14,6 +14,7 @@ import type {
   RenderMetrics,
   TextBearingMetrics,
 } from "./types";
+import { MARK_FLOW_PLACEHOLDER } from "../links/direction";
 
 export function deg2rad(deg: number): number {
   return (deg * Math.PI) / 180;
@@ -766,6 +767,12 @@ export function estimateInlineFlowHeight(
       if (t) {
         if (runText !== "" && needsInlineSeparator(runText, t)) runText += " ";
         runText += t;
+        // Directional marks (docs/directional-links.md, Phase 4): every anchor
+        // is drawn with a mark after it, so every anchor must be MEASURED with
+        // one. See MARK_FLOW_PLACEHOLDER for why a fixed placeholder rather
+        // than the real mark — the estimate cannot classify, and over-
+        // reserving by one glyph is the safe direction of the error.
+        if (child.type === "XRLink") runText += MARK_FLOW_PLACEHOLDER;
       } else if (child.wordCount != null && child.wordCount > 0)
         fallbackWords += child.wordCount;
     } else {

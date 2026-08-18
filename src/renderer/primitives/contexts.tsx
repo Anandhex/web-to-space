@@ -103,8 +103,13 @@ export function useSurfaceBg(): string {
 
 /**
  * The theme accent, corrected to stay legible on whatever surface it lands on.
- * Every link colour — inline runs and standalone link meshes alike — goes
- * through this, so a link is never a low-contrast smudge on a card tile.
+ *
+ * NO LONGER USED FOR LINKS. Under the directional-link design there is no blue
+ * text anywhere: an anchor is drawn in body colour with a directional mark
+ * after it, and where it leads is the door, stair, strip or path it opens
+ * (docs/directional-links.md). Kept because the contrast correction it wraps —
+ * accent against whatever surface it lands on — is the right thing for any
+ * future accented element, and `ensureContrast` is the part worth keeping.
  */
 export function useLinkColor(): string {
   const theme = useTheme();

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Text } from "@react-three/drei";
 import { Surface } from "../renderer/primitives";
 import { DARK_THEME, type XRTheme } from "../renderer/theme";
-import type { Tab, ViewMode } from "./viewTypes";
+import type { ViewMode } from "./viewTypes";
 
 // ─────────────────────────────────────────────────────────────
 // Shared 3D UI primitives (Meta Horizon OS look)
@@ -99,189 +99,6 @@ export function XR3DButton({
 }
 
 // ─────────────────────────────────────────────────────────────
-// Tab switcher
-// ─────────────────────────────────────────────────────────────
-
-const TAB_W = 0.34;
-const TAB_H = 0.14;
-const TAB_GAP = 0.028;
-const NEWTAB_W = 0.14;
-
-function TabTile({
-  tab,
-  active,
-  canClose,
-  onSwitch,
-  onClose,
-  theme,
-}: {
-  tab: Tab;
-  active: boolean;
-  canClose: boolean;
-  onSwitch: () => void;
-  onClose: () => void;
-  theme: XRTheme;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const hot = hovered || active;
-  // const initial =
-  //   tab.label === "New Tab" ? "+" : (tab.label[0]?.toUpperCase() ?? "•");
-
-  return (
-    <group>
-      {/* Tile background + switch hit area */}
-      <mesh
-        onPointerOver={(e) => {
-          e.stopPropagation();
-          setHovered(true);
-          document.body.style.cursor = "pointer";
-        }}
-        onPointerOut={() => {
-          setHovered(false);
-          document.body.style.cursor = "default";
-        }}
-        onClick={(e) => {
-          e.stopPropagation();
-          onSwitch();
-        }}
-      >
-        <planeGeometry args={[TAB_W, TAB_H]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-      </mesh>
-      <Surface
-        width={TAB_W}
-        height={TAB_H}
-        radius={0.035}
-        color={active ? ACCENT_ON : hot ? theme.listItemBg : theme.navBg}
-        flat
-        rimColor={active ? theme.accentCol : theme.panelRim}
-        rimOpacity={active ? 0.9 : 0.45}
-        origin={[0, 0]}
-      />
-
-      <Text
-        position={[-TAB_W / 2 + 0.05, 0, 0.006]}
-        fontSize={0.036}
-        color={active ? "#EAF3FF" : theme.bodyCol}
-        anchorX="left"
-        anchorY="middle"
-        maxWidth={TAB_W}
-        clipRect={[0, -TAB_H, TAB_W, TAB_H]}
-      >
-        {tab.label}
-      </Text>
-
-      {/* Close button */}
-      {canClose && (
-        <group position={[TAB_W / 2 - 0.04, 0, 0.004]}>
-          <mesh
-            onPointerOver={(e) => {
-              e.stopPropagation();
-              document.body.style.cursor = "pointer";
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose();
-            }}
-          >
-            <planeGeometry args={[0.06, 0.06]} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-          </mesh>
-          <Text
-            position={[0, 0, 0.006]}
-            fontSize={0.05}
-            color={active ? "#9CC8F0" : theme.mutedTextCol}
-            anchorX="center"
-            anchorY="middle"
-          >
-            ×
-          </Text>
-        </group>
-      )}
-    </group>
-  );
-}
-
-export interface XR3DTabBarProps {
-  tabs: Tab[];
-  activeTabId: string;
-  onSwitch: (id: string) => void;
-  onClose: (id: string) => void;
-  onNewTab: () => void;
-  /** World-space position of the bar's centre. */
-  position?: [number, number, number];
-  /** X-rotation (radians) to tilt the bar up toward the viewer. */
-  tiltX?: number;
-  theme?: XRTheme;
-}
-
-/**
- * World-space tab strip. Renders every open tab as a Horizon tile plus a
- * "new tab" button, centred at `position` and tilted slightly up toward the
- * user. Replaces the flat HTML <TabBar>.
- */
-export function XR3DTabBar({
-  tabs,
-  activeTabId,
-  onSwitch,
-  onClose,
-  onNewTab,
-  position = [0, 0.6, -0.95],
-  tiltX = 0.32,
-  theme = DARK_THEME,
-}: XR3DTabBarProps) {
-  const count = tabs.length;
-  const rowWidth = count * TAB_W + (count - 1) * TAB_GAP + NEWTAB_W + TAB_GAP;
-  const startX = -rowWidth / 2 + TAB_W / 2;
-
-  return (
-    <group position={position} rotation={[-tiltX, 0, 0]}>
-      {/* Backing tray */}
-      <Surface
-        width={rowWidth + 0.12}
-        height={TAB_H + 0.08}
-        radius={0.05}
-        color={theme.panelBg}
-        flat
-        rimColor={theme.panelRim}
-        rimOpacity={0.5}
-        origin={[0, 0]}
-        z={-0.004}
-      />
-      {tabs.map((tab, i) => (
-        <group key={tab.id} position={[startX + i * (TAB_W + TAB_GAP), 0, 0]}>
-          <TabTile
-            tab={tab}
-            active={tab.id === activeTabId}
-            canClose={count > 1}
-            onSwitch={() => onSwitch(tab.id)}
-            onClose={() => onClose(tab.id)}
-            theme={theme}
-          />
-        </group>
-      ))}
-      {/* New-tab button */}
-      <group
-        position={[
-          startX + count * (TAB_W + TAB_GAP) - TAB_W / 2 + NEWTAB_W / 2,
-          0,
-          0,
-        ]}
-      >
-        <XR3DButton
-          width={NEWTAB_W}
-          height={TAB_H}
-          label="+"
-          fontSize={0.07}
-          onClick={onNewTab}
-          theme={theme}
-        />
-      </group>
-    </group>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
 // View-mode toggle
 // ─────────────────────────────────────────────────────────────
 
@@ -317,14 +134,6 @@ export const VIEW_MODES: {
   { id: "deck", label: "Deck", fit: ["QUEST_3", "QUEST_PRO"] },
   { id: "rooms", label: "Rooms", fit: ["QUEST_3", "QUEST_PRO"] },
 ];
-
-/** True when `mode` is presentable on `deviceType`. */
-export function isViewModeFit(
-  mode: ViewMode,
-  deviceType: ViewDeviceType,
-): boolean {
-  return VIEW_MODES.some((m) => m.id === mode && m.fit.includes(deviceType));
-}
 
 export interface XR3DViewToggleProps {
   mode: ViewMode;

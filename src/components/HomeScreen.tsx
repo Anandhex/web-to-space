@@ -3,13 +3,7 @@ import { Canvas } from "@react-three/fiber";
 import { Stars, OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { Surface } from "../renderer/primitives";
-import {
-  XR3DTabBar,
-  XR3DSearchBar,
-  XR3DButton,
-  XR3DViewToggle,
-  isViewModeFit,
-} from "./XR3DChrome";
+import { XR3DSearchBar, XR3DButton, XR3DViewToggle } from "./XR3DChrome";
 import type { Tab, ViewMode } from "./viewTypes";
 import type { XRDeviceType } from "../renderer/XRSceneRenderer";
 import type { ParserConfig, ParserBackend } from "../ir/types";
@@ -23,13 +17,8 @@ import {
   type AIProviderId,
   type AIProviderSettings,
 } from "../ir/ai";
-import {
-  LIGHT_THEME,
-  DARK_THEME,
-  THEME_FIELD_LABELS,
-  type XRTheme,
-} from "../renderer/theme";
-import { contrast } from "../renderer/scene/section-tint";
+import { DARK_THEME, type XRTheme } from "../renderer/theme";
+
 import { SR_ONLY, usePrefersReducedMotion } from "./a11y";
 
 // Re-exported so existing importers of these from this module keep working.
@@ -147,24 +136,6 @@ export const DEFAULT_HOME_SETTINGS: HomeSettings = {
   viewMode: "standard",
 };
 
-export const HOME_THEME_FIELD_LABELS: Record<keyof HomeTheme, string> = {
-  accent: "Accent (fills, rings)",
-  accentText: "Accent as ink",
-  accentDim: "Accent (dim)",
-  background: "Page background",
-  canvasBg: "Canvas background",
-  cardBg: "Card",
-  cardHover: "Card (hover)",
-  cardRim: "Card border",
-  boardBg: "Launcher board",
-  chipBg: "Initial chip",
-  chipBgActive: "Initial chip (hover)",
-  divider: "Card rule",
-  textPrimary: "Text primary",
-  textSecondary: "Text secondary",
-  textMuted: "Text muted (URL)",
-};
-
 /**
  * Every foreground/background pair the launcher actually draws, with the WCAG
  * level each has to clear: 4.5:1 for text, 3:1 for the boundaries and rings
@@ -260,20 +231,6 @@ function saveStoredAI(ai: AIProviderSettings, rememberKey: boolean) {
 }
 
 function loadStoredSettings(): HomeSettings {
-  // try {
-  //   const raw = localStorage.getItem(LS_KEY);
-  //   if (raw) {
-  //     const parsed = JSON.parse(raw);
-  //     return {
-  //       ...DEFAULT_HOME_SETTINGS,
-  //       ...parsed,
-  //       theme: { ...DEFAULT_HOME_THEME, ...(parsed.theme ?? {}) },
-  //       xrTheme: { ...DARK_THEME, ...(parsed.xrTheme ?? {}) },
-  //       parserConfig: parsed.parserConfig ?? {},
-  //       parserBackend: parsed.parserBackend ?? "custom",
-  //     };
-  //   }
-  // } catch {}
   const stored = loadStoredAI();
   return {
     ...DEFAULT_HOME_SETTINGS,
@@ -868,112 +825,6 @@ function Toggle({
   );
 }
 
-function ColorSwatch({
-  label,
-  value,
-  onChange,
-  theme,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  theme: HomeTheme;
-}) {
-  return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        marginBottom: 8,
-        cursor: "pointer",
-      }}
-    >
-      <span style={{ flex: 1, fontSize: 12, color: theme.textPrimary }}>
-        {label}
-      </span>
-      <div style={{ position: "relative", width: 28, height: 20 }}>
-        <div
-          style={{
-            width: 28,
-            height: 20,
-            borderRadius: 4,
-            background: value,
-            border: "1px solid rgba(255,255,255,0.15)",
-            pointerEvents: "none",
-          }}
-        />
-        <input
-          type="color"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          style={{
-            position: "absolute",
-            inset: 0,
-            opacity: 0,
-            cursor: "pointer",
-            width: "100%",
-            height: "100%",
-          }}
-        />
-      </div>
-      <span
-        style={{
-          fontSize: 11,
-          color: theme.textSecondary,
-          fontFamily: "monospace",
-          width: 60,
-        }}
-      >
-        {value}
-      </span>
-    </label>
-  );
-}
-
-/**
- * Live WCAG check on the editable palette. Silent when everything passes, so
- * it only speaks up when a picked colour has actually broken something.
- */
-function ContrastReport({ theme }: { theme: HomeTheme }) {
-  const failing = homeContrastPairs(theme)
-    .map((p) => ({ ...p, ratio: contrast(p.fg, p.bg) }))
-    .filter((p) => p.ratio < p.need);
-
-  if (failing.length === 0) {
-    return (
-      <div style={{ fontSize: 11, color: theme.textSecondary, marginTop: 8 }}>
-        ✓ All {homeContrastPairs(theme).length} colour pairs meet WCAG AA.
-      </div>
-    );
-  }
-  return (
-    <div
-      role="status"
-      style={{
-        marginTop: 8,
-        padding: "8px 10px",
-        borderRadius: 6,
-        background: "rgba(220, 80, 60, 0.12)",
-        border: "1px solid rgba(220, 80, 60, 0.45)",
-      }}
-    >
-      <div style={{ fontSize: 11, color: "#FFB3A6", marginBottom: 4 }}>
-        {failing.length} colour pair{failing.length === 1 ? "" : "s"} below WCAG
-        AA:
-      </div>
-      {failing.map((p) => (
-        <div
-          key={p.label}
-          style={{ fontSize: 10, color: theme.textSecondary, lineHeight: 1.6 }}
-        >
-          {p.label} — {p.ratio.toFixed(2)}:1 (needs {p.need}:1)
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function SectionHeader({ title, accent }: { title: string; accent: string }) {
   return (
     <div
@@ -1045,53 +896,6 @@ function ParserToggle({
       </div>
       <Toggle value={value} onChange={onChange} accent={theme.accent} />
     </div>
-  );
-}
-
-function ParserNumber({
-  label,
-  value,
-  onChange,
-  theme,
-}: {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-  theme: HomeTheme;
-}) {
-  return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        marginBottom: 8,
-      }}
-    >
-      <span style={{ flex: 1, fontSize: 12, color: theme.textPrimary }}>
-        {label}
-      </span>
-      <input
-        type="number"
-        min={2}
-        max={10}
-        value={value}
-        onChange={(e) =>
-          onChange(Math.max(2, Math.min(10, Number(e.target.value))))
-        }
-        style={{
-          width: 52,
-          background: "#0a1220",
-          border: "1px solid #1a3a6a",
-          color: theme.textPrimary,
-          borderRadius: 4,
-          padding: "3px 6px",
-          fontSize: 12,
-          textAlign: "center",
-          outline: "none",
-        }}
-      />
-    </label>
   );
 }
 
@@ -1228,7 +1032,9 @@ function AISettings({
         answers and nothing leaves the browser.
       </p>
 
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+      <div
+        style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}
+      >
         {AI_PROVIDERS.map((p) => {
           const active = p.id === ai.provider;
           return (
@@ -1318,7 +1124,10 @@ function AISettings({
             value={ai.batchSize}
             onChange={(e) =>
               set({
-                batchSize: Math.max(1, Math.min(100, Number(e.target.value) || 1)),
+                batchSize: Math.max(
+                  1,
+                  Math.min(100, Number(e.target.value) || 1),
+                ),
               })
             }
             style={{
@@ -1351,7 +1160,12 @@ function AISettings({
             max={2000}
             value={ai.maxNodes}
             onChange={(e) =>
-              set({ maxNodes: Math.max(0, Math.min(2000, Number(e.target.value) || 0)) })
+              set({
+                maxNodes: Math.max(
+                  0,
+                  Math.min(2000, Number(e.target.value) || 0),
+                ),
+              })
             }
             style={{
               width: "100%",
@@ -1419,27 +1233,6 @@ function AISettings({
 // Settings panel
 // ─────────────────────────────────────────────────────────────
 
-const DEVICES: {
-  id: XRDeviceType;
-  label: string;
-  desc: string;
-  icon: string;
-}[] = [
-  { id: "QUEST_3", label: "Quest 3", desc: "Full VR · 110° FOV", icon: "◉" },
-  {
-    id: "QUEST_PRO",
-    label: "Quest Pro",
-    desc: "Mixed Reality · 100° FOV",
-    icon: "◎",
-  },
-  {
-    id: "RAY_BAN_META",
-    label: "Ray-Ban Meta",
-    desc: "AR Glasses · 40° FOV",
-    icon: "◯",
-  },
-];
-
 const BACKENDS: {
   id: ParserBackend;
   icon: string;
@@ -1464,23 +1257,12 @@ const BACKENDS: {
     label: "Naive (Tags Only)",
     desc: "Basic HTML tag → role mapping · No ARIA, no inference",
   },
-  {
-    id: "flat",
-    icon: "▭",
-    label: "Browser Panel",
-    desc: "Raw HTML in a flat iframe — no XR processing, like a traditional VR browser",
-  },
+
   {
     id: "vips",
     icon: "◈",
     label: "VIPS Visual Blocks",
     desc: "Cai et al. 2003 — DOM-based visual block segmentation, then semantic pipeline",
-  },
-  {
-    id: "web2vr",
-    icon: "⬕",
-    label: "Web2VR",
-    desc: "kikoano/web2vr — direct CSS layout → 3D via getBoundingClientRect() (no semantic parsing)",
   },
 ];
 
@@ -1493,38 +1275,11 @@ function SettingsPanel({
   onChange: (s: HomeSettings) => void;
   onClose: () => void;
 }) {
-  const {
-    theme,
-    xrTheme,
-    deviceType,
-    parserConfig: pc,
-    parserBackend,
-  } = settings;
+  const { theme, parserBackend } = settings;
   const acc = theme.accent;
 
-  const updateTheme = (partial: Partial<HomeTheme>) =>
-    onChange({ ...settings, theme: { ...theme, ...partial } });
-  const updateXrTheme = (partial: Partial<XRTheme>) =>
-    onChange({ ...settings, xrTheme: { ...xrTheme, ...partial } });
-  const updateParser = (partial: Partial<ParserConfig>) =>
-    onChange({ ...settings, parserConfig: { ...pc, ...partial } });
-  // Not every view survives every device — wall/deck/rooms need room-scale
-  // 6DoF. Drop back to Standard rather than launching into a view the newly
-  // selected device cannot present.
-  const updateDevice = (dt: XRDeviceType) =>
-    onChange({
-      ...settings,
-      deviceType: dt,
-      viewMode: isViewModeFit(settings.viewMode, dt)
-        ? settings.viewMode
-        : "standard",
-    });
   const updateBackend = (b: ParserBackend) =>
     onChange({ ...settings, parserBackend: b });
-
-  // Resolve each boolean against its default value
-  const bool = (key: keyof ParserConfig, def: boolean): boolean =>
-    pc[key] !== undefined ? (pc[key] as boolean) : def;
 
   return (
     <div
@@ -1659,216 +1414,6 @@ function SettingsPanel({
           </div>
         </SettingsSection>
 
-        {/* ── Device ─────────────────────────────────── */}
-        <SettingsSection title="DEVICE" accent={acc}>
-          <p
-            style={{
-              color: theme.textSecondary,
-              fontSize: 11,
-              margin: "0 0 12px",
-            }}
-          >
-            Selects the device profile — determines FOV, panel dimensions, and
-            reading metrics used to lay out the 3D scene.
-          </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {DEVICES.map((d) => (
-              <button
-                key={d.id}
-                onClick={() => updateDevice(d.id)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "10px 14px",
-                  background:
-                    deviceType === d.id
-                      ? `rgba(${hexToRgb(acc)}, 0.12)`
-                      : "rgba(255,255,255,0.03)",
-                  border: `1px solid ${
-                    deviceType === d.id
-                      ? `rgba(${hexToRgb(acc)}, 0.5)`
-                      : "rgba(255,255,255,0.07)"
-                  }`,
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "all 0.15s",
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: 18,
-                    color: deviceType === d.id ? acc : theme.textSecondary,
-                  }}
-                >
-                  {d.icon}
-                </span>
-                <div>
-                  <div
-                    style={{
-                      color: deviceType === d.id ? acc : theme.textPrimary,
-                      fontSize: 13,
-                      fontWeight: 600,
-                    }}
-                  >
-                    {d.label}
-                  </div>
-                  <div style={{ color: theme.textSecondary, fontSize: 11 }}>
-                    {d.desc}
-                  </div>
-                </div>
-                {deviceType === d.id && (
-                  <span
-                    style={{ marginLeft: "auto", color: acc, fontSize: 13 }}
-                  >
-                    ✓
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <div
-            style={{
-              marginTop: 12,
-              padding: "8px 12px",
-              background: "rgba(255,255,255,0.03)",
-              border: "1px solid rgba(255,255,255,0.06)",
-              borderRadius: 6,
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
-            <span style={{ fontSize: 14 }}>◎</span>
-            <span
-              style={{
-                color: theme.textSecondary,
-                fontSize: 11,
-                lineHeight: 1.4,
-              }}
-            >
-              Scene renders in immersive VR / AR on supported devices via WebXR
-            </span>
-          </div>
-        </SettingsSection>
-
-        {/* ── Appearance (this Home screen only) ──────── */}
-        <SettingsSection title="HOME SCREEN APPEARANCE" accent={acc}>
-          {(Object.keys(HOME_THEME_FIELD_LABELS) as (keyof HomeTheme)[]).map(
-            (key) => (
-              <ColorSwatch
-                key={key}
-                label={HOME_THEME_FIELD_LABELS[key]}
-                value={theme[key]}
-                onChange={(v) => updateTheme({ [key]: v })}
-                theme={theme}
-              />
-            ),
-          )}
-          <ContrastReport theme={theme} />
-          <button
-            onClick={() => updateTheme(DEFAULT_HOME_THEME)}
-            style={{
-              marginTop: 4,
-              padding: "5px 12px",
-              background: "none",
-              border: `1px solid rgba(${hexToRgb(acc)}, 0.3)`,
-              borderRadius: 6,
-              color: acc,
-              fontSize: 11,
-              cursor: "pointer",
-            }}
-          >
-            Reset to defaults
-          </button>
-        </SettingsSection>
-
-        {/* ── Document viewer theme (Meta Horizon UI Set palette) ── */}
-        <SettingsSection title="DOCUMENT VIEWER THEME" accent={acc}>
-          <p
-            style={{
-              color: theme.textSecondary,
-              fontSize: 11,
-              margin: "0 0 12px",
-              lineHeight: 1.5,
-            }}
-          >
-            Colours applied to every panel, card and text run in the 3D document
-            view (not this Home screen).
-          </p>
-          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-            <button
-              onClick={() => updateXrTheme(LIGHT_THEME)}
-              style={{
-                flex: 1,
-                padding: "6px 0",
-                fontSize: 12,
-                fontWeight: 600,
-                borderRadius: 6,
-                cursor: "pointer",
-                background:
-                  xrTheme.panelBg === LIGHT_THEME.panelBg
-                    ? `rgba(${hexToRgb(acc)}, 0.15)`
-                    : "rgba(255,255,255,0.04)",
-                border: `1px solid ${xrTheme.panelBg === LIGHT_THEME.panelBg ? `rgba(${hexToRgb(acc)}, 0.5)` : "rgba(255,255,255,0.08)"}`,
-                color:
-                  xrTheme.panelBg === LIGHT_THEME.panelBg
-                    ? acc
-                    : theme.textSecondary,
-              }}
-            >
-              ☀ Light
-            </button>
-            <button
-              onClick={() => updateXrTheme(DARK_THEME)}
-              style={{
-                flex: 1,
-                padding: "6px 0",
-                fontSize: 12,
-                fontWeight: 600,
-                borderRadius: 6,
-                cursor: "pointer",
-                background:
-                  xrTheme.panelBg === DARK_THEME.panelBg
-                    ? `rgba(${hexToRgb(acc)}, 0.15)`
-                    : "rgba(255,255,255,0.04)",
-                border: `1px solid ${xrTheme.panelBg === DARK_THEME.panelBg ? `rgba(${hexToRgb(acc)}, 0.5)` : "rgba(255,255,255,0.08)"}`,
-                color:
-                  xrTheme.panelBg === DARK_THEME.panelBg
-                    ? acc
-                    : theme.textSecondary,
-              }}
-            >
-              ☾ Dark
-            </button>
-          </div>
-          {(Object.keys(THEME_FIELD_LABELS) as (keyof XRTheme)[]).map((key) => (
-            <ColorSwatch
-              key={key}
-              label={THEME_FIELD_LABELS[key]}
-              value={xrTheme[key]}
-              onChange={(v) => updateXrTheme({ [key]: v })}
-              theme={theme}
-            />
-          ))}
-          <button
-            onClick={() => updateXrTheme(LIGHT_THEME)}
-            style={{
-              marginTop: 4,
-              padding: "5px 12px",
-              background: "none",
-              border: `1px solid rgba(${hexToRgb(acc)}, 0.3)`,
-              borderRadius: 6,
-              color: acc,
-              fontSize: 11,
-              cursor: "pointer",
-            }}
-          >
-            Reset to defaults
-          </button>
-        </SettingsSection>
-
         {/* ── Parser options ──────────────────────────── */}
         {/* ── AI fallback (parser layer 3) ────────────── */}
         <SettingsSection title="AI FALLBACK · LAYER 3" accent={acc}>
@@ -1876,152 +1421,11 @@ function SettingsPanel({
             ai={settings.ai}
             rememberKey={settings.aiRememberKey}
             onChange={(ai) => onChange({ ...settings, ai })}
-            onRememberChange={(v) => onChange({ ...settings, aiRememberKey: v })}
+            onRememberChange={(v) =>
+              onChange({ ...settings, aiRememberKey: v })
+            }
             theme={theme}
           />
-        </SettingsSection>
-
-        <SettingsSection title="PARSER OPTIONS" accent={acc}>
-          <p
-            style={{
-              color: theme.textSecondary,
-              fontSize: 11,
-              margin: "0 0 12px",
-            }}
-          >
-            Controls how HTML is analysed into the XR intermediate
-            representation. Defaults are tuned for best results.
-          </p>
-
-          <ParserToggle
-            label="Use ARIA roles"
-            desc="Honour explicit role= attributes"
-            value={bool("useExplicitSemantics", true)}
-            onChange={(v) => updateParser({ useExplicitSemantics: v })}
-            theme={theme}
-          />
-          <ParserToggle
-            label="Use ARIA labels"
-            desc="Resolve aria-label, aria-labelledby, alt"
-            value={bool("useAriaLabels", true)}
-            onChange={(v) => updateParser({ useAriaLabels: v })}
-            theme={theme}
-          />
-          <ParserToggle
-            label="Infer structure"
-            desc="Heading sections, link & paragraph runs"
-            value={bool("useStructuralInference", true)}
-            onChange={(v) => updateParser({ useStructuralInference: v })}
-            theme={theme}
-          />
-          <ParserToggle
-            label="Pierce wrappers"
-            desc="Collapse inert div / span chains"
-            value={bool("useWrapperPiercing", true)}
-            onChange={(v) => updateParser({ useWrapperPiercing: v })}
-            theme={theme}
-          />
-          <ParserToggle
-            label="Exclude hidden content"
-            desc="Skip aria-hidden and display:none nodes"
-            value={bool("excludeHiddenContent", true)}
-            onChange={(v) => updateParser({ excludeHiddenContent: v })}
-            theme={theme}
-          />
-          <ParserToggle
-            label="Include SVG"
-            desc="Treat <svg> as labelled image nodes"
-            value={bool("includeSvg", false)}
-            onChange={(v) => updateParser({ includeSvg: v })}
-            theme={theme}
-          />
-          <ParserToggle
-            label="Include canvas"
-            desc="Treat <canvas> as labelled image nodes"
-            value={bool("includeCanvas", false)}
-            onChange={(v) => updateParser({ includeCanvas: v })}
-            theme={theme}
-          />
-
-          <div
-            style={{
-              borderTop: "1px solid rgba(255,255,255,0.06)",
-              paddingTop: 12,
-              marginTop: 4,
-            }}
-          >
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                marginBottom: 10,
-              }}
-            >
-              <span style={{ flex: 1, fontSize: 12, color: theme.textPrimary }}>
-                Reading order
-              </span>
-              <select
-                value={(pc.readingOrderStrategy as string) ?? "dom"}
-                onChange={(e) =>
-                  updateParser({
-                    readingOrderStrategy: e.target.value as
-                      | "dom"
-                      | "landmark-first"
-                      | "flowto-aware",
-                  })
-                }
-                style={{
-                  background: "#0a1220",
-                  border: "1px solid #1a3a6a",
-                  color: theme.textPrimary,
-                  borderRadius: 4,
-                  padding: "3px 8px",
-                  fontSize: 12,
-                  cursor: "pointer",
-                  outline: "none",
-                }}
-              >
-                <option value="dom">DOM order</option>
-                <option value="landmark-first">Landmark-first</option>
-                <option value="flowto-aware">Flow-to aware</option>
-              </select>
-            </label>
-            <ParserNumber
-              label="Min list run"
-              value={pc.minListRun ?? 3}
-              onChange={(v) => updateParser({ minListRun: v })}
-              theme={theme}
-            />
-            <ParserNumber
-              label="Min link run"
-              value={pc.minLinkRun ?? 3}
-              onChange={(v) => updateParser({ minLinkRun: v })}
-              theme={theme}
-            />
-            <ParserNumber
-              label="Min paragraph run"
-              value={pc.minParagraphRun ?? 3}
-              onChange={(v) => updateParser({ minParagraphRun: v })}
-              theme={theme}
-            />
-          </div>
-
-          <button
-            onClick={() => onChange({ ...settings, parserConfig: {} })}
-            style={{
-              marginTop: 6,
-              padding: "5px 12px",
-              background: "none",
-              border: `1px solid rgba(${hexToRgb(acc)}, 0.3)`,
-              borderRadius: 6,
-              color: acc,
-              fontSize: 11,
-              cursor: "pointer",
-            }}
-          >
-            Reset to defaults
-          </button>
         </SettingsSection>
       </div>
     </div>
@@ -2043,15 +1447,7 @@ export interface HomeScreenProps {
   onNewTab?: () => void;
 }
 
-export function HomeScreen({
-  onLoad,
-  loading,
-  tabs,
-  activeTabId,
-  onSwitchTab,
-  onCloseTab,
-  onNewTab,
-}: HomeScreenProps) {
+export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
   const [inputValue, setInputValue] = useState("");
   const [settings, setSettings] = useState<HomeSettings>(loadStoredSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2199,17 +1595,6 @@ export function HomeScreen({
               onClick={() => setSettingsOpen((o) => !o)}
             />
           </group>
-          {tabs && activeTabId && onSwitchTab && onCloseTab && onNewTab && (
-            <XR3DTabBar
-              tabs={tabs}
-              activeTabId={activeTabId}
-              onSwitch={onSwitchTab}
-              onClose={onCloseTab}
-              onNewTab={onNewTab}
-              position={[0, 0.7, 0.55]}
-              tiltX={0.34}
-            />
-          )}
 
           {/* View selection lives here, not in the document viewer: the
               arrangement is chosen before launch and rides along in the tab's

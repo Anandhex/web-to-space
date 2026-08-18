@@ -57,22 +57,13 @@ import {
   OrbitControls,
 } from "@react-three/drei";
 
-import { getArrangement, carouselGhostPlacement } from "../layout/placement";
-import {
-  QUEST_PRO_PROFILE,
-  RAY_BAN_META_PROFILE,
-  QUEST_3_PROFILE,
-} from "../layout/profiles";
+import { getArrangement } from "../layout/placement";
+import { QUEST_3_PROFILE } from "../layout/profiles";
 import type { SemanticScene } from "../mapper/types";
-import type {
-  LayoutPlan,
-  LayoutConfig,
-  SlotName,
-  SlotMap,
-  LandmarkSlot,
-} from "../layout/types";
+import type { LayoutPlan, LayoutConfig, SlotName } from "../layout/types";
 import type { ParserConfig, ParserBackend } from "../ir/types";
 import type { ViewMode, Tab } from "../components/viewTypes";
+import type { Axis, NavState } from "../links/memory";
 import { deckLookAt, DECK_STAGE_LIFT } from "./page-placements";
 import { XRFrameProbe } from "./scene/frame-probe";
 import {
@@ -80,10 +71,9 @@ import {
   getXRDiagnostics,
   subscribeXRDiagnostics,
 } from "./xr-diagnostics";
-import { ThemeContext, LIGHT_THEME, type XRTheme } from "./theme";
+import { DARK_THEME, ThemeContext, type XRTheme } from "./theme";
 import { RenderMetricsContext } from "./primitives";
 import { useXRSession } from "./useXRSession";
-import { Web2VRScene } from "./Web2VRScene";
 
 // Scene package — the renderer was split out of this (formerly ~3400-line)
 // file into ./scene/* for readability. This file is now just the top-level
@@ -94,70 +84,21 @@ import { usePipeline } from "./scene/use-pipeline";
 import type { AIProviderSettings } from "../ir/ai";
 import { XRViewerAnchor, PreviewFieldOfView, AxisLook } from "./scene/camera";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
+import { Minimap } from "./scene/minimap";
+import { TransitionMark } from "./scene/transition";
 import { DeskDecor, slotsWithVisibleContent } from "./scene/desk-decor";
 import { sectionRangesFor } from "./scene/page-ghosts";
 import { ROOM_EYE_HEIGHT } from "./page-placements";
 import { SR_ONLY } from "../components/a11y";
 import { VRButton, styles } from "./scene/chrome";
-import {
-  PanelTuner,
-  type TuneState,
-  type TunerTarget,
-} from "./scene/PanelTuner";
 
-// Re-export the renderer contexts so existing consumers
-// (`import { FontContext } from "./XRSceneRenderer"`, HomeScreen's XRDeviceType)
-// keep working unchanged.
 export {
   FontContext,
   CurrentPageContext,
   PageRangeContext,
 } from "./scene/contexts";
 
-export type XRDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
-
-// Reading-priority order for the panel-tuner target picker.
-const TUNER_SLOT_ORDER: SlotName[] = [
-  "main",
-  "complementary",
-  "toc",
-  "navigation",
-  "banner",
-  "footer",
-];
-
-/** Flatten a landmark slot into the tuner's editable value shape. */
-function slotToTune(s: LandmarkSlot): TuneState {
-  return {
-    x: s.position.x,
-    y: s.position.y,
-    z: s.position.z,
-    rotX: s.rotation.x,
-    rotY: s.rotation.y,
-    rotZ: s.rotation.z,
-    curveRadius: s.curveRadius,
-  };
-}
-
-/** Ghost prev/next seed values (position + facing) from the resolved main slot. */
-function ghostSeeds(slots: SlotMap): Record<string, TuneState> {
-  const main = slots.main;
-  if (!main) return {};
-  const { prev, next } = carouselGhostPlacement(main.position, main.size);
-  const toState = (p: {
-    position: { x: number; y: number; z: number };
-    rotation: { x: number; y: number; z: number };
-  }): TuneState => ({
-    x: p.position.x,
-    y: p.position.y,
-    z: p.position.z,
-    rotX: p.rotation.x,
-    rotY: p.rotation.y,
-    rotZ: p.rotation.z,
-    curveRadius: main.curveRadius,
-  });
-  return { "ghost-prev": toState(prev), "ghost-next": toState(next) };
-}
+export type XRDeviceType = "QUEST_3";
 
 /**
  * Flat-preview lens. 60° frames a panel you sit in front of; `rooms` puts the
@@ -175,6 +116,16 @@ const ROOMS_PREVIEW_FOV = 82;
  * off the bottom of the frame.
  */
 const DECK_PREVIEW_FOV = 76;
+/**
+ * `wall` hangs its link strips off the edges of the open page
+ * (docs/directional-links.md, Phase 5), which is 90° of arc once the page is
+ * at full size. In a headset the reader glances up or sideways and the doors
+ * are there; in the flat preview there is no head to turn, so a 60° lens crops
+ * away exactly the thing the strips exist to show and the wall looks like it
+ * has no links at all. A wide lens here is the preview standing in for a neck,
+ * which is the same job ROOMS_PREVIEW_FOV already does.
+ */
+const WALL_PREVIEW_FOV = 100;
 
 export interface XRSceneRendererProps {
   html?: string;
@@ -206,6 +157,26 @@ export interface XRSceneRendererProps {
   onPlanReady?: (plan: LayoutPlan) => void;
   /** Called when a non-anchor link is clicked; defaults to window.open if omitted. */
   onExternalNavigate?: (href: string) => void;
+  /**
+   * Directional-link navigation (docs/directional-links.md). A door, stair,
+   * strip or path hands back the destination AND the axis it was taken in, so
+   * navigation memory can reserve the way back. Navigates IN PLACE — a
+   * corridor is one reading session, so a tab per door would leave every
+   * document with a fresh memory and no corridor to walk back down.
+   */
+  onTraverse?: (url: string, axis: Axis, label?: string) => void;
+  /** The reserved back door every floor, face and table carries. */
+  onTraverseBack?: () => void;
+  /** A minimap selection: move the world to a node the reader has visited. */
+  onTraverseJump?: (historyIndex: number) => void;
+  /** Where this tab's reader has been. Null before the first document loads. */
+  nav?: NavState | null;
+  /**
+   * A directional move in flight. The document on screen stays on screen; this
+   * is what lets every view say that a move is under way rather than handing
+   * the reader a blank canvas and a spinner.
+   */
+  pending?: { url: string; axis: Axis | null } | null;
   /** XR primitive colour palette. Defaults to LIGHT_THEME (Meta Horizon UI Set). */
   theme?: XRTheme;
   /** In-world tab switcher wiring. When provided, a 3D tab bar is rendered. */
@@ -224,7 +195,6 @@ export function XRSceneRenderer({
   width = "100%",
   height = "600px",
   background = "#050a10",
-  deviceType = "QUEST_3",
   fontType = undefined,
   parserConfig = {},
   parserBackend = "custom",
@@ -232,7 +202,12 @@ export function XRSceneRenderer({
   viewMode,
   onPlanReady,
   onExternalNavigate,
-  theme = LIGHT_THEME,
+  onTraverse,
+  onTraverseBack,
+  onTraverseJump,
+  nav = null,
+  pending = null,
+  theme = DARK_THEME,
   tabs,
   activeTabId,
   onSwitchTab,
@@ -240,17 +215,7 @@ export function XRSceneRenderer({
   onNewTab,
 }: XRSceneRendererProps) {
   // 1. Resolve Device Profile locally
-  const deviceProfile = useMemo(() => {
-    switch (deviceType) {
-      case "QUEST_PRO":
-        return QUEST_PRO_PROFILE;
-      case "RAY_BAN_META":
-        return RAY_BAN_META_PROFILE;
-      case "QUEST_3":
-      default:
-        return QUEST_3_PROFILE;
-    }
-  }, [deviceType]);
+  const deviceProfile = QUEST_3_PROFILE;
 
   // Map view mode → explicit layout template override
   const templateOverride = useMemo(():
@@ -272,14 +237,6 @@ export function XRSceneRenderer({
   // content template the scene auto-selects. Legacy views → undefined.
   const arrangement = useMemo(() => getArrangement(viewMode), [viewMode]);
 
-  // Live panel tuning (DOM HUD). Per-slot overrides feed the layout engine and
-  // re-run the pipeline on change; ghost overrides feed the carousel renderer
-  // directly (ghosts aren't slots). Empty = nothing overridden.
-  const [slotTune, setSlotTune] = useState<
-    Partial<Record<SlotName, TuneState>>
-  >({});
-  const [ghostTune, setGhostTune] = useState<Record<string, TuneState>>({});
-
   const {
     scene,
     plan,
@@ -293,7 +250,6 @@ export function XRSceneRenderer({
     deviceProfile,
     {
       ...layoutConfig,
-      slotOverrides: slotTune,
       // sectionStartsOnNewPage: false,
     },
     parserConfig,
@@ -361,74 +317,6 @@ export function XRSceneRenderer({
     [scene],
   );
 
-  // ── Panel tuner data ────────────────────────────────────────
-  // Targets = landmark slots present in the plan, plus the two carousel ghosts.
-  const tunerTargets = useMemo((): TunerTarget[] => {
-    const slots = plan?.slots;
-    if (!slots) return [];
-    const list: TunerTarget[] = TUNER_SLOT_ORDER.filter(
-      (name) => slots[name],
-    ).map((name) => ({ id: name, label: name, kind: "slot" as const }));
-    if (viewMode === "carousel" && slots.main) {
-      list.push(
-        { id: "ghost-prev", label: "ghost · prev", kind: "ghost" },
-        { id: "ghost-next", label: "ghost · next", kind: "ghost" },
-      );
-    }
-    return list;
-  }, [plan, viewMode]);
-
-  // Merge slot + ghost overrides for the tuner's per-target state map.
-  const tunerOverrides = useMemo(
-    (): Record<string, TuneState> => ({ ...slotTune, ...ghostTune }),
-    [slotTune, ghostTune],
-  );
-
-  // Seed values (pre-override slot geometry / computed ghost placement).
-  const ghostSeedMap = useMemo(
-    () => (plan?.slots ? ghostSeeds(plan.slots) : {}),
-    [plan],
-  );
-  const seedFor = useCallback(
-    (id: string): TuneState | null => {
-      if (id.startsWith("ghost-")) return ghostSeedMap[id] ?? null;
-      const s = plan?.slots?.[id as SlotName];
-      return s ? slotToTune(s) : null;
-    },
-    [plan, ghostSeedMap],
-  );
-  const sizeFor = useCallback(
-    (id: string): { width: number; height: number } | null => {
-      const src = id.startsWith("ghost-") ? "main" : id;
-      return plan?.slots?.[src as SlotName]?.size ?? null;
-    },
-    [plan],
-  );
-  const anchorFor = useCallback(
-    (id: string): { x: number; y: number; z: number } | null => {
-      if (!id.startsWith("ghost-")) return null;
-      return plan?.slots?.main?.position ?? null;
-    },
-    [plan],
-  );
-  const onTuneChange = useCallback((id: string, next: TuneState | null) => {
-    if (id.startsWith("ghost-")) {
-      setGhostTune((prev) => {
-        const copy = { ...prev };
-        if (next) copy[id] = next;
-        else delete copy[id];
-        return copy;
-      });
-    } else {
-      setSlotTune((prev) => {
-        const copy = { ...prev };
-        if (next) copy[id as SlotName] = next;
-        else delete copy[id as SlotName];
-        return copy;
-      });
-    }
-  }, []);
-
   // Centre of the main content panel, in world space. This is what the headset
   // should be levelled with in XR — the immersive counterpart of `readingLook`,
   // which aims the flat preview's OrbitControls at the same point. Panels are
@@ -439,7 +327,11 @@ export function XRSceneRenderer({
    * were on or which section it belonged to — see scene/desk-decor.tsx.
    */
   const deskReading = useMemo(() => {
-    if (viewMode !== undefined && viewMode !== "standard" && viewMode !== "carousel")
+    if (
+      viewMode !== undefined &&
+      viewMode !== "standard" &&
+      viewMode !== "carousel"
+    )
       return null;
     if (!plan || !mainPanelId) return null;
     const e = plan.entries[mainPanelId];
@@ -639,7 +531,9 @@ export function XRSceneRenderer({
           <>
             <span style={{ opacity: 0.4 }}> · </span>
             <span
-              style={{ color: aiReport.errors.length > 0 ? "#f6a623" : "#8b949e" }}
+              style={{
+                color: aiReport.errors.length > 0 ? "#f6a623" : "#8b949e",
+              }}
               title={
                 aiReport.errors.length > 0
                   ? aiReport.errors.join("\n")
@@ -687,12 +581,7 @@ export function XRSceneRenderer({
           replacement for it: the links and controls inside the scene are
           still canvas-drawn and remain out of reach, which is a larger piece
           of work than a label. */}
-      <div
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-        style={SR_ONLY}
-      >
+      <div role="status" aria-live="polite" aria-atomic="true" style={SR_ONLY}>
         {sceneDescription}
       </div>
 
@@ -702,21 +591,7 @@ export function XRSceneRenderer({
         aria-label={sceneLabel}
       >
         {/* ── Live panel tuning HUD (flat preview only) ───────────── */}
-        {sessionState !== "immersive" &&
-          parserBackend !== "flat" &&
-          tunerTargets.length > 0 && (
-            <PanelTuner
-              targets={tunerTargets}
-              overrides={tunerOverrides}
-              seedFor={seedFor}
-              sizeFor={sizeFor}
-              anchorFor={anchorFor}
-              deviceType={deviceType}
-              template={plan?.template}
-              viewMode={viewMode}
-              onChange={onTuneChange}
-            />
-          )}
+
         {/* ── Flat backend: raw HTML in a floating browser panel ───── */}
         {parserBackend === "flat" && html && (
           <div style={styles.flatOverlay}>
@@ -778,7 +653,10 @@ export function XRSceneRenderer({
                 "[xr] WebGL context lost — nothing can be drawn until it is " +
                   "restored. Another WebGL page in a second tab is the usual cause.",
               );
-              gl.xr.getSession()?.end().catch(() => {});
+              gl.xr
+                .getSession()
+                ?.end()
+                .catch(() => {});
             });
           }}
         >
@@ -835,7 +713,9 @@ export function XRSceneRenderer({
                     ? ROOMS_PREVIEW_FOV
                     : viewMode === "deck"
                       ? DECK_PREVIEW_FOV
-                      : DEFAULT_PREVIEW_FOV
+                      : viewMode === "wall"
+                        ? WALL_PREVIEW_FOV
+                        : DEFAULT_PREVIEW_FOV
                 }
               />
               {viewMode === "elevator" ? (
@@ -907,13 +787,6 @@ export function XRSceneRenderer({
                 <ThemeContext.Provider value={theme}>
                   <FontContext.Provider value={fontType}>
                     {/* Web2VR backend: CSS layout extracted from hidden iframe → 3D */}
-                    {parserBackend === "web2vr" && html && (
-                      <Web2VRScene
-                        html={html}
-                        url={url}
-                        layoutConfig={deviceProfile.layoutConfig}
-                      />
-                    )}
 
                     {parserBackend !== "web2vr" && scene && plan && (
                       <ReferenceFrameGroup
@@ -938,11 +811,34 @@ export function XRSceneRenderer({
                           setPage={setPage}
                           viewMode={viewMode}
                           onExternalNavigate={onExternalNavigate}
+                          onTraverse={onTraverse}
+                          onTraverseBack={onTraverseBack}
+                          onTraverseJump={onTraverseJump}
+                          nav={nav}
+                          pending={pending}
                           sourceUrl={url}
-                          ghostOverride={ghostTune}
                         />
                       </ReferenceFrameGroup>
                     )}
+
+                    {/* The travelled graph, in a corner of every view.
+                        Mounted HERE and not inside <ReferenceFrameGroup>: it
+                        anchors to the head in world space, and a reference
+                        frame that translates or rotates the scene would carry
+                        the panel off with it — the one surface that must stay
+                        true would be the one drawn in the wrong place. */}
+                    <Minimap
+                      nav={nav}
+                      viewMode={viewMode}
+                      onJump={onTraverseJump}
+                    />
+
+                    {/* "You are moving." Head-anchored beside the minimap and
+                        mounted OUTSIDE <ReferenceFrameGroup> for the same
+                        reason: it must not travel with the world it is
+                        reporting on. Every view gets it for free, on top of
+                        whatever its own geometry is doing. */}
+                    <TransitionMark pending={pending} />
 
                     {/* ── In-world browser chrome (replaces HTML overlays) ────
                       Tab switcher, horizontally centred on the content panel
@@ -954,13 +850,14 @@ export function XRSceneRenderer({
                       building rather than sitting at a panel, so a bar welded
                       under the main page would follow them into every room and
                       float loose in the middle of the space. */}
-                    {viewMode !== "rooms" &&
-                      tabs &&
-                      activeTabId &&
-                      onSwitchTab &&
-                      onCloseTab &&
-                      onNewTab &&
-                      null
+                    {
+                      viewMode !== "rooms" &&
+                        tabs &&
+                        activeTabId &&
+                        onSwitchTab &&
+                        onCloseTab &&
+                        onNewTab &&
+                        null
                       // <XR3DTabBar
                       //   tabs={tabs}
                       //   activeTabId={activeTabId}

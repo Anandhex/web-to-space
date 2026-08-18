@@ -86,6 +86,17 @@ export interface PagePlacementOptions {
    */
   sectionLinks?: SectionLink[][];
   /**
+   * rooms: every page's links, indexed BY PAGE.
+   *
+   * A corridor belongs to a page, and all of them are built with the building
+   * rather than summoned when the reader arrives — a reader walking a gallery
+   * needs to see which pages lead somewhere before choosing which to stand at.
+   * A page with no links has an empty entry and gets no corridor.
+   *
+   * Omitted means no corridors at all, which is what every other view passes.
+   */
+  pageLinks?: SectionLink[][];
+  /**
    * rooms only: where the reader is actually standing, when they have walked
    * somewhere the focused page did not put them. Only the dimming reads it —
    * placements themselves never move — so leaving it out simply dims from the
@@ -2147,8 +2158,8 @@ function rangeOf(
 
 /** Exhibits are life size: you walk up to a page, it does not grow for you. */
 const ROOM_PAGE_SCALE = 1;
-/** Gap between two pages hung side by side on the same wall. */
-const ROOM_PAGE_GAP = 0.12;
+/** What separates two pages when neither of them opens a corridor. */
+const ROOM_PAGE_MIN_GAP = 0.5;
 /** Half-width of the corridor between rooms. */
 const CORRIDOR_HALF = 1.45;
 /** Corridor in front of the first room — the building's entrance hall. */
@@ -2291,6 +2302,22 @@ interface Room {
   rows: number;
   range: SectionPageRange;
   label: string;
+  /**
+   * Centre z of each page row, and the bay after it.
+   *
+   * NOT a uniform pitch. A room used to space every page by a full bay whether
+   * or not it had a corridor to open, which made a forty-page document a
+   * building you could not walk the length of — "the rooms are getting longer
+   * unnecessarily". A row only gets a bay when one of its two pages actually
+   * has links; otherwise the next row follows at a hairline gap.
+   *
+   * `bayZ[r]` is where that row's corridor opening goes, or null when neither
+   * of its pages has one. BOTH walls' openings sit at that same z, so a facing
+   * pair of pages faces a facing pair of doorways rather than one near and one
+   * far.
+   */
+  rowZ: number[];
+  bayZ: (number | null)[];
 }
 
 /** A stretch of corridor past a room, whose walls carry that section's links. */
@@ -2356,6 +2383,20 @@ export function roomRailY(
 export interface SectionLink {
   label: string;
   href: string;
+  /**
+   * Which way this link goes (docs/directional-links.md). Optional so the
+   * placement side stays usable without the link layer, but supplied in
+   * practice — it decides which wall of the corridor the door is cut into,
+   * and the glyph the door's sign carries.
+   *
+   * "right"/"left" are siblings and take the corresponding corridor wall.
+   * "up" (a parent) and "down" (an external) have no wall of their own in a
+   * single-storey building; see `linkDoorsOf` for where they go and what is
+   * not built.
+   */
+  axis?: "up" | "down" | "left" | "right";
+  /** The way back. Drawn first, nearest the reader, and never reassigned. */
+  isReturn?: boolean;
 }
 
 /** Where the reader stands in the building, and which way they face. */
@@ -2364,11 +2405,20 @@ export interface ReaderPose {
   z: number;
   /** 0 looks down the corridor (−z); + turns left. */
   yaw: number;
-}
-
-/** Slot pitch: a page plus the gap that separates it from its neighbour. */
-function roomSlot(panel: { width: number }): number {
-  return panel.width * ROOM_PAGE_SCALE + ROOM_PAGE_GAP;
+  /**
+   * How far ABOVE the reading floor the reader is standing, metres.
+   *
+   * Continuous, not an integer storey. A storey index cannot represent
+   * "halfway up a flight", so with one the only way onto a landing was to be
+   * put there — which is the teleport Anand rejected. This is sampled from
+   * `walkSurfaceAt` every step, so walking onto a flight raises the reader
+   * tread by tread and walking off it sets them down on the landing.
+   *
+   * The BUILDING moves by it, not the reader (see `roomPoseTransform`), which
+   * keeps the reader at the origin where the XR recentre and the in-world
+   * chrome expect them.
+   */
+  rise?: number;
 }
 
 /**
@@ -2402,9 +2452,10 @@ function museumPlan(
   viewingDistance: number,
   linkCounts: number[],
   floorY: number,
+  /** Whether page `i` has links, and so needs a bay to open a corridor into. */
+  hasLinks: (page: number) => boolean = () => true,
 ): Museum {
   const spineX = panel.width / 2;
-  const step = roomSlot(panel);
   const rooms: Room[] = [];
   const stretches: LinkStretch[] = [];
   const doorPitch = linkDoorPitch();
@@ -2415,9 +2466,36 @@ function museumPlan(
     // Pages alternate right/left as they advance, so the room is as deep as
     // one side wall's worth of them.
     const rows = Math.max(1, Math.ceil(n / 2));
+
+    // ── Lay the rows out, giving a BAY only where one is needed ──
+    //
+    // A row is one page on each wall. It takes the page's own width, and then
+    // either a bay (when either of its pages has links, so a corridor opens
+    // off it) or a hairline gap (when neither does). Spacing every row by a
+    // full bay regardless is what made the building unwalkably long.
+    const pw = panel.width * ROOM_PAGE_SCALE;
+    const rowZ: number[] = [];
+    const bayZ: (number | null)[] = [];
+    let cursor = ROOM_WALL_MARGIN;
+    for (let r = 0; r < rows; r++) {
+      rowZ.push(cursor + pw / 2);
+      cursor += pw;
+      const pair = [range.start + 2 * r, range.start + 2 * r + 1].filter(
+        (pg) => pg <= range.end,
+      );
+      if (pair.some(hasLinks)) {
+        // The bay, and the opening at its centre — the SAME z for both walls,
+        // so a facing pair of pages gets a facing pair of doorways.
+        bayZ.push(cursor + BRANCH_PAGE_CLEAR + BRANCH_HALF);
+        cursor += 2 * BRANCH_HALF + 2 * BRANCH_PAGE_CLEAR;
+      } else {
+        bayZ.push(null);
+        cursor += ROOM_PAGE_MIN_GAP;
+      }
+    }
     const depth = Math.max(
       viewingDistance * ROOM_MIN_SPAN_D,
-      rows * step + 2 * ROOM_WALL_MARGIN,
+      cursor + ROOM_WALL_MARGIN,
     );
     const zNear = z;
     const zFar = z - depth;
@@ -2429,11 +2507,16 @@ function museumPlan(
       rows,
       range,
       label: range.label,
+      // Measured from zNear, which decreases into the room.
+      rowZ: rowZ.map((d) => zNear - d),
+      bayZ: bayZ.map((d) => (d === null ? null : zNear - d)),
     });
-    // The links of the section just read, hung down the next stretch: half on
-    // each wall, so the stretch is as long as one wall's worth of plates.
-    const perWall = Math.ceil((linkCounts[k] ?? 0) / 2);
-    const stretch = Math.max(LINK_STRETCH_MIN, perWall * doorPitch + 1.4);
+    // The stretch joining this room to the next. A fixed length now: the links
+    // used to hang here and sized it, and they have moved to the branch beside
+    // the page they belong to, so this is circulation and wants to be short.
+    void linkCounts;
+    void doorPitch;
+    const stretch = LINK_STRETCH_MIN;
     stretches.push({ sectionIndex: k, zNear: zFar, zFar: zFar - stretch });
     z = zFar - stretch;
   }
@@ -2463,7 +2546,6 @@ function roomCell(
 ): RoomCell {
   const pw = panel.width * ROOM_PAGE_SCALE;
   const ph = panel.height * ROOM_PAGE_SCALE;
-  const step = roomSlot(panel);
   const side: 1 | -1 = slot % 2 === 0 ? 1 : -1; // first page on the right
   const row = Math.floor(slot / 2);
   const zc = (room.zNear + room.zFar) / 2;
@@ -2473,7 +2555,7 @@ function roomCell(
       // Hung to the gallery centre line, NOT to the main panel's slot. See
       // ROOM_HANG_CENTRE for why that changed and what had to be true first.
       y: m.floorY + roomHangCentre(panel, m.floorY),
-      z: zc + ((room.rows - 1) / 2 - row) * step,
+      z: room.rowZ[row] ?? zc,
     },
     yaw: (-side * Math.PI) / 2, // faces across the room
     scale: ROOM_PAGE_SCALE,
@@ -2505,6 +2587,355 @@ function roomCellOf(
   return roomCell(m, room, page - room.range.start, panel);
 }
 
+// ── The links branches ──────────────────────────────────────
+//
+// A corridor of doors and stairs opening off the wall BESIDE EACH PAGE
+// (Anand, 2026-08-16: "next to the page not section" … "next to the page not
+// in the page" … "I want the corridors present irrespective whether the user
+// is standing on the page, they should be pre-rendered before not after
+// standing").
+//
+// So: EVERY page with links has one, built with the building rather than
+// summoned when the reader arrives. That is a departure from the spec, which
+// says only the page the reader is on has a live corridor — and it is the
+// right one for a view you WALK. A reader coming down a gallery needs to see
+// which pages lead somewhere before choosing which to stand at; a corridor
+// that only exists once you are already there cannot be part of that choice.
+// (The elevator and the wall still open one at a time; their readers are not
+// walking past anything.)
+//
+// Building them all also removes the hard part. The old single branch had to
+// hunt for a gap in a wall that was already full of pages, and the hunt
+// failed on a shallow room and put the opening through the page. Now every
+// page owns the BAY immediately after it, the room is built with those bays
+// in it, and the position is arithmetic rather than a search.
+
+/** Half-width of the branch corridor. It has to fit the bay between two pages. */
+const BRANCH_HALF = 1.05;
+/**
+ * Clear wall between a page's edge and the near jamb of its corridor.
+ *
+ * Read by `ROOM_PAGE_GAP`, which is `2 × BRANCH_HALF + 2 × BRANCH_PAGE_CLEAR`
+ * — the bay is sized to hold a corridor with this much wall either side of it,
+ * which is what makes "beside the page, never through it" arithmetic instead
+ * of a search that can fail.
+ */
+export const BRANCH_PAGE_CLEAR = 0.45;
+/** Shortest branch, so a page with one link still gets a corridor. */
+const BRANCH_MIN = 3.2;
+/** Clear run past the last door before the end wall. */
+const BRANCH_END_RUN = 1.6;
+/** Head height of the way in from the room. A doorway, not a missing wall. */
+const BRANCH_DOORWAY_H = 2.35;
+/**
+ * Clear WALL between one door and the next down a branch.
+ *
+ * A pier, not a gap — and it is the thing that makes the corridor a corridor.
+ * Tuned as a fraction of the spine's pitch it came out at 0.37 m, at which
+ * point the run reads as a colonnade of openings with slivers between them and
+ * the reader sees straight through to the void: "no boundary".
+ */
+const BRANCH_PIER = 0.95;
+/**
+ * The two long walls are STAGGERED by half a pitch.
+ *
+ * Facing each door with another door put every opening opposite an opening, so
+ * the two walls cancelled and a reader looking down the branch saw through both
+ * sides at once. Offsetting one wall faces every door with a pier.
+ */
+const BRANCH_STAGGER = 0.5;
+
+/**
+ * Floor-to-floor height of the building, metres.
+ *
+ * A storey is the wall height plus a slab, so the floor above starts where the
+ * ceiling below ends and a flight between them is a real climb rather than a
+ * step up onto a shelf.
+ */
+export const ROOM_STOREY_H = (ROOM_WALL_HEADROOM + 2.2) * 1.0 + 0.45;
+
+/**
+ * The flight at the end of a branch corridor.
+ *
+ * `STAIR_STEPS` risers of `ROOM_STOREY_H / STAIR_STEPS` on a `STAIR_GOING`
+ * tread, so the run on the floor is `STAIR_RUN`. Both the plan (which has to
+ * lengthen a corridor to hold its flights) and the geometry read these, and
+ * they disagreed silently while the numbers were written out twice.
+ *
+ * The up and the down flight sit SIDE BY SIDE across the corridor, not one
+ * beyond the other, so a corridor reserves ONE run at its end however many
+ * directions it serves — Anand, 2026-08-18: "the top and bottom stairs should
+ * be next to each other rather one in front and other in back". End to end
+ * they also read wrongly: the reader met the descending flight first and the
+ * ascending one four metres past it, when what the legend claims is that up
+ * and down are the same choice made at the same place.
+ */
+const STAIR_STEPS = 14;
+const STAIR_GOING = 0.29;
+const STAIR_RUN = STAIR_STEPS * STAIR_GOING;
+/** Clear floor at the foot of a flight, between it and the last door. */
+const STAIR_CLEAR = 0.3;
+/** Floor kept solid at the end a flight ARRIVES at — a stride, not a lip. */
+const STAIR_ARRIVE = 0.4;
+/** Balustrade round the opening a flight leaves in the floor it climbs through. */
+const STAIR_RAIL_H = 1.0;
+
+/**
+ * How high the floor is under the reader, metres above the reading floor.
+ *
+ * Flat almost everywhere. Across a flight's footprint it ramps, which is what
+ * makes the stair something you climb rather than something you are put on top
+ * of: the walk samples this every step and the reader rises with the treads.
+ *
+ * A flight is walked along its own axis, so the ramp is parameterised on the
+ * distance from its foot in that direction, clamped at both ends — before the
+ * foot you are on the corridor floor, past the head you are on the landing.
+ *
+ * ── Why it needs to know where the reader already is ──
+ *
+ * Three storeys share one footprint, so most of a branch has three floors over
+ * each other and (x, z) alone cannot say which one is underfoot. The first
+ * version answered "whichever is furthest from the reading floor", which is
+ * only ever right by accident: it dropped a reader off the up flight onto the
+ * landing BELOW the moment the two overlapped in plan, and it made the whole
+ * corridor at ±1 unreachable from the flight that leads to it.
+ *
+ * The surface is a function of the reader's CURRENT height as well as their
+ * position: of the floors over this spot, take the one nearest to where they
+ * are standing. Steps are small and the ramps continuous, so this follows a
+ * climb tread by tread, hands the reader to the landing at the top, and holds
+ * them on that landing while they walk its full length — and stepping back
+ * onto the flight is the only way down, which is what a stairwell is. Ties go
+ * to the flight, so the head of a stair yields to the stair and not to the
+ * landing it meets.
+ */
+export function walkSurfaceAt(
+  stairs: RoomStair[],
+  x: number,
+  z: number,
+  floorY: number,
+  fromRise = 0,
+): number {
+  // Every floor over this spot, and whether it insists.
+  let rise = 0;
+  let best = Infinity;
+  let onFlight = false;
+  const take = (h: number, insists = false) => {
+    const d = Math.abs(h - fromRise);
+    if (d < best || (insists && d <= best)) {
+      rise = h;
+      best = d;
+    }
+  };
+  for (const s of stairs) {
+    // The flight first: along its own axis, and across it.
+    const ax = Math.sin(s.yaw);
+    const az = Math.cos(s.yaw);
+    const dx = x - s.foot.x;
+    const dz = z - s.foot.z;
+    const along = dx * ax + dz * az;
+    const across = Math.abs(-dx * az + dz * ax);
+    const run = s.steps * s.going;
+    if (across <= s.width / 2 + 0.15 && along >= -0.2 && along <= run + 0.2) {
+      // Over a flight you are on the TREADS. The reading floor beneath them
+      // is not a surface here and neither is the flight's own landing: a
+      // flight is the hole in the floor it leads to, and offering the landing
+      // as well meant it won everywhere but the exact head, so a reader on the
+      // storey above walked over their own stairwell with no way back down.
+      onFlight = true;
+      take(
+        s.dir * ROOM_STOREY_H * Math.min(1, Math.max(0, along / Math.max(0.01, run))),
+        true,
+      );
+      continue;
+    }
+    // Otherwise the LANDING: the whole corridor at the top or bottom of a
+    // flight is floor, not merely the strip the flight is wide. This includes
+    // the ground over the OTHER direction's flight — a stairwell going down is
+    // a floor when you are standing a storey above it.
+    if (x >= s.landing.x0 && x <= s.landing.x1 && z >= s.landing.z0 && z <= s.landing.z1)
+      take(s.dir * ROOM_STOREY_H);
+  }
+  // …and the reading floor, underfoot everywhere a flight is not.
+  if (!onFlight) take(0);
+  return floorY + rise;
+}
+
+/** One flight, from the branch's floor to the landing above or below it. */
+export interface RoomStair {
+  page: number;
+  /** +1 climbs to the parents' landing, −1 descends to the externals'. */
+  dir: 1 | -1;
+  /** Foot of the flight, on the branch floor. */
+  foot: { x: number; y: number; z: number };
+  /** Head of it, on the landing — where the reader arrives. */
+  head: { x: number; y: number; z: number };
+  /** Bearing of the climb, so the treads face the way you walk up them. */
+  yaw: number;
+  /**
+   * Height of the flight's overhead sign, panel-anchor-relative.
+   *
+   * Derived here rather than in the renderer because only the plan knows how
+   * much room there is: a corridor's clear height is the wall headroom plus
+   * the floor's own drop, which moves with the page size, so a sign hung at a
+   * height written into the view sat inside the ceiling of a short document
+   * and halfway down the wall of a tall one. Just over the head of a link
+   * door, and never within a hand's breadth of the ceiling.
+   */
+  signY: number;
+  width: number;
+  steps: number;
+  /** Depth of one tread. `steps × going` is the flight's run on the floor. */
+  going: number;
+  /**
+   * The corridor this flight arrives on, in plan.
+   *
+   * The whole of it is floor at `head.y`. Without this the walking surface was
+   * only raised across the flight's own WIDTH, so a reader who stepped
+   * sideways on the landing — which is what walking to a door on either wall
+   * is — dropped back to the reading floor, and with it out of the storey
+   * whose walls were holding them. That is why the doors up there could not be
+   * reached.
+   */
+  landing: { x0: number; x1: number; z0: number; z1: number };
+}
+
+export interface LinkBranch {
+  /** Which page's corridor this is. */
+  page: number;
+  /** The room wall it opens through, and which side of the spine that is. */
+  wallX: number;
+  side: 1 | -1;
+  /** Centre of the opening down the wall — the middle of the page's own bay. */
+  zCentre: number;
+  length: number;
+  halfWidth: number;
+  /** x of the end wall that closes it. */
+  endX: number;
+  /** Siblings — this floor. */
+  links: SectionLink[];
+  /** Parents — the landing ABOVE, up the flight at the far end. */
+  up: SectionLink[];
+  /** Externals — the landing BELOW. */
+  down: SectionLink[];
+}
+
+/**
+ * Where the first door of a run stands, measured out from the room wall.
+ *
+ * A doorway cannot start ON the corner it turns, so the run is held off the
+ * wall by a pier's worth. `linkDoorsOf` hangs from here and `branchLength`
+ * measures from here; they were the same number written twice, and the copy in
+ * the length was missing, so every run of doors ended half a metre further out
+ * than the corridor had been built for — which put the last door of a storey
+ * inside the stairwell at the end of it, behind the balustrade, with no floor
+ * in front of it to stand on. Anand, 2026-08-18: "can't reach this door".
+ */
+const BRANCH_DOOR_START = 0.95;
+
+/** How far out a branch must run to hold `perWall` doors on its longer wall. */
+function branchLength(doorWidth: number, perWall: number): number {
+  const pitch = doorWidth + BRANCH_PIER;
+  return Math.max(
+    BRANCH_MIN,
+    BRANCH_DOOR_START +
+      (Math.max(1, perWall) - 1 + BRANCH_STAGGER) * pitch +
+      doorWidth / 2 +
+      BRANCH_END_RUN,
+  );
+}
+
+/**
+ * One branch per page that has links.
+ *
+ * The opening sits in the BAY AFTER the page — half a slot along the wall in
+ * the direction the pages advance — so it is beside its own page and clear of
+ * the next. `ROOM_PAGE_GAP` is sized for exactly this, and the room's depth
+ * carries one extra bay so the last page on a wall has one too.
+ */
+function branchesOf(
+  m: Museum,
+  pageLinks: SectionLink[][] | undefined,
+): LinkBranch[] {
+  if (!pageLinks) return [];
+  const out: LinkBranch[] = [];
+  for (const room of m.rooms) {
+    for (let page = room.range.start; page <= room.range.end; page++) {
+      const links = pageLinks[page];
+      if (!links || links.length === 0) continue;
+      const slot = page - room.range.start;
+      const side: 1 | -1 = slot % 2 === 0 ? 1 : -1;
+      const row = Math.floor(slot / 2);
+      // The bay this row was given. A page with links always has one — the
+      // room was laid out knowing it — so a missing bay means the plan and the
+      // link list disagree, and drawing a corridor into a wall that was never
+      // widened for it is worse than drawing none.
+      const bay = room.bayZ[row];
+      if (bay === null || bay === undefined) continue;
+      // ── One storey per direction ──
+      //
+      // Siblings are the same level and stay on this floor. Parents are UP and
+      // externals are DOWN, and in a building that means a flight of stairs at
+      // the end of the corridor and a landing at the top and bottom of it
+      // (Anand's floor plan, 2026-08-16: 0f / 1f / 2f, the dark and light
+      // blocks being the two flights).
+      //
+      // Which is the same legend the whole design uses, finally built out of
+      // the material the view is made of rather than approximated by a door
+      // with treads painted in front of it.
+      const siblings = links.filter((l) => l.axis === "left" || l.axis === "right");
+      const up = links.filter((l) => l.axis === "up");
+      const down = links.filter((l) => l.axis === "down");
+      const perWall = Math.max(
+        siblings.filter((l) => l.axis === "right").length,
+        siblings.filter((l) => l.axis === "left").length,
+        Math.ceil(up.length / 2),
+        Math.ceil(down.length / 2),
+      );
+      const wallX = m.spineX + side * (room.width / 2);
+      // Long enough for its doors AND for the flights at the end of it — a
+      // stair that starts past the end wall is a stair in the open air.
+      const flights = up.length > 0 || down.length > 0;
+      const length =
+        branchLength(m.doorSize.width, perWall) +
+        (flights ? STAIR_RUN + STAIR_CLEAR : 0);
+      out.push({
+        page,
+        wallX,
+        side,
+        // The bay belongs to the ROW, not to one page, so the openings for a
+        // facing pair land at the same z — Anand, 2026-08-16: "I want the
+        // corridor opening of page 2 at same position as the page 3". One
+        // doorway in each wall, opposite each other, the way a corridor with
+        // rooms off both sides actually reads.
+        zCentre: bay,
+        length,
+        halfWidth: BRANCH_HALF,
+        endX: wallX + side * length,
+        links: siblings,
+        up,
+        down,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The branches, for callers that need to reason about the corridors rather
+ * than draw them — the walk (to know where a corridor runs) and the offline
+ * checks (to assert it does not cross its own page).
+ */
+export function computeLinkBranches(
+  mode: PageDistribution,
+  pageCount: number,
+  panel: { width: number; height: number },
+  opts: PagePlacementOptions = {},
+): LinkBranch[] {
+  if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return [];
+  return branchesOf(planFor(pageCount, panel, opts), opts.pageLinks);
+}
+
 /** The plan every rooms entry point works from, built from the same options. */
 function planFor(
   pageCount: number,
@@ -2518,6 +2949,8 @@ function planFor(
     opts.viewingDistance ?? 1.2,
     ranges.map((_, i) => opts.sectionLinks?.[i]?.length ?? 0),
     opts.floorY ?? -panel.height * 2,
+    // A page only earns a bay when it has a corridor to open into it.
+    (page) => (opts.pageLinks?.[page]?.length ?? 0) > 0,
   );
 }
 
@@ -2703,8 +3136,18 @@ export function roomWalkStep(
   floorY: number,
   radius = WALK_RADIUS,
 ): { x: number; z: number } {
+  // A wall is solid to this reader when it SPANS their floor.
+  //
+  // The base test alone was enough while the building had one storey. It is
+  // not now: a wall on the landing BELOW has its base under the reading floor
+  // and passed, so the reader was stopped on the reading floor by a wall one
+  // storey down — collision is worked in plan, and in plan the two are the
+  // same line. Requiring the wall to reach ABOVE the floor as well drops both
+  // the storey below and the storey above.
   const solid = walls.filter(
-    (w) => w.centre.y - w.size.height / 2 <= floorY + 0.05,
+    (w) =>
+      w.centre.y - w.size.height / 2 <= floorY + 0.05 &&
+      w.centre.y + w.size.height / 2 > floorY + 0.05,
   );
   const clear = (x: number, z: number) => {
     for (const w of solid) if (wallDistance(w, x, z) < radius) return false;
@@ -2961,7 +3404,15 @@ export interface RoomWall {
    * into — walking into it is how you go through it (see `useRoomWalking`),
    * and clicking it does the same.
    */
-  portal?: { href: string; label: string; sectionIndex: number };
+  portal?: {
+    href: string;
+    label: string;
+    sectionIndex: number;
+    /** Which way the door goes — see SectionLink.axis. */
+    axis?: "up" | "down" | "left" | "right";
+    /** The reserved way back, drawn as such. */
+    isReturn?: boolean;
+  };
   /**
    * True for the piece OVER a doorway. It is not an obstacle — you walk under
    * it — and the renderer picks it out in the trim colour, which is what
@@ -3043,7 +3494,6 @@ export function computeRoomShell(
   // Pages hang with their tops on the panel-anchor line and their feet a page
   // height below, so a wall runs from the floor to a head above the tops.
   const floorY = opts.floorY ?? -panel.height * 2;
-  const topY = ROOM_WALL_HEADROOM;
   const out: RoomWall[] = [];
   const run = (
     from: { x: number; z: number },
@@ -3053,10 +3503,23 @@ export function computeRoomShell(
     hangs = false,
   ) =>
     out.push(
-      ...wallRun(from, to, yaw, doors, floorY, topY).map((w) =>
+      // Floor to FLOOR here too, for the same reason the branch storeys do it
+      // (see `storey`): a reader on a landing looks down the well and along
+      // the storey below, over the tops of its walls, and everything above a
+      // wall that stopped at the ceiling was a band of black at the end of
+      // every corridor. The ceiling slab hides the extra height from anyone
+      // standing in the space itself.
+      ...wallRun(from, to, yaw, doors, floorY, floorY + ROOM_STOREY_H).map((w) =>
         hangs && !w.lintel ? { ...w, hangs: true } : w,
       ),
     );
+
+  // Every page's branch. The openings have to be cut into the room's side
+  // walls as those walls are built, which is why they are resolved before the
+  // rooms loop rather than added after it.
+  const branches = branchesOf(m, opts.pageLinks);
+  const stairs = computeRoomStairs(mode, pageCount, panel, opts);
+  const doors = linkDoorsOf(m, opts, floorY);
 
   for (const room of m.rooms) {
     const left = m.spineX - room.width / 2;
@@ -3066,27 +3529,224 @@ export function computeRoomShell(
     // and, at the far end, the one you leave by.
     run({ x: left, z: room.zNear }, { x: right, z: room.zNear }, Math.PI, door);
     run({ x: left, z: room.zFar }, { x: right, z: room.zFar }, 0, door);
-    // The side walls the pages hang on.
+
+    // The side walls the pages hang on — with an opening for every branch that
+    // leaves through them. `wallRun` measures a doorway from the run's start,
+    // and a side wall runs zNear → zFar (decreasing z), so the openings have to
+    // be sorted along that direction or the run walks backwards over itself.
+    const sideOpenings = (wallX: number) =>
+      branches
+        .filter(
+          (b) =>
+            Math.abs(b.wallX - wallX) < 0.01 &&
+            b.zCentre <= room.zNear &&
+            b.zCentre >= room.zFar,
+        )
+        .map((b) => ({
+          at: room.zNear - b.zCentre,
+          // A DOORWAY, not a missing wall.
+          //
+          // With no height `wallRun` cuts the opening floor-to-ceiling, so the
+          // way into a corridor was a full-height gap the width of the corridor
+          // itself — an entrance frame bigger than the space behind it, which
+          // reads as a hole in the room rather than a way through. A doorway is
+          // door-height and a little narrower than the corridor, which leaves
+          // reveals either side and lets the corridor read as the wider thing.
+          width: b.halfWidth * 2 - 0.5,
+          height: BRANCH_DOORWAY_H,
+        }))
+        .sort((a, b) => a.at - b.at);
     run(
       { x: left, z: room.zNear },
       { x: left, z: room.zFar },
       Math.PI / 2,
-      [],
+      sideOpenings(left),
       true,
     );
     run(
       { x: right, z: room.zNear },
       { x: right, z: room.zFar },
       -Math.PI / 2,
-      [],
+      sideOpenings(right),
       true,
     );
   }
 
-  // The corridor: the lobby in front of the first room, then the stretch of
-  // links past each one. Both walls, facing in, with the section's link doors
-  // cut into them.
-  const doors = linkDoorsOf(m, opts, floorY);
+  // ── The branches, and the landings above and below them ──
+  //
+  // A corridor per STOREY, all on the same footprint: siblings on the reading
+  // floor, parents on the landing one up, externals one down, with the flights
+  // at the far end joining them (`computeRoomStairs`).
+  //
+  // Openings are measured from each run's start and must be SORTED along it.
+  // Unsorted, a run walks backwards over itself and emits overlapping and
+  // negative-width pieces — invisible with one door, and most of the wall with
+  // a dozen.
+  for (const branch of branches) {
+    const zNear = branch.zCentre + branch.halfWidth;
+    const zFar = branch.zCentre - branch.halfWidth;
+    const mine = doors.filter((d) => d.sectionIndex === branch.page);
+
+    const storey = (level: number) => {
+      const fy = floorY + level * ROOM_STOREY_H;
+      // Floor to FLOOR, not floor to ceiling. Everything above the ceiling
+      // slab is hidden by it from inside the corridor — except through the
+      // stairwell, which is the one place a reader sees the band between one
+      // storey's ceiling and the next one's floor. Stopping at the ceiling
+      // left that band unwalled, so a flight climbed past a metre of black
+      // void on both sides. It stops exactly ON the next floor, which is what
+      // keeps `roomWalkStep`'s "a wall is solid to the storey it spans" test
+      // from handing this storey's piers to the reader on the one above.
+      const ty = fy + ROOM_STOREY_H;
+      const at = mine.filter(
+        (d) => Math.abs(d.centre.y - (fy + d.size.height / 2)) < 0.01,
+      );
+      for (const z of [zNear, zFar]) {
+        const wallDoors = at
+          .filter((d) => Math.abs(d.centre.z - z) < 0.01)
+          .map((d) => ({
+            at: Math.abs(d.centre.x - branch.wallX),
+            width: d.size.width,
+            height: d.size.height,
+          }))
+          .sort((a, b) => a.at - b.at);
+        out.push(
+          ...wallRun(
+            { x: branch.wallX, z },
+            { x: branch.endX, z },
+            // A wall's yaw states which way it FACES, and `wallRun` stamps it
+            // on every piece: the along-direction is (cos y, −sin y) and the
+            // normal is (sin y, cos y).
+            //
+            // These two run along X, so their yaw is 0 or π — the near wall
+            // faces −z into the corridor, the far wall faces +z. They were
+            // ±π/2, which declares a wall running along Z: every piece was
+            // turned a quarter, so its face pointed down the corridor instead
+            // of across it, and a single-sided plane seen edge-on is nothing at
+            // all. That is why the reader looked straight through both walls,
+            // through the void between corridors, and into the next one — the
+            // "colonnade of frames receding for ever".
+            z === zNear ? Math.PI : 0,
+            wallDoors,
+            fy,
+            ty,
+          ),
+        );
+      }
+      // The end wall closes the run.
+      out.push(
+        ...wallRun(
+          { x: branch.endX, z: zNear },
+          { x: branch.endX, z: zFar },
+          branch.side === 1 ? -Math.PI / 2 : Math.PI / 2,
+          [],
+          fy,
+          ty,
+        ),
+      );
+      // A LANDING is a dead end but for its stair, so it also needs a wall
+      // where the corridor below meets the room. On the reading floor that is
+      // the doorway the reader came through and must stay open.
+      if (level !== 0)
+        out.push(
+          ...wallRun(
+            { x: branch.wallX, z: zNear },
+            { x: branch.wallX, z: zFar },
+            branch.side === 1 ? Math.PI / 2 : -Math.PI / 2,
+            [],
+            fy,
+            ty,
+          ),
+        );
+    };
+
+    storey(0);
+    if (branch.up.length > 0) storey(1);
+    if (branch.down.length > 0) storey(-1);
+
+    // ── The balustrade round the stairwell ──
+    //
+    // A flight leaves an opening in the floor it passes through, and an
+    // opening with nothing round it is a hole. Two things went wrong without
+    // one. Standing on the floor above, the well was a rectangle of the storey
+    // below let into the floor — Anand, 2026-08-18: "there is a gap". And from
+    // halfway up a flight the reader's head came through that opening at floor
+    // level with nothing beside it, so they looked straight out ACROSS the
+    // landing they were climbing to and down the well at the same time: "i can
+    // see the other side from the stairs part". A stairwell in a building is
+    // enclosed — that enclosure is what makes a flight a shaft you climb
+    // through rather than a plank over a gap.
+    //
+    // Waist high, on the two sides that are open floor: the long side facing
+    // the walkway (the other long side is the corridor wall, a hand's breadth
+    // away) and the end the flight does NOT arrive at. Being walls, they are
+    // also solid to `roomWalkStep`, so a reader on the landing can no longer
+    // step sideways off it into the well.
+    for (const st of stairs) {
+      if (st.page !== branch.page) continue;
+      const ax = Math.sin(st.yaw);
+      const run = st.steps * st.going;
+      const up = st.dir === 1;
+      // The opening, in the floor the flight passes through: the shaft of
+      // `computeRoomSlabs`, which these have to agree with piece for piece.
+      const a0 = up ? -0.25 : STAIR_ARRIVE;
+      const a1 = up ? run - STAIR_ARRIVE : run + 0.25;
+      const across = st.width + 0.04;
+      const yOpen = floorY + (up ? ROOM_STOREY_H : 0);
+      const xA = st.foot.x + ax * a0;
+      const xB = st.foot.x + ax * a1;
+      // Which side of the corridor the flight is on, and so which of its long
+      // sides faces the walkway.
+      const inward = st.foot.z > branch.zCentre ? -1 : 1;
+      const zRail = st.foot.z + inward * (across / 2);
+      // ── The long side is a WALL, not a rail ──
+      //
+      // It runs from the floor the flight starts on all the way up to a
+      // balustrade's height above the floor it arrives at: a stair channel
+      // below, a parapet above, one surface.
+      //
+      // A rail that stood only on the upper floor left the flight climbing
+      // through open corridor beneath it — halfway up, the reader was in the
+      // air above the storey below with its whole length beside them and the
+      // landing above over the rail, both at once (Anand, 2026-08-18: "it is
+      // mid cliimb"). A stairwell is a channel you climb through, and the two
+      // halves of it are the same wall.
+      //
+      // It is solid to the storey below as well, so from that corridor the
+      // stair is a thing you walk to the end of and turn into, rather than a
+      // slope anybody can wander sideways onto.
+      const yFoot = floorY + (up ? 0 : -ROOM_STOREY_H);
+      out.push(
+        ...wallRun(
+          { x: xA, z: zRail },
+          { x: xB, z: zRail },
+          inward === 1 ? 0 : Math.PI,
+          [],
+          yFoot,
+          yOpen + STAIR_RAIL_H,
+        ),
+      );
+      // …and across the end the reader neither steps on to nor off at: the
+      // foot end of a climb (its head is the way off), the head end of a
+      // descent (its foot is the way on).
+      const xEnd = up ? xA : xB;
+      out.push(
+        ...wallRun(
+          { x: xEnd, z: st.foot.z - across / 2 },
+          { x: xEnd, z: st.foot.z + across / 2 },
+          branch.side === 1 ? -Math.PI / 2 : Math.PI / 2,
+          [],
+          yOpen,
+          yOpen + STAIR_RAIL_H,
+        ),
+      );
+    }
+  }
+
+  // The spine: the lobby in front of the first room, then the stretch joining
+  // each room to the next. Plain walls now — the links moved off the spine and
+  // into the branch beside the page they belong to, so what is left here is
+  // circulation and nothing else.
   const spans: { zNear: number; zFar: number }[] = [
     { zNear: m.zStart, zFar: ROOM_Z0 },
     ...m.stretches.map((s) => ({ zNear: s.zNear, zFar: s.zFar })),
@@ -3094,23 +3754,7 @@ export function computeRoomShell(
   for (const s of spans) {
     for (const side of [-1, 1] as const) {
       const x = m.spineX + side * CORRIDOR_HALF;
-      const yaw = (-side * Math.PI) / 2;
-      const mine = doors.filter(
-        (d) =>
-          Math.abs(d.centre.x - x) < 0.01 &&
-          d.centre.z <= s.zNear &&
-          d.centre.z >= s.zFar,
-      );
-      run(
-        { x, z: s.zNear },
-        { x, z: s.zFar },
-        yaw,
-        mine.map((d) => ({
-          at: s.zNear - d.centre.z,
-          width: d.size.width,
-          height: d.size.height,
-        })),
-      );
+      run({ x, z: s.zNear }, { x, z: s.zFar }, (-side * Math.PI) / 2);
     }
   }
   // THE TWO ENDS OF THE BUILDING. Every space is walled along its sides and
@@ -3133,11 +3777,18 @@ export function computeRoomShell(
     out.push({
       centre: { ...d.centre },
       yaw: d.yaw,
-      size: { ...d.size },
+      // The leaf is cut slightly PROUD of its opening. Sized exactly to the
+      // hole it fills, a plane leaves a hairline at every jamb and head, and a
+      // hairline onto nothing reads as a black wedge — which at a grazing
+      // angle down a corridor of a dozen doors is most of what the reader
+      // sees. The overlap is hidden by the architrave either way.
+      size: { width: d.size.width + 0.06, height: d.size.height + 0.04 },
       portal: {
         href: d.href,
         label: d.label,
         sectionIndex: d.sectionIndex,
+        axis: d.axis,
+        isReturn: d.isReturn,
       },
     });
   }
@@ -3171,6 +3822,143 @@ export function computeRoomSlabs(
   space(m.zStart, ROOM_Z0, CORRIDOR_HALF * 2);
   for (const room of m.rooms) space(room.zNear, room.zFar, room.width);
   for (const s of m.stretches) space(s.zNear, s.zFar, CORRIDOR_HALF * 2);
+
+  // The branches run ACROSS the spine rather than along it, so each needs its
+  // own pair rather than another `space()` — without them the reader walks out
+  // of the room and off the edge of the world.
+  //
+  // Each is extended half a metre back THROUGH the room wall so its floor and
+  // the room's overlap at the threshold. Butted exactly to the wall they left
+  // a hairline of nothing at the join, which reads as a black seam across the
+  // doorway — and at a grazing angle as a hole.
+  //
+  // One pair per STOREY: the branch itself, and the landings above and below
+  // it that the flights at its far end lead to.
+  // ── The shafts a flight passes through ──
+  //
+  // A flight climbs from one storey to the next, so it crosses the ceiling of
+  // the one it leaves and the floor of the one it reaches. Without a hole in
+  // both it climbs into a slab: the reader walks up and hits the underside of
+  // the landing, which is why the floor above "did not exist" — it did, it was
+  // capping the stairwell.
+  //
+  // `RoomSlab` is a single quad with no hole of its own, so an opening is made
+  // by emitting the pieces AROUND it.
+  const shafts = computeRoomStairs(mode, pageCount, panel, opts).map((st) => {
+    const ax = Math.sin(st.yaw);
+    const az = Math.cos(st.yaw);
+    const run = st.steps * st.going;
+    const up = st.dir === 1;
+    // ── Where the hole starts and stops along the flight ──
+    //
+    // Open at the end the reader LEAVES, so there is head-room stepping on,
+    // and closed a tread short of the end they ARRIVE at, so they arrive on
+    // floor rather than stepping off the top step into the shaft.
+    //
+    // Which end is which turns on the direction. Climbing, the flight leaves
+    // at its foot and lands on the slab at its head; descending, it leaves
+    // through the floor at its foot and lands at the bottom — so the bounds
+    // mirror, and a single pair of them (written for the up case) had the
+    // down flight cutting the floor it arrives on and leaving the floor it
+    // departs through solid.
+    //
+    // The arrival margin is a real stride, and the shaft is padded ACROSS the
+    // flight but never ALONG it: a padding of 0.15 m at both ends of a margin
+    // of 0.17 m left three centimetres of floor to arrive on, so the reader
+    // stood at the head of the flight with the opening under their heels.
+    const a0 = up ? -0.25 : STAIR_ARRIVE;
+    const a1 = up ? run - STAIR_ARRIVE : run + 0.25;
+    const cAlong = (a0 + a1) / 2;
+    const lenAlong = a1 - a0;
+    // Across, the opening is the flight and a hair more. It was the flight
+    // plus 0.3 m, which left a 15 cm slot of open floor down each side of a
+    // descending flight — a gap in the corridor floor beside the stair, doing
+    // nothing but showing the storey below through it.
+    const across = st.width + 0.04;
+    return {
+      x: st.foot.x + ax * cAlong,
+      z: st.foot.z + az * cAlong,
+      w: Math.abs(ax) * lenAlong + Math.abs(az) * across,
+      d: Math.abs(az) * lenAlong + Math.abs(ax) * across,
+      // ── Which slabs it cuts ──
+      //
+      // Only the ones it passes THROUGH, never the one it arrives on. An up
+      // flight cuts everything above its foot up to and including the floor it
+      // comes through; a down flight cuts the floor it drops through and the
+      // ceiling below, and stops short of the floor it lands on.
+      //
+      // The down bounds were the up ones with the signs swapped, which is not
+      // the same thing: they cut the landing's own floor and left both the
+      // slab the flight drops through and the ceiling below it solid — so an
+      // external's landing was a hole and the descent hit a lid.
+      lo: up ? st.foot.y + 0.05 : st.head.y + 0.05,
+      hi: up ? st.head.y + 0.05 : st.foot.y + 0.05,
+    };
+  });
+
+  /** A slab, minus any shaft that passes through it. Up to four pieces. */
+  const slab = (
+    centre: { x: number; y: number; z: number },
+    size: { width: number; depth: number },
+    facing: "up" | "down",
+  ) => {
+    const hole = shafts.find(
+      (h) =>
+        centre.y > h.lo &&
+        centre.y < h.hi &&
+        Math.abs(h.x - centre.x) < size.width / 2 + h.w / 2 &&
+        Math.abs(h.z - centre.z) < Math.abs(size.depth) / 2 + h.d / 2,
+    );
+    if (!hole) {
+      out.push({ centre, size, facing });
+      return;
+    }
+    const x0 = centre.x - size.width / 2;
+    const x1 = centre.x + size.width / 2;
+    const z0 = centre.z - Math.abs(size.depth) / 2;
+    const z1 = centre.z + Math.abs(size.depth) / 2;
+    const hx0 = Math.max(x0, hole.x - hole.w / 2);
+    const hx1 = Math.min(x1, hole.x + hole.w / 2);
+    const hz0 = Math.max(z0, hole.z - hole.d / 2);
+    const hz1 = Math.min(z1, hole.z + hole.d / 2);
+    const piece = (a: number, b: number, c: number, d: number) => {
+      if (b - a < 0.01 || d - c < 0.01) return;
+      out.push({
+        centre: { x: (a + b) / 2, y: centre.y, z: (c + d) / 2 },
+        size: { width: b - a, depth: d - c },
+        facing,
+      });
+    };
+    piece(x0, hx0, z0, z1); // before the shaft
+    piece(hx1, x1, z0, z1); // after it
+    piece(hx0, hx1, z0, hz0); // beside it, near
+    piece(hx0, hx1, hz1, z1); // beside it, far
+  };
+
+  for (const branch of branchesOf(m, opts.pageLinks)) {
+    const overlap = 0.5;
+    // The slab runs UNDER the walls, not up to them.
+    //
+    // A floor whose edge lands exactly on the wall's centre line leaves a
+    // sliver of nothing at every pier base, and a sliver onto nothing is a
+    // black wedge — which down a corridor of a dozen piers is most of what the
+    // reader sees at a grazing angle. The ceiling has the same seam above every
+    // door head. A third of a metre of overrun buries both.
+    const under = 0.34;
+    const size = {
+      width: branch.length + overlap + under,
+      depth: branch.halfWidth * 2 + under,
+    };
+    const x = (branch.wallX + branch.endX) / 2 - (branch.side * overlap) / 2;
+    const levels: number[] = [0];
+    if (branch.up.length > 0) levels.push(1);
+    if (branch.down.length > 0) levels.push(-1);
+    for (const level of levels) {
+      const dy = level * ROOM_STOREY_H;
+      slab({ x, y: floorY + dy, z: branch.zCentre }, size, "up");
+      slab({ x, y: topY + dy, z: branch.zCentre }, size, "down");
+    }
+  }
   return out;
 }
 
@@ -3337,25 +4125,139 @@ function linkDoorsOf(
   floorY: number,
 ): LinkDoor[] {
   const out: LinkDoor[] = [];
-  if (!opts.sectionLinks) return out;
-  for (const stretch of m.stretches) {
-    const links = opts.sectionLinks[stretch.sectionIndex] ?? [];
-    links.forEach((link, i) => {
-      // Doors alternate walls and march down the stretch in pairs.
-      const side: 1 | -1 = i % 2 === 0 ? 1 : -1;
-      const row = Math.floor(i / 2);
-      out.push({
-        ...link,
-        sectionIndex: stretch.sectionIndex,
-        centre: {
-          x: m.spineX + side * CORRIDOR_HALF,
-          y: floorY + m.doorSize.height / 2,
-          z: stretch.zNear - 1.1 - row * m.doorPitch,
-        },
-        yaw: (-side * Math.PI) / 2, // faces the corridor
-        size: { ...m.doorSize },
+  const pitch = m.doorSize.width + BRANCH_PIER;
+
+  for (const branch of branchesOf(m, opts.pageLinks)) {
+    const rightWallZ = branch.zCentre - branch.side * branch.halfWidth;
+    const leftWallZ = branch.zCentre + branch.side * branch.halfWidth;
+
+    /**
+     * Hang a list down the two long walls of one storey.
+     *
+     * The left-hand wall is staggered half a pitch, so every door faces a PIER
+     * rather than another door — two walls of paired openings cancel and the
+     * reader sees straight through both sides into the void.
+     */
+    const hang = (list: SectionLink[], level: number) => {
+      const y = floorY + level * ROOM_STOREY_H + m.doorSize.height / 2;
+      const half = Math.ceil(list.length / 2);
+      list.forEach((link, i) => {
+        const onRight = i < half;
+        const row = onRight ? i : i - half;
+        const stagger = onRight ? 0 : BRANCH_STAGGER;
+        out.push({
+          ...link,
+          sectionIndex: branch.page,
+          centre: {
+            x:
+              branch.wallX +
+              branch.side * (BRANCH_DOOR_START + (row + stagger) * pitch),
+            y,
+            z: onRight ? rightWallZ : leftWallZ,
+          },
+          // Faces across the branch, into it.
+          yaw: onRight === (branch.side === 1) ? 0 : Math.PI,
+          size: { ...m.doorSize },
+        });
       });
-    });
+    };
+
+    // Siblings on the reading floor; parents on the landing above; externals
+    // on the one below. The legend, finally built out of storeys.
+    hang(branch.links, 0);
+    hang(branch.up, 1);
+    hang(branch.down, -1);
+  }
+  return out;
+}
+
+/**
+ * The flights joining a branch to its landings.
+ *
+ * At the far end of the corridor, SIDE BY SIDE across it: up on one half of
+ * the width, down on the other, both climbing out along the branch from the
+ * same line. `BRANCH_END_RUN` is the clear run reserved for exactly this — the
+ * reader walks past the siblings, reaches the end, and chooses to go up or
+ * down at the same place, which is what the legend claims and what the end of
+ * a corridor is for in a building.
+ *
+ * They used to be laid END TO END, the down flight first and the up one a full
+ * run beyond it, on the grounds that half a corridor each was not wide enough
+ * to walk. Half of 2.1 m is a domestic stair, so it is; and end to end cost
+ * two things that mattered more — the corridor grew by a second run it did not
+ * need, and the two directions stopped being one choice made at one place.
+ */
+export function computeRoomStairs(
+  mode: PageDistribution,
+  pageCount: number,
+  panel: { width: number; height: number },
+  opts: PagePlacementOptions = {},
+): RoomStair[] {
+  if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return [];
+  const m = planFor(pageCount, panel, opts);
+  const floorY = opts.floorY ?? -panel.height * 2;
+  const out: RoomStair[] = [];
+  for (const branch of branchesOf(m, opts.pageLinks)) {
+    // ── A flight climbs ALONG the corridor, on HALF of its width ──
+    //
+    // It used to be a narrow thing set across the corridor and turned by the
+    // wall's bearing, which drew as a plank stuck to the wall and put its sign
+    // on back to front. A stair runs the way you walk: up the corridor, so you
+    // meet it head-on and climb.
+    //
+    // Half the width even when a corridor has only one flight, because the
+    // other half is the LANDING PAST THE SHAFT. A flight the full width of the
+    // corridor makes a stairwell the full width of the corridor, and a reader
+    // who climbed it stood at the head with the opening between them and every
+    // door on that storey: the only way back was down the stair they had just
+    // come up. Anand, 2026-08-18: "when I go up I can't reach the end".
+    // `STAIR_CLEAR` is the gap between the last door of the run and the first
+    // riser, so it is measured from the DOOR end, not taken off the far end:
+    // subtracting it here as well as adding it to the corridor's length made
+    // the corridor longer at both ends and left the foot exactly on the last
+    // door's jamb.
+    const start = branch.endX - branch.side * (BRANCH_END_RUN + STAIR_RUN);
+    const headX = start + branch.side * STAIR_RUN;
+    for (const dir of [1, -1] as const) {
+      const list = dir === 1 ? branch.up : branch.down;
+      if (list.length === 0) continue;
+      const width = branch.halfWidth * 0.9;
+      // Up on the +z half, down on the −z half — a fixed convention, so the
+      // same direction is on the same hand in every corridor of the building.
+      const zOff = (dir === 1 ? 1 : -1) * branch.halfWidth * 0.5;
+      out.push({
+        page: branch.page,
+        dir,
+        foot: { x: start, y: floorY, z: branch.zCentre + zOff },
+        head: {
+          x: headX,
+          y: floorY + dir * ROOM_STOREY_H,
+          z: branch.zCentre + zOff,
+        },
+        // The bearing the flight is CLIMBED in, which is out along the branch.
+        yaw: branch.side === 1 ? Math.PI / 2 : -Math.PI / 2,
+        signY: Math.min(floorY + LINK_DOOR_H + 0.18, ROOM_WALL_HEADROOM - 0.16),
+        width,
+        steps: STAIR_STEPS,
+        going: STAIR_GOING,
+        // ── The landing is the WHOLE corridor at that level ──
+        //
+        // Not the patch beyond the head, which is what it was. The doors of a
+        // direction hang the full length of its storey, from the room wall
+        // outward (`linkDoorsOf`), so a reader who arrived at the top could
+        // stand on the last metre and a half of a corridor whose doors were
+        // all behind them, over the void — Anand, 2026-08-18: "when I go up I
+        // can't reach the end". Above and below the reading floor the whole
+        // footprint is floor, and `walkSurfaceAt` picks between the three by
+        // which one the reader is already standing on.
+        landing: {
+          x0: Math.min(branch.wallX, branch.endX),
+          x1: Math.max(branch.wallX, branch.endX),
+          z0: branch.zCentre - branch.halfWidth,
+          z1: branch.zCentre + branch.halfWidth,
+        },
+      });
+    }
   }
   return out;
 }
@@ -3423,7 +4325,11 @@ export function roomPoseTransform(
   return {
     position: {
       x: station.x - (pose.x * c + pose.z * s),
-      y: 0,
+      // Height is something the BUILDING moves by, not something the reader
+      // climbs: going up a flight means the world comes down. That keeps the
+      // reader at the origin, which is where the XR recentre and every piece
+      // of in-world chrome expect them to be.
+      y: -(pose.rise ?? 0),
       z: station.z - (-pose.x * s + pose.z * c),
     },
     yaw,

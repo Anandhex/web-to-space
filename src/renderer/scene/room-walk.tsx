@@ -36,9 +36,14 @@ import { GALLERY_DOOR, GALLERY_SIGN } from "./room-decor";
 import { useTheme } from "../theme";
 import { FontContext } from "./contexts";
 import { NavigateContext } from "../primitives/contexts";
+import { useTraversal } from "./contexts";
+import { markForAxis } from "./link-doors";
 import {
   roomPoseTransform,
   ROOM_EYE_HEIGHT,
+  ROOM_STOREY_H,
+  walkSurfaceAt,
+  type RoomStair,
   roomFloorContains,
   roomTeleportPath,
   roomWalkStep,
@@ -148,6 +153,7 @@ export function RoomWalk({
       e.x = t.x;
       e.z = t.z;
       e.yaw = t.yaw;
+      e.rise = t.rise;
       apply(e);
       return;
     }
@@ -171,6 +177,21 @@ export function RoomWalk({
     while (dyaw < -Math.PI) dyaw += 2 * Math.PI;
     if (Math.abs(dyaw) < MORPH_EPS) e.yaw = t.yaw;
     else e.yaw += dyaw * a;
+
+    // ── The climb ──
+    //
+    // `rise` has to be eased along with x and z or the reader never actually
+    // goes up: the walk was writing a new height onto the target pose every
+    // step and this loop was easing everything EXCEPT that, so the transform
+    // kept using a rise of zero and the flight was a ramp the reader walked
+    // through rather than up.
+    //
+    // Eased faster than the plane movement. A stair is a discrete thing under
+    // the foot, and lagging the height behind the position by the same amount
+    // as a turn makes the reader sink into the treads on the way up.
+    const dr = (t.rise ?? 0) - (e.rise ?? 0);
+    if (Math.abs(dr) < MORPH_EPS) e.rise = t.rise;
+    else e.rise = (e.rise ?? 0) + dr * Math.min(1, a * 2.2);
 
     apply(e);
   });
@@ -251,6 +272,7 @@ export function useRoomWalking({
   poseRef,
   jumpRef,
   walls,
+  stairs,
   floorY,
   onRoomChange,
   onEnterDoor,
@@ -266,6 +288,8 @@ export function useRoomWalking({
    */
   jumpRef?: React.MutableRefObject<number>;
   walls: RoomWall[];
+  /** The flights, so walking onto one raises the reader tread by tread. */
+  stairs: RoomStair[];
   floorY: number;
   /** Called (from the frame loop) when the reader walks into or out of a room. */
   onRoomChange: (pose: ReaderPose) => void;
@@ -467,7 +491,29 @@ export function useRoomWalking({
     const dx = (fx * fwd - fz * strafe) * step;
     const dz = (fz * fwd + fx * strafe) * step;
     if (dx !== 0 || dz !== 0) {
-      const moved = roomWalkStep(pose, dx, dz, walls, floorY);
+      // Collision is worked on the storey the reader is STANDING on. The
+      // building's `floorY` is the reading floor; a reader on a landing is one
+      // storey up or down from it, and the walls that bound them are that
+      // storey's.
+      // Collision is worked on the NEAREST STOREY, not on the reader's exact
+      // height.
+      //
+      // A wall is solid to a reader whose floor it spans. Using the raw rise
+      // meant that part-way up a flight the reader was in the band between the
+      // ceiling below and the floor above, where NO wall spans — so mid-climb
+      // they were bounded by nothing and walked straight out through the end
+      // wall of the stairwell. Snapping to the nearest storey keeps them inside
+      // one storey's walls for the whole climb, which is what a stairwell is.
+      const storeyY =
+        floorY +
+        Math.round((pose.rise ?? 0) / ROOM_STOREY_H) * ROOM_STOREY_H;
+      const moved = roomWalkStep(pose, dx, dz, walls, storeyY);
+      // The floor under the new position. Sampling it every step is what makes
+      // a flight something the reader CLIMBS: they rise with the treads as
+      // they walk onto it and are set down on the landing at the top, rather
+      // than being put there.
+      pose.rise =
+        walkSurfaceAt(stairs, moved.x, moved.z, floorY, pose.rise ?? 0) - floorY;
       // Walking into a link door is how you go through it: the leaf is solid,
       // so the reader stops against it rather than stepping into the void,
       // and leaning on it for a moment is the door opening. Facing matters —
@@ -563,6 +609,7 @@ function LinkDoorLeaf({
   const theme = useTheme();
   const fontType = React.useContext(FontContext);
   const navigate = React.useContext(NavigateContext);
+  const traversal = useTraversal();
   const [hot, setHot] = React.useState(false);
   const portal = wall.portal!;
   const { width: w, height: h } = wall.size;
@@ -578,6 +625,21 @@ function LinkDoorLeaf({
       return portal.href;
     }
   }, [portal.href]);
+
+  /**
+   * Opening the door.
+   *
+   * Routed through TRAVERSAL when the door knows which way it goes, so the
+   * move is recorded and the reader gets a way back on the far side. A door
+   * with no axis — a same-page fragment, or a corridor built before the link
+   * layer was wired — falls back to plain navigation, which is what it always
+   * did.
+   */
+  const open = React.useCallback(() => {
+    if (portal.axis && traversal)
+      traversal.traverse(portal.href, portal.axis, portal.label);
+    else navigate?.(portal.href);
+  }, [portal.axis, portal.href, portal.label, traversal, navigate]);
 
   // Joinery, all in the leaf's own frame: y runs from −h/2 at the threshold
   // to +h/2 at the head.
@@ -618,13 +680,30 @@ function LinkDoorLeaf({
       ]}
       rotation={[0, wall.yaw, 0]}
     >
+      {/* What is BEHIND the leaf.
+          A link door opens onto another document, so there is no room behind
+          it — and the leaf is a single-sided plane, so from any angle that
+          sees past its edge (down a corridor, or from the landing above,
+          across the well) the opening was a black rectangle. A shallow dark
+          reveal, a little larger than the leaf and double-sided, closes it:
+          what you see past a door edge is the inside of a doorway, which is
+          what a doorway looks like. */}
+      <mesh position={[0, 0, -0.05]} raycast={() => null}>
+        <planeGeometry args={[w + 0.12, h + 0.12]} />
+        <meshStandardMaterial
+          color="#3B352D"
+          roughness={0.95}
+          metalness={0}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
       {/* The leaf. This one mesh takes the click and the hover for the whole
           door — everything mounted on it is raycast-inert, so pointing at the
           lever or the sign is still pointing at the door. */}
       <mesh
         onClick={(e) => {
           e.stopPropagation();
-          navigate?.(portal.href);
+          open();
         }}
         onPointerOver={(e) => {
           e.stopPropagation();
@@ -688,6 +767,16 @@ function LinkDoorLeaf({
           />
         </mesh>
       </group>
+      {/* No steps in front of the leaf.
+          A door that led up or down used to get three treads drawn rising
+          into it, from the version of this view that had ONE storey: the
+          treads were how "up" was said at all, because the door was not
+          actually up anything. It is now — parents hang on the landing above
+          and externals on the one below, reached by a real flight at the end
+          of the corridor — so the same three treads are a second, false stair
+          under every door, floating on the landing floor a storey away from
+          anything they could lead to. Anand, 2026-08-18: "why are there
+          stairs below the door". */}
       {/* The door's sign: a pale plate with the name cut dark into it, the
           same plate a room's doorway carries (GALLERY_SIGN). Unlit, so it is
           as readable from the dark end of a corridor as from under a lamp —
@@ -698,6 +787,9 @@ function LinkDoorLeaf({
           <planeGeometry args={[panelW * 0.9, plateH]} />
           <meshBasicMaterial color={GALLERY_SIGN.plate} toneMapped={false} />
         </mesh>
+        {/* The name, with the direction's own glyph in front of it — the
+            same mark the reader met at the anchor. The legend is one legend:
+            a door reached from a ▴ anchor says ▴ on its sign. */}
         <Text
           font={fontType}
           anchorX="center"
@@ -709,7 +801,9 @@ function LinkDoorLeaf({
           textAlign="center"
           overflowWrap="break-word"
         >
-          {portal.label.slice(0, 60)}
+          {(portal.axis ? `${markForAxis(portal.axis)} ` : "") +
+            (portal.isReturn ? "back to " : "") +
+            portal.label.slice(0, 60)}
         </Text>
         <Text
           font={fontType}
@@ -1033,4 +1127,198 @@ export function useReadingView(
     camera.lookAt(t);
     controls?.update?.();
   }, [panelCentre, viewingDistance, camera, controls, gl]);
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Stairs
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The flights at the end of a page's corridor
+ * (docs/directional-links.md, Anand's floor plan of 2026-08-16).
+ *
+ * Siblings are the same level and stay on the reading floor. Parents are UP
+ * and externals are DOWN, and in a building that means a stair — so the end of
+ * every links corridor has one or two flights, and the landing at the top and
+ * bottom of them is a corridor of that direction's doors.
+ *
+ * This replaced the previous approximation, which was a door at floor level
+ * with three treads drawn in front of it. That said "up" without being up: the
+ * doors were all on one storey and the reader never changed height, so the
+ * legend's strongest claim — that a parent is ABOVE you — was the one thing
+ * the geometry did not make.
+ *
+ * ── Taking one ──
+ *
+ * Selecting a flight moves the reader to its head. The climb itself is not
+ * walked: the walk model puts the reader on a floor PLANE and moving between
+ * planes on foot needs a step-height model the view does not have, so a flight
+ * is a place you take rather than a slope you climb. It is drawn as real
+ * treads because the reader has to be able to see that it goes up.
+ */
+export function RoomStairs({
+  stairs,
+  anchor,
+}: {
+  stairs: RoomStair[];
+  anchor: { x: number; y: number; z: number };
+}) {
+  return (
+    <>
+      {stairs.map((s, i) => (
+        <StairFlight key={`stair-${s.page}-${s.dir}-${i}`} stair={s} anchor={anchor} />
+      ))}
+    </>
+  );
+}
+
+/**
+ * The overhead sign at the foot of a flight.
+ *
+ * `SIGN_FONT` is the building's own signage size — a link door's name is
+ * 0.045 m and is read from a couple of metres, this is read from the length of
+ * a corridor, so it is half again as large and no more. At 0.07 m it subtends
+ * about a degree at 4 m, comfortably over the angular floor, and it is small
+ * enough that the plate never becomes the subject of the view.
+ *
+ * The HEIGHT is not ours: `stair.signY` comes from the plan, which is the only
+ * place that knows how much clear height this document's corridors have (see
+ * `RoomStair.signY`). A sign hung at a height chosen in here sat inside the
+ * ceiling — the corridors of a short page are 2.35 m from floor to soffit.
+ */
+const SIGN_FONT = 0.07;
+const SIGN_PLATE_H = 0.15;
+const SIGN_PAD = 0.06;
+/** Far enough in front of the foot to sit clear of the first riser. */
+const SIGN_SET_BACK = 0.3;
+
+function StairFlight({
+  stair,
+  anchor,
+}: {
+  stair: RoomStair;
+  anchor: { x: number; y: number; z: number };
+}) {
+  const fontType = React.useContext(FontContext);
+
+  const rise = ROOM_STOREY_H / stair.steps;
+  const up = stair.dir === 1;
+  // The flight's own axis, in the floor plane. `yaw` is the bearing it is
+  // CLIMBED in, so the treads march along (sin, cos) and their width lies
+  // across it. Working in world components rather than in a rotated group is
+  // deliberate: the group version drew every tread edge-on — a plank stuck to
+  // the wall — and put the sign on back to front.
+  const ax = Math.sin(stair.yaw);
+  const az = Math.cos(stair.yaw);
+
+  // The plate is fitted to the WORDS, not to the flight. Sized to the letters
+  // it holds (troika's advance for this face is about half the em) plus a
+  // margin, it is never wider than what it says — which is what stops a sign
+  // over a one-metre stair from being a hoarding.
+  const label = up ? "▴  the level above" : "▾  other sites";
+  const plateW = Math.min(
+    stair.width * 0.9,
+    label.length * SIGN_FONT * 0.55 + SIGN_PAD * 2,
+  );
+
+  return (
+    <group>
+      {Array.from({ length: stair.steps }, (_, i) => {
+        const d = (i + 0.5) * stair.going;
+        // ── One block per tread, from its own nosing down to the well ──
+        //
+        // The top of tread `i` is where `walkSurfaceAt` puts the reader at the
+        // middle of it, so a climbing reader's feet are on the tread they are
+        // standing on rather than a riser under it.
+        //
+        // Below that it is solid to the bottom of the flight: a riser under
+        // the floor for a climb, the foot of the well for a descent. The
+        // descending case used to run the other way — every block topped out
+        // at the floor line, which buried all thirteen risers and left one
+        // smooth brown wedge dropping into the corridor (Anand, 2026-08-18,
+        // of the flight down: "bottom stairs"). A stair that reads as a ramp
+        // is not saying "down" any more than the flat door it replaced.
+        const top = (up ? i + 0.5 : -(i + 0.5)) * rise;
+        const base = up ? -rise : -(stair.steps + 0.5) * rise;
+        const h = top - base;
+        const yMid = (top + base) / 2;
+        return (
+          <mesh
+            key={`t-${i}`}
+            position={[
+              anchor.x + stair.foot.x + ax * d,
+              anchor.y + stair.foot.y + yMid,
+              anchor.z + stair.foot.z + az * d,
+            ]}
+            rotation={[0, stair.yaw, 0]}
+          >
+            <boxGeometry args={[stair.width, h, stair.going]} />
+            <meshStandardMaterial
+              color={GALLERY_DOOR.frame}
+              roughness={0.8}
+              metalness={0}
+            />
+          </mesh>
+        );
+      })}
+
+      {/* ── Where it goes, on an overhead sign ──
+
+          Hung ABOVE the flight at its foot, facing back down the corridor, at
+          the scale the rest of the building's signage is drawn at — a door
+          leaf carries its name at 0.045 m and a room its own at not much more.
+
+          It used to be a 1.6 × 0.3 m plate with 0.1 m letters standing at eye
+          height across the mouth of the flight: from anywhere in the corridor
+          it was the largest object in the view and it hid the treads behind
+          it, so the one thing the geometry exists to say — that this goes UP —
+          was the thing the label covered up (Anand, 2026-08-18: "no need of
+          showing such huge label"). A sign belongs over the opening, out of
+          the line you walk and the line you look along. */}
+      <group
+        position={[
+          anchor.x + stair.foot.x - ax * SIGN_SET_BACK,
+          anchor.y + stair.signY,
+          anchor.z + stair.foot.z - az * SIGN_SET_BACK,
+        ]}
+        rotation={[0, stair.yaw + Math.PI, 0]}
+        raycast={() => null}
+      >
+        <mesh>
+          <planeGeometry args={[plateW, SIGN_PLATE_H]} />
+          <meshBasicMaterial color={GALLERY_SIGN.plate} toneMapped={false} />
+        </mesh>
+        {/* The dark rule around it, as on every other plate in the building:
+            at the far end of a corridor the letters are a few pixels tall and
+            the shape of the plate is the whole of what says "sign". */}
+        <mesh position={[0, 0, -0.002]}>
+          <planeGeometry args={[plateW + 0.026, SIGN_PLATE_H + 0.026]} />
+          <meshBasicMaterial color={GALLERY_SIGN.edge} toneMapped={false} />
+        </mesh>
+        <Text
+          font={fontType}
+          anchorX="center"
+          anchorY="middle"
+          position={[0, 0, 0.004]}
+          fontSize={SIGN_FONT}
+          color={GALLERY_SIGN.text}
+          maxWidth={plateW * 0.94}
+          textAlign="center"
+        >
+          {label}
+          {/* Front face only. The plate behind it is one-sided already, so a
+              reader on the landing above looked down through the well at
+              nothing but this sign's text, back to front and floating. A sign
+              is only a sign from the side it faces. */}
+          <meshBasicMaterial
+            attach="material"
+            color={GALLERY_SIGN.text}
+            side={THREE.FrontSide}
+            toneMapped={false}
+          />
+        </Text>
+      </group>
+    </group>
+  );
 }

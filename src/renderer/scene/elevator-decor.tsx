@@ -30,6 +30,15 @@
 import React from "react";
 import * as THREE from "three";
 import { Text } from "@react-three/drei";
+import { useFrame } from "@react-three/fiber";
+import {
+  DoorPlate,
+  OverflowMark,
+  drawable,
+  overflowCount,
+  type DirSlot,
+  type DirSlots,
+} from "./link-doors";
 
 import type { ElevatorShell, ElevatorFloorShell } from "../page-placements";
 import { useTheme, type XRTheme } from "../theme";
@@ -1001,6 +1010,358 @@ export function ElevatorSlotMark({
             <meshBasicMaterial color={theme.accentCol} toneMapped={false} />
           </mesh>
         ))}
+    </group>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// The link corridor
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The corridor off the focused storey (docs/directional-links.md, Phase 8).
+ *
+ * The shape Anand asked for, 2026-08-16: *"the user walks around the circular
+ * corridor and then checks a page and then finds on the right a path which
+ * opens to another circular corridor of links, along with top and bottom for
+ * the parent and external links."*
+ *
+ * So it is two states, not one arc of plates:
+ *
+ *   closed  a single PATH standing to the right of the page the reader is on,
+ *           saying how many documents it leads to and nothing else
+ *   open    a second circular corridor — the siblings ringed all the way
+ *           round the reader at reading height, with the parents stacked above
+ *           dead ahead and the externals below
+ *
+ * The path is the whole point of the closed state. A ring of a dozen plates
+ * hanging under the pages the moment a storey loads is furniture; a single
+ * marker that says "twelve documents, this way" is a choice the reader makes,
+ * and the corridor only exists once they have made it.
+ *
+ * ── Opening ──
+ *
+ * The ring arrives by CONTRACTING from a larger radius onto its resting one,
+ * which is what walking into a circular corridor looks like from inside: the
+ * walls come round you. Scaling the whole ring about its own axis is the
+ * cheapest honest way to draw that, and the axis is the reader, so it needs no
+ * camera move — which matters, because the camera belongs to OrbitControls in
+ * the preview and to the headset in a session, and neither is ours to drive.
+ *
+ * ── What is still not built ──
+ *
+ * The free-movement redesign: the reader physically walking off the ring and
+ * down a corridor. It changes how the whole view seats the reader (`AxisLook`
+ * parks the preview camera on the ring's axis; `XRViewerAnchor` stands them
+ * there in a headset) and it carries the deferred `panelCurveRadius` problem
+ * with it — a page's curve assumes the reader at the ring's centre, which a
+ * reader who has walked is not. Both stay deferred.
+ */
+
+/** Pulled inside the page ring so a door never covers a page. */
+const LINK_ARC_INSET = 0.26;
+const LINK_PLATE_W = 0.44;
+const LINK_PLATE_H = 0.078;
+/** Angular pitch between doors on the ring, radians. */
+const LINK_ARC_PITCH = 0.3;
+/** Vertical pitch for the stacked up/down doors, as a multiple of plate height. */
+const LINK_STACK_PITCH = 1.2;
+/**
+ * Where the path stands, as a bearing offset from dead ahead.
+ *
+ * NEGATIVE, and the sign is not a taste. `onRing` places a slot at
+ * (sin θ·r, ·, cos θ·r), so θ increasing sweeps from −z toward +x — which on
+ * a ring the reader stands inside, facing the plaque, carries a plate to their
+ * LEFT. Anand asked for the path on the right ("finds on the right a path
+ * which opens to another circular corridor"), so the run goes the other way.
+ */
+const PATH_BEARING = -0.46;
+/** The ring contracts from this multiple of its resting radius as it opens. */
+const RING_ZOOM_FROM = 1.55;
+/** Seconds the contraction takes. */
+const RING_ZOOM_S = 0.5;
+
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+/**
+ * Contracts its children onto the ring axis as they appear.
+ *
+ * Scales about the group's own origin, which the caller puts on the axis — so
+ * the plates sweep inward along their own bearings rather than sliding across
+ * the reader's view.
+ */
+function RingZoom({ open, children }: { open: boolean; children: React.ReactNode }) {
+  const ref = React.useRef<THREE.Group>(null);
+  const t = React.useRef(0);
+  const wasOpen = React.useRef(open);
+  if (wasOpen.current !== open) {
+    wasOpen.current = open;
+    t.current = 0;
+  }
+  useFrame((_, dt) => {
+    const g = ref.current;
+    if (!g || !open) return;
+    try {
+      t.current = Math.min(1, t.current + Math.min(dt, 0.1) / RING_ZOOM_S);
+      const k = RING_ZOOM_FROM + (1 - RING_ZOOM_FROM) * easeOutCubic(t.current);
+      g.scale.set(k, 1, k);
+    } catch {
+      // A ring stuck at its opening radius is legible; a throw inside an XR
+      // frame ends rendering for the whole session.
+    }
+  });
+  return <group ref={ref}>{children}</group>;
+}
+
+export function ElevatorLinkRing({
+  shell,
+  anchor,
+  slots,
+  onTake,
+}: {
+  shell: ElevatorShell;
+  anchor: { x: number; y: number; z: number };
+  slots: DirSlots;
+  onTake: (slot: DirSlot) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+
+  // Only the storey the reader is ON has a live corridor — the same rule the
+  // other three views follow, and the reason the census's 167-parent-link page
+  // does not hang 167 doors off every floor of the building.
+  const here = shell.floors.find((f) => f.delta === 0);
+
+  // A change of storey closes the corridor. It belongs to the page the reader
+  // was on, and leaving that page leaves it.
+  const storey = here?.index ?? -1;
+  React.useEffect(() => setOpen(false), [storey]);
+
+  if (!here) return null;
+
+  const lateral = [...drawable(slots.right), ...drawable(slots.left)];
+  const stacked = drawable(slots.up).map((s) => ({ s, up: true }))
+    .concat(drawable(slots.down).map((s) => ({ s, up: false })));
+  const total = lateral.length + stacked.length;
+  const extra =
+    overflowCount(slots.right) +
+    overflowCount(slots.left) +
+    overflowCount(slots.up) +
+    overflowCount(slots.down);
+  if (total + extra === 0) return null;
+
+  const radius = Math.max(0.4, here.radius - LINK_ARC_INSET);
+  const cx = anchor.x + here.centre.x;
+  const cz = anchor.z + here.centre.z;
+  // The corridor runs in the clear band BETWEEN the pages' bottom edge and the
+  // deck they hang over.
+  //
+  // Not at eye level, and not at a larger radius either. At eye level it cut
+  // straight across the pages, which are opaque panels on the same ring; at a
+  // larger radius those same panels stood in front of it. The band below them
+  // is the one place a second ring can be a second ring — the reader looks
+  // slightly down into it, the way you look down into a lower gallery from a
+  // balcony, and nothing is drawn over anything.
+  //
+  // Measured as a fraction of the band rather than a fixed drop: the band is
+  // the rail height scaled by the storey's trim, which scales with the page, so
+  // a constant put the whole corridor under the floor on a smaller profile.
+  const band = Math.max(0.08, here.bandBottomY - here.deckY);
+  const y = anchor.y + here.bandBottomY - band * 0.42;
+
+  // The bearing the storey's plaque hangs on: dead ahead.
+  //
+  // Taken from WHERE the plaque is, not from how it is turned. Its `rotation`
+  // is the plate's own orientation — it faces the axis, so its yaw is the
+  // bearing plus half a turn — and reading it as a bearing put every link door
+  // 180° round the ring, directly behind the reader, which in a view whose
+  // whole premise is that you turn your head is the one place a door must not
+  // be.
+  const ahead = Math.atan2(
+    here.plaque.offset.x - here.centre.x,
+    here.plaque.offset.z - here.centre.z,
+  );
+
+  /** A plate on the ring at `angle`, turned to face the axis. */
+  const onRing = (
+    key: string,
+    angle: number,
+    dy: number,
+    node: React.ReactNode,
+  ) => (
+    <group
+      key={key}
+      position={[Math.sin(angle) * radius, dy, Math.cos(angle) * radius]}
+      rotation={[0, angle + Math.PI, 0]}
+    >
+      {node}
+    </group>
+  );
+
+  // ── Closed: one path, to the right of the page ──
+  if (!open)
+    return (
+      <group position={[cx, y, cz]}>
+        {onRing(
+          "path",
+          ahead + PATH_BEARING,
+          0,
+          <PathMarker
+            count={total + extra}
+            width={LINK_PLATE_W}
+            height={LINK_PLATE_H}
+            onSelect={() => setOpen(true)}
+          />,
+        )}
+      </group>
+    );
+
+  // ── Open: the second circular corridor ──
+  return (
+    <group position={[cx, y, cz]}>
+      <RingZoom open={open}>
+        {/* Siblings ring the reader, starting where the path stood so the
+            corridor opens from the door they took into it. */}
+        {lateral.map((slot, i) =>
+          onRing(
+            slot.key,
+            ahead + PATH_BEARING - i * LINK_ARC_PITCH,
+            0,
+            <DoorPlate
+              slot={slot}
+              width={LINK_PLATE_W}
+              height={LINK_PLATE_H}
+              recession={slot.distance - 1}
+              onSelect={() => onTake(slot)}
+            />,
+          ),
+        )}
+
+        {/* Parents above, externals below, on the plaque's own bearing — the
+            elevator's own up and down, which is the direction its car moves. */}
+        {stacked.map(({ s, up }, i) => {
+          const n = stacked.filter((x, j) => x.up === up && j < i).length;
+          return onRing(
+            s.key,
+            ahead,
+            (up ? 1 : -1) * LINK_PLATE_H * LINK_STACK_PITCH * (n + 1),
+            <DoorPlate
+              slot={s}
+              width={LINK_PLATE_W}
+              height={LINK_PLATE_H}
+              recession={s.distance - 1}
+              onSelect={() => onTake(s)}
+            />,
+          );
+        })}
+
+        {extra > 0 &&
+          onRing(
+            "overflow",
+            ahead + PATH_BEARING - lateral.length * LINK_ARC_PITCH,
+            0,
+            <OverflowMark count={extra} width={LINK_PLATE_W} height={LINK_PLATE_H} />,
+          )}
+
+        {/* The way out, at the corridor's own threshold — one slot back along
+            the run, which is where the reader came in. Dead ahead is where the
+            page and its plaque are, and a marker there sat across the page's
+            own controls; the door you came through is the door you leave by. */}
+        {onRing(
+          "close",
+          ahead + PATH_BEARING + LINK_ARC_PITCH,
+          0,
+          <PathMarker
+            count={-1}
+            width={LINK_PLATE_W}
+            height={LINK_PLATE_H}
+            onSelect={() => setOpen(false)}
+          />,
+        )}
+      </RingZoom>
+    </group>
+  );
+}
+
+/**
+ * The path itself: what the reader sees before the corridor exists, and the
+ * way back out of it afterwards.
+ *
+ * Deliberately not a door. A door says "a document is through here" and this
+ * is not one — it is an opening onto a dozen of them, so it is drawn as a way
+ * THROUGH: an open frame with a floor line running out of it, and a count.
+ */
+function PathMarker({
+  count,
+  width,
+  height,
+  onSelect,
+}: {
+  /** How many documents lie beyond, or −1 for the way back out. */
+  count: number;
+  width: number;
+  height: number;
+  onSelect: () => void;
+}) {
+  const theme = useTheme();
+  const fontType = React.useContext(FontContext);
+  const [hover, setHover] = React.useState(false);
+  const back = count < 0;
+  const t = height * 0.13;
+
+  return (
+    <group
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect();
+      }}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        setHover(true);
+      }}
+      onPointerOut={() => setHover(false)}
+    >
+      {/* The opening: jambs and a head, with the threshold left clear. */}
+      {[
+        { w: t, h: height, x: -width / 2 + t / 2, y: 0 },
+        { w: t, h: height, x: width / 2 - t / 2, y: 0 },
+        { w: width, h: t, x: 0, y: height / 2 - t / 2 },
+      ].map((r, i) => (
+        <mesh key={`jamb-${i}`} position={[r.x, r.y, 0.001]}>
+          <planeGeometry args={[r.w, r.h]} />
+          <meshBasicMaterial
+            color={hover ? theme.headingCol : theme.bodyCol}
+            transparent
+            opacity={hover ? 0.95 : 0.7}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+      {/* The floor running out through it. */}
+      <mesh position={[0, -height / 2 + t * 0.4, 0.001]}>
+        <planeGeometry args={[width * 0.72, t * 0.6]} />
+        <meshBasicMaterial
+          color={hover ? theme.headingCol : theme.mutedTextCol}
+          transparent
+          opacity={0.8}
+          depthWrite={false}
+        />
+      </mesh>
+      <Text
+        font={fontType}
+        anchorX="center"
+        anchorY="middle"
+        position={[0, 0, 0.003]}
+        fontSize={height * 0.34}
+        color={hover ? theme.headingCol : theme.bodyCol}
+      >
+        {back ? "◂ back to the page" : `${count} links ▸`}
+      </Text>
+      <mesh position={[0, 0, 0.004]}>
+        <planeGeometry args={[width, height]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
     </group>
   );
 }

@@ -103,7 +103,6 @@ export interface SpatialPlacement {
 /** Interactive state extracted from IRNodeState and mapped to XR affordances. */
 export interface XRInteractionState {
   disabled: boolean;
-  expanded: boolean | null;
   checked: boolean | null;
   selected: boolean | null;
   pressed: boolean | null;
@@ -144,11 +143,8 @@ export interface XRPrimitiveBase {
   children: XRPrimitive[];
   /** IDs of related primitives (controls, labelledBy, etc.). */
   relations: {
-    controls: string[];
     labelledBy: string[];
     describedBy: string[];
-    details: string[];
-    errorMessage: string[];
   };
 
   placement?: SpatialPlacement; // optional in the base, since not all primitives need to specify it
@@ -428,13 +424,6 @@ export interface XRComboBox extends XRPrimitiveBase {
   state: XRInteractionState;
 }
 
-/** Modal dialog overlay. */
-export interface XRDialog extends XRPrimitiveBase {
-  type: "XRDialog";
-  isModal: boolean;
-  state: XRInteractionState;
-}
-
 // TODO: need to implement xr-specific presentation hints in the layout engine and since we have removed here the layout to should handle it
 /**
  * XR-specific presentation style for a live-region alert.
@@ -482,7 +471,6 @@ export interface XRMediaPlayer extends XRPrimitiveBase {
   type: "XRMediaPlayer";
   mediaType: "video" | "audio";
   src: string | null;
-  poster: string | null;
   captions: string[];
 }
 
@@ -499,29 +487,12 @@ export interface XRBlockQuote extends XRPrimitiveBase {
 /** Horizontal rule / thematic break. */
 export interface XRSeparator extends XRPrimitiveBase {
   type: "XRSeparator";
-  orientation: "horizontal" | "vertical";
 }
 
 /** Progress bar or meter. */
 export interface XRProgressBar extends XRPrimitiveBase {
   type: "XRProgressBar";
   valueFraction: number | null;
-}
-
-/** Tab group container. */
-export interface XRTabGroup extends XRPrimitiveBase {
-  type: "XRTabGroup";
-  orientation: "horizontal" | "vertical";
-}
-
-export interface XRTab extends XRPrimitiveBase {
-  type: "XRTab";
-  state: XRInteractionState;
-  panelId: string | null;
-}
-
-export interface XRTabPanel extends XRPrimitiveBase {
-  type: "XRTabPanel";
 }
 
 export interface XRText extends XRPrimitiveBase {
@@ -611,7 +582,6 @@ export type XRPrimitive =
   | XRSlider
   | XRToggle
   | XRComboBox
-  | XRDialog
   | XRAlert
   | XRText
   | XRTooltip
@@ -620,9 +590,6 @@ export type XRPrimitive =
   | XRBlockQuote
   | XRSeparator
   | XRProgressBar
-  | XRTabGroup
-  | XRTab
-  | XRTabPanel
   | XRMenu
   | XRMenuItem
   | XRTree

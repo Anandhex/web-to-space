@@ -27,7 +27,6 @@ export function extractState(node: IRNode): XRInteractionState {
   }
   return {
     disabled: s.disabled === "true",
-    expanded: s.expanded === null ? null : s.expanded === "true",
     checked:
       s.checked === null
         ? null
@@ -108,7 +107,11 @@ export function resolveChildren(
   // re-resolve to a colliding/independently laid-out node.
   const TABLE_CELL_ROLES = new Set(["cell", "columnheader", "rowheader"]);
   const text = node.content ?? node.label ?? "";
-  if (children.length === 0 && text.trim() !== "" && TABLE_CELL_ROLES.has(node.role)) {
+  if (
+    children.length === 0 &&
+    text.trim() !== "" &&
+    TABLE_CELL_ROLES.has(node.role)
+  ) {
     const textId = `${node.id}__leaftext`;
     const textPrimitive: XRPrimitive = {
       id: textId,
@@ -120,11 +123,8 @@ export function resolveChildren(
       depth: node.readingDepth,
       children: [],
       relations: {
-        controls: node.relations.controls,
         labelledBy: node.relations.labelledBy,
         describedBy: node.relations.describedBy,
-        details: node.relations.details,
-        errorMessage: node.relations.errorMessage,
       },
       text,
       // Preserve link accent styling: node.attributes.componentType reflects

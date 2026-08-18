@@ -702,11 +702,24 @@ export function buildSlabGeometry(slabs: RoomSlab[]) {
         // its own `repeat`, which is a texture and a draw call per space; the
         // same tiling baked into the UVs is identical on screen (the map wraps)
         // and costs neither.
+        //
+        // The tiling is measured from the BUILDING's own origin, not from each
+        // slab's corner: one repeat per metre of x and z wherever a floor
+        // happens to be. Per-slab repeats (`round(width)` by `round(depth)`)
+        // were a whole number of boards across every whole slab — but the
+        // moment a slab is cut around a stairwell, the pieces left are 0.2 m
+        // and 1.2 m deep and each got a whole repeat of its own, so the floor
+        // beside a flight was a pale, differently scaled patch of nothing that
+        // read as a hole in it. Anand, 2026-08-18: "there is a gap".
         const uv = g.attributes.uv as THREE.BufferAttribute;
-        const rx = Math.max(1, Math.round(width));
-        const ry = Math.max(1, Math.round(depth));
         for (let i = 0; i < uv.count; i++)
-          uv.setXY(i, uv.getX(i) * rx, uv.getY(i) * ry);
+          uv.setXY(
+            i,
+            s.centre.x + (uv.getX(i) - 0.5) * width,
+            // The quarter turn below lays +y down −z, so the plane's own v
+            // runs against world z.
+            s.centre.z - (uv.getY(i) - 0.5) * depth,
+          );
         // A plane faces +z; a quarter turn back lays it flat facing up.
         floor.push({
           geom: g,

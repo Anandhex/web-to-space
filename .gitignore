@@ -28,3 +28,8 @@ dist-ssr
 CLAUDE.md
 # Offline benchmark output
 eval-out/
+
+.agents
+
+# Fetched link-census corpus (see src/eval/link-corpus.urls)
+src/eval/link-corpus/

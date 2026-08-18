@@ -9,6 +9,14 @@ import { ComparePanel } from "./ComparePanel";
 import { type Tab, makeTabId, labelFromUrl } from "./viewTypes";
 import { proxyUrl } from "../proxy";
 import { DiagnosticsLog } from "../renderer/scene/chrome";
+import {
+  initNav,
+  enter as navEnter,
+  back as navBackStep,
+  jump as navJumpTo,
+  current as navCurrent,
+  type Axis,
+} from "../links/memory";
 
 function makeHomeTab(): Tab {
   return {
@@ -17,6 +25,8 @@ function makeHomeTab(): Tab {
     url: "",
     html: "",
     settings: DEFAULT_HOME_SETTINGS,
+    nav: null,
+    pending: null,
   };
 }
 
@@ -52,6 +62,10 @@ export default function App() {
       url,
       label: labelFromUrl(url),
       settings: activeTab.settings,
+      // A new tab is a new reading session, so this document is its own
+      // session root rather than a step in the corridor it was opened from.
+      nav: initNav(url, labelFromUrl(url)),
+      pending: null,
     };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
@@ -90,21 +104,28 @@ export default function App() {
 
   const [loading, setLoading] = useState(false);
 
+  /** Fetch a document. The CORS proxy is dev-only and same-origin skips it. */
+  async function fetchHtml(targetUrl: string): Promise<string> {
+    const isSameOrigin = targetUrl.startsWith(window.location.origin);
+    const res = await fetch(isSameOrigin ? targetUrl : proxyUrl(targetUrl));
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.text();
+  }
+
   async function loadUrl(targetUrl: string, settings: HomeSettings) {
     setLoading(true);
     patchActiveTab({ settings });
     try {
-      // Same-origin URLs (e.g. the built-in /test-elements.html) are fetched
-      // directly — no CORS proxy needed, and the proxy is dev-only anyway.
-      const isSameOrigin = targetUrl.startsWith(window.location.origin);
-      const res = await fetch(isSameOrigin ? targetUrl : proxyUrl(targetUrl));
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      const html = await res.text();
+      const html = await fetchHtml(targetUrl);
       patchActiveTab({
         url: targetUrl,
         html,
         label: labelFromUrl(targetUrl),
         settings,
+        // The first document of a tab is the session root: the origin every
+        // corridor is measured from.
+        nav: initNav(targetUrl, labelFromUrl(targetUrl)),
+        pending: null,
       });
     } catch (err) {
       console.error("Failed to load:", err);
@@ -112,6 +133,115 @@ export default function App() {
       setLoading(false);
     }
   }
+
+  // ── Directional traversal ─────────────────────────────────────
+  //
+  // A door, a stair, a strip or a path off the table. This is the ONE route
+  // in-world navigation takes, for the reason `openInNewTab` already gives
+  // below: the settings are how the reader has chosen to read, not anything
+  // about the document, and a reader who picks Wall and walks east must still
+  // be in Wall when they get there.
+  //
+  // It navigates IN PLACE rather than opening a tab. A corridor is a reading
+  // session — spawning a tab per door would give every document a fresh
+  // memory and there would be no corridor to walk back down.
+
+  /**
+   * Load a document into a tab, keeping its settings, and apply a nav move.
+   *
+   * The move is committed in ONE step, on arrival: url, html and navigation
+   * memory all change together. Nothing about the current document is touched
+   * while the next one is in flight — it stays mounted and rendered, and the
+   * view goes on animating the direction the reader chose over the top of it.
+   *
+   * The earlier version cleared `html` up front, which unmounted the scene and
+   * put a DOM spinner over the whole canvas. That threw away the only feedback
+   * the reader had: they took a door and the world went blank instead of
+   * moving. `pending` replaces it — every view can show that a move is under
+   * way, in its own geometry, without the document going anywhere.
+   */
+  async function navigateTab(
+    tabId: string,
+    targetUrl: string,
+    axis: Axis | null,
+    advance: (tab: Tab) => Tab["nav"],
+  ) {
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.id === tabId ? { ...t, pending: { url: targetUrl, axis } } : t,
+      ),
+    );
+    try {
+      const html = await fetchHtml(targetUrl);
+      setTabs((prev) =>
+        prev.map((t) =>
+          // Only commit if this is still the move in flight: a reader who took
+          // a second door while the first was loading gets the second one.
+          t.id === tabId && t.pending?.url === targetUrl
+            ? {
+                ...t,
+                url: targetUrl,
+                label: labelFromUrl(targetUrl),
+                html,
+                nav: advance(t),
+                pending: null,
+              }
+            : t,
+        ),
+      );
+    } catch (err) {
+      console.error("Failed to load:", err);
+      // The reader stays where they were, with the door still there. Clearing
+      // `pending` is what ends the transition — a view left mid-turn against a
+      // document that never arrived is worse than not having moved.
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.id === tabId && t.pending?.url === targetUrl
+            ? { ...t, pending: null }
+            : t,
+        ),
+      );
+    }
+  }
+
+  /** Follow a link in a direction. Records the move so the way back exists. */
+  const traverse = useCallback(
+    (url: string, axis: Axis, label?: string) => {
+      const tab = tabs.find((t) => t.id === activeTabId);
+      if (!tab) return;
+      void navigateTab(tab.id, url, axis, (t) =>
+        t.nav
+          ? navEnter(t.nav, { url, label: label ?? labelFromUrl(url), axis })
+          : initNav(url, label ?? labelFromUrl(url)),
+      );
+    },
+    [tabs, activeTabId],
+  );
+
+  /** The back door every floor, face and table carries. */
+  const traverseBack = useCallback(() => {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab?.nav) return;
+    const next = navBackStep(tab.nav);
+    if (next === tab.nav) return; // at the session root: nowhere to go
+    // The way back runs along the axis the reader arrived from.
+    void navigateTab(tab.id, navCurrent(next).url, tab.nav.arrivedFrom, () => next);
+  }, [tabs, activeTabId]);
+
+  /** A minimap selection: move the world to any node the reader has visited. */
+  const traverseJump = useCallback(
+    (historyIndex: number) => {
+      const tab = tabs.find((t) => t.id === activeTabId);
+      if (!tab?.nav) return;
+      const next = navJumpTo(tab.nav, historyIndex);
+      if (next === tab.nav) return;
+      // A minimap jump has no direction: it is a move through the graph, not
+      // along a corridor, so the views show it as an arrival rather than a
+      // turn. Passing an axis here would animate a direction nobody took.
+      void navigateTab(tab.id, navCurrent(next).url, null, () => next);
+    },
+    [tabs, activeTabId],
+  );
 
   const onPlanReady: XRSceneRendererProps["onPlanReady"] = useCallback(
     (plan) => {
@@ -226,6 +356,11 @@ export default function App() {
             viewMode={activeTab.settings.viewMode}
             onPlanReady={onPlanReady}
             onExternalNavigate={openInNewTab}
+            onTraverse={traverse}
+            onTraverseBack={traverseBack}
+            onTraverseJump={traverseJump}
+            nav={activeTab.nav}
+            pending={activeTab.pending}
             tabs={tabs}
             activeTabId={activeTabId}
             onSwitchTab={setActiveTabId}

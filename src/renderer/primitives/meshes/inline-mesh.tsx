@@ -15,19 +15,17 @@ import {
 import { useTheme } from "../../theme";
 import { safeDim, entryTransform, useHoverScale } from "../surface";
 import {
-  useClipPlanes,
   useRenderMetrics,
-  useLinkColor,
   TextStyleContext,
   NavigateContext,
 } from "../contexts";
+import { useLinkBinding, usePageLinks } from "../../scene/contexts";
+import { MARK_SEPARATOR, markFor } from "../../../links/direction";
 import {
   ClippedText,
   buildInlineRows,
   InlineProseRows,
   useLinkRects,
-  LINK_UNDERLINE_RISE,
-  LINK_UNDERLINE_THICKNESS,
 } from "../inline";
 
 export interface XRTextMeshProps {
@@ -87,7 +85,9 @@ export function XRTextMesh({ primitive, entry }: XRTextMeshProps) {
       color = "#116329";
       break;
     case "link":
-      color = theme.accentCol;
+      // No blue text (docs/directional-links.md). A text run that came from
+      // inside an anchor is still prose; what marks it as leading somewhere is
+      // the anchor's own directional mark, drawn by XRLinkMesh below.
       fontWeight = "500";
       break;
     default:
@@ -128,10 +128,8 @@ export interface XRLinkMeshProps {
  * XRLinkMesh renders a link's text content inline.
  *
  * When the link has children (synthetic XRLink leaf from normalizeSceneLabels,
- * or real mixed XRText/XRLink children), they are flowed via InlineProseRows.
- * XRLink segments in buildRowMeta automatically receive the theme's accent
- * colour, so a synthetic XRLink child renders in link colour with no extra
- * wiring needed.
+ * or real mixed XRText/XRLink children), they are flowed via InlineProseRows,
+ * which draws each anchor in body colour with its directional mark after it.
  *
  * Label-only fallback (no children after normalization) renders via ClippedText.
  */
@@ -140,18 +138,25 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
   const w = safeDim(entry.size.width);
   const metrics = useRenderMetrics();
   const theme = useTheme();
-  // Contrast-corrected against the surface this link sits on — the raw theme
-  // accent measures ~2:1 on a list-item card. See useLinkColor.
-  const linkCol = useLinkColor();
-  const accentHex = parseInt(linkCol.replace("#", ""), 16);
   const styleOverride = useContext(TextStyleContext);
   const linkMetric = styleOverride ?? metrics.link.font;
   const { ref, handlers } = useHoverScale(1.0, 1.02);
   const navigate = useContext(NavigateContext);
 
-  // The whole label is one link run: one range covering the string troika is
-  // handed, which useLinkRects turns into per-line rects for the underline.
-  const linkText = primitive.label ?? primitive.href ?? "";
+  // Directional marks (docs/directional-links.md, Phase 4). A link drawn on
+  // its own — a nav card, a link card — is still an anchor and still carries
+  // the legend, so it is marked exactly as one inside a paragraph is. No
+  // accent colour and no underline: what says "this leads somewhere" is the
+  // mark's orientation, and where it leads is the door it opens.
+  const pageLinks = usePageLinks();
+  const { lit, setLit } = useLinkBinding();
+  const isLit = lit !== null && lit === primitive.id;
+  const direction = pageLinks?.directionOf(primitive.id) ?? null;
+  const mark = direction ? MARK_SEPARATOR + markFor(direction) : "";
+
+  // The whole label plus its mark is one link run: one range covering the
+  // string troika is handed, which useLinkRects turns into per-line rects.
+  const linkText = (primitive.label ?? primitive.href ?? "") + mark;
   const linkRanges = React.useMemo(
     () =>
       primitive.href
@@ -161,13 +166,13 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
               end: linkText.length,
               href: primitive.href,
               label: linkText,
+              id: primitive.id,
             },
           ]
         : [],
-    [primitive.href, linkText],
+    [primitive.href, primitive.id, linkText],
   );
   const { handleSync, hitQuads } = useLinkRects(linkRanges, 0, 0);
-  const clips = useClipPlanes();
 
   const flatChildren = flattenInlineWrappers(primitive.children ?? []);
   const hasInlineChildren = flatChildren.some((c) => isInlinePrimitive(c.type));
@@ -194,6 +199,8 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
       {...clickHandler}
     >
       {hasInlineChildren ? (
+        // No forceColor: the run's own segments carry the marks and take body
+        // colour, the same as prose anywhere else.
         <InlineProseRows
           rows={rows}
           startY={0}
@@ -202,7 +209,6 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
           lineHeightRatio={linkMetric.lineHeightRatio}
           xInset={0}
           renderChild={renderChild}
-          forceColor={accentHex}
         />
       ) : (
         <>
@@ -211,7 +217,9 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
             anchorY="top"
             position={[0, 0, 0.002]}
             fontSize={linkMetric.fontSize}
-            color={primitive.isCurrent ? theme.headingCol : linkCol}
+            color={
+              primitive.isCurrent || isLit ? theme.headingCol : theme.bodyCol
+            }
             fontWeight={primitive.isCurrent ? "700" : "500"}
             maxWidth={w}
             lineHeight={linkMetric.lineHeightRatio}
@@ -219,30 +227,24 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
           >
             {linkText}
           </ClippedText>
-          {/* Underline, for the same reason as the inline runs: on a card the
-              accent must be lightened to stay legible and stops reading as a
-              link on colour alone. Same rects as the prose flow uses. */}
-          {!primitive.isCurrent &&
-            hitQuads.map((r) => (
-              <mesh
-                key={`ul-${r.key}`}
-                position={[
-                  r.position[0],
-                  r.position[1] - r.h / 2 + LINK_UNDERLINE_RISE,
-                  r.position[2],
-                ]}
-                rotation={[0, r.yaw, 0]}
-              >
-                <planeGeometry args={[r.w, LINK_UNDERLINE_THICKNESS]} />
-                <meshBasicMaterial
-                  color={linkCol}
-                  transparent
-                  opacity={0.75}
-                  clippingPlanes={clips}
-                  depthWrite={false}
-                />
-              </mesh>
-            ))}
+          {/* Hit quads. They exist here for the gaze binding as much as for
+              the click: lighting an anchor lights the door it opens, and that
+              pairing is the only channel left once colour is gone. */}
+          {hitQuads.map((r) => (
+            <mesh
+              key={r.key}
+              position={r.position}
+              rotation={[0, r.yaw, 0]}
+              onPointerOver={(e) => {
+                e.stopPropagation();
+                setLit(primitive.id);
+              }}
+              onPointerOut={() => setLit(null)}
+            >
+              <planeGeometry args={[r.w, r.h]} />
+              <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+            </mesh>
+          ))}
         </>
       )}
     </group>

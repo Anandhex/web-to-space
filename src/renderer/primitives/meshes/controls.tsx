@@ -340,7 +340,11 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
           <ClippedText
             anchorX="center"
             anchorY="middle"
-            position={[w - stepperW / 2, cy + INPUT_H * 0.22, Z_LAYER_OVERLAY_TEXT]}
+            position={[
+              w - stepperW / 2,
+              cy + INPUT_H * 0.22,
+              Z_LAYER_OVERLAY_TEXT,
+            ]}
             fontSize={0.011}
             color={theme.bodyCol}
           >
@@ -349,7 +353,11 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
           <ClippedText
             anchorX="center"
             anchorY="middle"
-            position={[w - stepperW / 2, cy - INPUT_H * 0.22, Z_LAYER_OVERLAY_TEXT]}
+            position={[
+              w - stepperW / 2,
+              cy - INPUT_H * 0.22,
+              Z_LAYER_OVERLAY_TEXT,
+            ]}
             fontSize={0.011}
             color={theme.bodyCol}
           >
@@ -599,13 +607,16 @@ export function XRComboBoxMesh({
   // options subtree), falling back to the first option, then a neutral prompt.
   const value = React.useMemo(() => {
     let firstOption: string | null = null;
-    const walk = (node: import("../../../mapper/types").XRPrimitive): string | null => {
+    const walk = (
+      node: import("../../../mapper/types").XRPrimitive,
+    ): string | null => {
       for (const child of node.children) {
         if (child.type === "XRListItem" || child.type === "XRMenuItem") {
           const lbl = (child.label ?? child.content ?? "").trim();
           if (lbl && firstOption === null) firstOption = lbl;
-          const selected = (child as unknown as { state?: { selected?: boolean } })
-            .state?.selected;
+          const selected = (
+            child as unknown as { state?: { selected?: boolean } }
+          ).state?.selected;
           if (selected === true && lbl) return lbl;
         }
         const nested = walk(child);
@@ -706,53 +717,4 @@ export function XRSearchBoxMesh({
   );
 }
 
-// ─────────────────────────────────────────────────────────────
-// 16. XRTabGroupMesh
-// ─────────────────────────────────────────────────────────────
-
-export interface XRTabGroupMeshProps {
-  primitive: import("../../../mapper/types").XRTabGroup;
-  entry: LayoutEntry;
-  renderChild: (primitiveId: string) => React.ReactNode;
-}
-
-export function XRTabGroupMesh({
-  primitive,
-  entry,
-  renderChild,
-}: XRTabGroupMeshProps) {
-  const { pos, rot } = entryTransform(entry);
-  const clips = useClipPlanes();
-  const theme = useTheme();
-  const w = safeDim(entry.size.width);
-  const h = safeDim(entry.size.height);
-  const TAB_H = 0.042;
-
-  return (
-    <group position={pos} rotation={rot}>
-      {/* Tab bar — recessed nav-toned strip */}
-      <Surface
-        width={w}
-        height={TAB_H}
-        color={theme.navBg}
-        origin={[w / 2, -TAB_H / 2]}
-        clips={clips}
-      />
-
-      {/* Content panel below the tab bar */}
-      <Surface
-        width={w}
-        height={h - TAB_H}
-        color={theme.panelBg}
-        gradient
-        origin={[w / 2, -(TAB_H + (h - TAB_H) / 2)]}
-        clips={clips}
-      />
-
-      {primitive.children.map((child) => renderChild(child.id))}
-    </group>
-  );
-}
-
 // primitives.tsx - Add XRTextMesh for rendering text nodes
-

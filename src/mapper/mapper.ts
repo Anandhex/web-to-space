@@ -76,11 +76,8 @@ export function baseFrom(node: IRNode, type: XRPrimitiveType): XRPrimitiveBase {
     // placement: absent — Layout's responsibility
     children: [],
     relations: {
-      controls: node.relations.controls,
       labelledBy: node.relations.labelledBy,
       describedBy: node.relations.describedBy,
-      details: node.relations.details,
-      errorMessage: node.relations.errorMessage,
     },
   };
 }
@@ -132,11 +129,8 @@ function synthesiseTOC(
 
       children: [],
       relations: {
-        controls: [],
         labelledBy: [],
         describedBy: [],
-        details: [],
-        errorMessage: [],
       },
       href: `#${n.id}`,
       isCurrent: false,
@@ -167,11 +161,8 @@ function synthesiseTOC(
     items: [...items],
 
     relations: {
-      controls: [],
       labelledBy: [],
       describedBy: [],
-      details: [],
-      errorMessage: [],
     },
   };
 
@@ -333,14 +324,10 @@ export function mapIRToScene(
     confidence: 1.0,
     depth: 0,
     content: null,
-    // placement: absent — Layout sets the scene root transform
     children: sceneChildren,
     relations: {
-      controls: [],
       labelledBy: [],
       describedBy: [],
-      details: [],
-      errorMessage: [],
     },
     pageTitle: ir.meta.title,
     readingOrder: ir.readingOrder,

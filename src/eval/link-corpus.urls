@@ -1,0 +1,48 @@
+# Corpus for the link census (Phase 0 of docs/link-build-plan.md).
+#
+# The three documents in src/eval/corpus/ are hand-written fixtures for the
+# SEGMENTATION benchmark: a few hundred words each, fourteen anchors between
+# them, and every one of those anchors a table-of-contents fragment. They are
+# the right corpus for asking whether the parser finds a section boundary and
+# the wrong one for asking how many references a page carries. A census run
+# over them reports a median of zero outbound and passes G0 on no evidence.
+#
+# So the capacity gate runs over real pages instead. `npm run census:fetch`
+# downloads these into src/eval/link-corpus/ (gitignored — the list is what is
+# reproducible, not 3 MB of someone else's HTML), and `npm run census:real`
+# measures them.
+#
+# Selection, and why each is here:
+#
+#   • Five Wikipedia articles. The design doc's "median 13, p90 25" came from
+#     five Wikipedia articles, so the corpus that tests the claim has to
+#     contain the class of document the claim was made about — and a
+#     Wikipedia article is the densest reasonable case, with a real
+#     bibliography, superscript citations, and a navbox at the foot.
+#   • Two MDN pages. Reference documentation: heavy same-site cross-linking,
+#     a sidebar of navigation, almost no external destinations.
+#   • Two specs. Long, deeply self-referential, near-zero off-site links —
+#     the low-outbound end of the range.
+#   • One project README rendered by GitHub, and one plain long-form essay:
+#     the ordinary web, where most pages actually live.
+#
+# All eleven are permissively licensed (CC-BY-SA, CC-BY, W3C/WHATWG document
+# licences) or public technical documentation, and all are fetched read-only,
+# once, for a local benchmark.
+#
+# One URL per line. Blank lines and # comments are ignored.
+
+https://en.wikipedia.org/wiki/Hypertext
+https://en.wikipedia.org/wiki/Spatial_navigation
+https://en.wikipedia.org/wiki/Virtual_reality
+https://en.wikipedia.org/wiki/Information_architecture
+https://en.wikipedia.org/wiki/Vannevar_Bush
+
+https://developer.mozilla.org/en-US/docs/Web/API/WebXR_Device_API
+https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Roles/landmark_role
+
+https://www.w3.org/TR/wai-aria-1.2/
+https://html.spec.whatwg.org/multipage/links.html
+
+https://github.com/immersive-web/webxr
+https://www.nngroup.com/articles/ten-usability-heuristics/

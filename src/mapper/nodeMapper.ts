@@ -36,16 +36,8 @@ import type {
   XRToggle,
   XRComboBox,
   XRSlider,
-  XRDialog,
   XRAlert,
   XRTooltip,
-  XRTabGroup,
-  XRTab,
-  XRTabPanel,
-  XRMenu,
-  XRMenuItem,
-  XRTree,
-  XRTreeItem,
   XRGenericPanel,
   XRText,
 } from "./types";
@@ -151,11 +143,8 @@ function makeInlineRunParagraph(
     domId: null,
     children: run,
     relations: {
-      controls: [],
       labelledBy: [],
       describedBy: [],
-      details: [],
-      errorMessage: [],
     },
     wordCount: words,
     estimatedReadingTimeSec: Math.round((words / 200) * 60),
@@ -213,17 +202,17 @@ function mapMain(node: IRNode, ctx: MappingContext): XRContentPanel {
   return primitive;
 }
 
-function collectLinksInSubtree(nodeId: string, ir: MappingContext["ir"]): IRNode[] {
+function collectLinksInSubtree(
+  nodeId: string,
+  ir: MappingContext["ir"],
+): IRNode[] {
   const node = ir.nodes[nodeId];
   if (!node) return [];
   if (node.role === "link") return [node];
   return node.children.flatMap((id) => collectLinksInSubtree(id, ir));
 }
 
-function mapNavigation(
-  node: IRNode,
-  ctx: MappingContext,
-): XRList | null {
+function mapNavigation(node: IRNode, ctx: MappingContext): XRList | null {
   const linkNodes = node.children.flatMap((id) =>
     collectLinksInSubtree(id, ctx.ir),
   );
@@ -247,7 +236,10 @@ function mapNavigation(
       confidence: link.confidence,
       depth: link.depth,
       children: [link],
-      relations: { controls: [], labelledBy: [], describedBy: [], details: [], errorMessage: [] },
+      relations: {
+        labelledBy: [],
+        describedBy: [],
+      },
     };
     registerPrimitive(ctx, card, "listitem→XRListItem");
     return card;
@@ -332,7 +324,10 @@ function mapSection(
   const firstChildId = node.children[0];
   if (firstChildId) {
     const firstChild = ctx.ir.nodes[firstChildId];
-    if (firstChild?.role === "heading" && !looksLikeDimensionLabel(firstChild.label)) {
+    if (
+      firstChild?.role === "heading" &&
+      !looksLikeDimensionLabel(firstChild.label)
+    ) {
       title = firstChild.label ?? title;
       titleLevel = firstChild.level;
     }
@@ -677,8 +672,8 @@ function asInlineTextRun(p: XRPrimitive, ctx: MappingContext): XRPrimitive {
     type: "XRText",
     text,
     isProseRun: true,
-    componentType: (p as unknown as { componentType?: string | null })
-      .componentType ?? null,
+    componentType:
+      (p as unknown as { componentType?: string | null }).componentType ?? null,
     styleTags: (p as unknown as { styleTags?: string[] }).styleTags ?? [],
     children: [],
   } as unknown as XRPrimitive;
@@ -704,8 +699,7 @@ function mapSeparator(node: IRNode, ctx: MappingContext): XRSeparator {
     ...baseFrom(node, "XRSeparator"),
     type: "XRSeparator",
     // Semantic orientation fact — Layout may use it for axis alignment
-    orientation:
-      node.attributes.orientation === "vertical" ? "vertical" : "horizontal",
+
     children: [],
   };
   registerPrimitive(ctx, primitive, "separator→XRSeparator");
@@ -813,7 +807,6 @@ function mapMedia(node: IRNode, ctx: MappingContext): XRMediaPlayer {
     type: "XRMediaPlayer",
     mediaType,
     src: node.attributes.src,
-    poster: node.attributes.poster,
     captions: node.attributes.captions,
     // sizingStrategy: absent — Layout's responsibility
     children: [],
@@ -832,10 +825,7 @@ function mapMedia(node: IRNode, ctx: MappingContext): XRMediaPlayer {
  * Attaches rowCount and columnCount as semantic facts.
  * Layout decides layoutStrategy (flat-2d / curved-2d / scrollable / cards).
  */
-function mapTable(
-  node: IRNode,
-  ctx: MappingContext,
-): XRTable | XRGenericPanel {
+function mapTable(node: IRNode, ctx: MappingContext): XRTable | XRGenericPanel {
   const rowNodes = node.children
     .map((id) => ctx.ir.nodes[id])
     .filter(
@@ -1148,23 +1138,6 @@ function mapSlider(node: IRNode, ctx: MappingContext): XRSlider {
   return primitive;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Mapping rules — overlays
-// ─────────────────────────────────────────────────────────────
-
-function mapDialog(node: IRNode, ctx: MappingContext): XRDialog {
-  const primitive: XRDialog = {
-    ...baseFrom(node, "XRDialog"),
-    type: "XRDialog",
-    label: resolveLabel(node, ctx.ir) ?? node.label,
-    isModal: node.state.modal === "true",
-    state: extractState(node),
-    children: resolveChildren(node, ctx),
-  };
-  registerPrimitive(ctx, primitive, "dialog→XRDialog");
-  return primitive;
-}
-
 /**
  * Attaches liveRegion as a semantic fact.
  * Layout decides presentation (floating-notification vs inline-banner)
@@ -1197,102 +1170,6 @@ function mapTooltip(node: IRNode, ctx: MappingContext): XRTooltip {
     children: [],
   };
   registerPrimitive(ctx, primitive, "tooltip→XRTooltip");
-  return primitive;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Mapping rules — rich widgets
-// ─────────────────────────────────────────────────────────────
-
-function mapTabGroup(node: IRNode, ctx: MappingContext): XRTabGroup {
-  const primitive: XRTabGroup = {
-    ...baseFrom(node, "XRTabGroup"),
-    type: "XRTabGroup",
-    orientation:
-      node.attributes.orientation === "vertical" ? "vertical" : "horizontal",
-    children: resolveChildren(node, ctx),
-  };
-  registerPrimitive(ctx, primitive, "tablist→XRTabGroup");
-  return primitive;
-}
-
-function mapTab(node: IRNode, ctx: MappingContext): XRTab {
-  const primitive: XRTab = {
-    ...baseFrom(node, "XRTab"),
-    type: "XRTab",
-    state: extractState(node),
-    panelId: node.relations.controls[0] ?? null,
-    children: [],
-  };
-  registerPrimitive(ctx, primitive, "tab→XRTab");
-  return primitive;
-}
-
-function mapTabPanel(node: IRNode, ctx: MappingContext): XRTabPanel {
-  const primitive: XRTabPanel = {
-    ...baseFrom(node, "XRTabPanel"),
-    type: "XRTabPanel",
-    children: resolveChildren(node, ctx),
-  };
-  registerPrimitive(ctx, primitive, "tabpanel→XRTabPanel");
-  return primitive;
-}
-
-function mapMenu(node: IRNode, ctx: MappingContext): XRMenu {
-  const rule: MappingRule =
-    node.role === "menubar" ? "menubar→XRMenu" : "menu→XRMenu";
-  const primitive: XRMenu = {
-    ...baseFrom(node, "XRMenu"),
-    type: "XRMenu",
-    menuType: node.role === "menubar" ? "menubar" : "menu",
-    children: resolveChildren(node, ctx),
-  };
-  registerPrimitive(ctx, primitive, rule);
-  return primitive;
-}
-
-function mapMenuItem(node: IRNode, ctx: MappingContext): XRMenuItem {
-  const rule: MappingRule =
-    node.role === "menuitemcheckbox"
-      ? "menuitemcheckbox→XRMenuItem"
-      : node.role === "menuitemradio"
-        ? "menuitemradio→XRMenuItem"
-        : "menuitem→XRMenuItem";
-  const primitive: XRMenuItem = {
-    ...baseFrom(node, "XRMenuItem"),
-    type: "XRMenuItem",
-    itemType:
-      node.role === "menuitemcheckbox"
-        ? "menuitemcheckbox"
-        : node.role === "menuitemradio"
-          ? "menuitemradio"
-          : "menuitem",
-    state: extractState(node),
-    children: [],
-  };
-  registerPrimitive(ctx, primitive, rule);
-  return primitive;
-}
-
-function mapTree(node: IRNode, ctx: MappingContext): XRTree {
-  const primitive: XRTree = {
-    ...baseFrom(node, "XRTree"),
-    type: "XRTree",
-    multiselectable: node.state.multiselectable === "true",
-    children: resolveChildren(node, ctx),
-  };
-  registerPrimitive(ctx, primitive, "tree→XRTree");
-  return primitive;
-}
-
-function mapTreeItem(node: IRNode, ctx: MappingContext): XRTreeItem {
-  const primitive: XRTreeItem = {
-    ...baseFrom(node, "XRTreeItem"),
-    type: "XRTreeItem",
-    state: extractState(node),
-    children: resolveChildren(node, ctx),
-  };
-  registerPrimitive(ctx, primitive, "treeitem→XRTreeItem");
   return primitive;
 }
 
@@ -1451,33 +1328,13 @@ export function mapNode(node: IRNode, ctx: MappingContext): XRPrimitive | null {
       return mapSlider(node, ctx);
 
     // Overlays
-    case "dialog":
-      return mapDialog(node, ctx);
+
     case "alert":
       return mapAlert(node, ctx, "alert→XRAlert");
     case "status":
       return mapAlert(node, ctx, "status→XRAlert");
     case "tooltip":
       return mapTooltip(node, ctx);
-
-    // Rich widgets
-    case "tablist":
-      return mapTabGroup(node, ctx);
-    case "tab":
-      return mapTab(node, ctx);
-    case "tabpanel":
-      return mapTabPanel(node, ctx);
-    case "menu":
-    case "menubar":
-      return mapMenu(node, ctx);
-    case "menuitem":
-    case "menuitemcheckbox":
-    case "menuitemradio":
-      return mapMenuItem(node, ctx);
-    case "tree":
-      return mapTree(node, ctx);
-    case "treeitem":
-      return mapTreeItem(node, ctx);
 
     // Media / AV
     case "video":
@@ -1496,17 +1353,12 @@ export function mapNode(node: IRNode, ctx: MappingContext): XRPrimitive | null {
 
     // Delegated to section/alert
     case "grid":
-    case "toolbar":
-    case "application":
     case "document":
       return mapSection(node, ctx, "landmark:region→XRSection");
-    case "log":
-      return mapAlert(node, ctx, "alert→XRAlert");
+
     case "timer":
     case "marquee":
       return mapParagraph(node, ctx);
-    case "note":
-      return mapBlockQuote(node, ctx);
     case "option":
       return mapListItem(node, ctx);
 

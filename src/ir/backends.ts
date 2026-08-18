@@ -33,7 +33,11 @@ export function applyParserBackend(
           label: "Readability",
         };
       } catch {
-        return { html: rawHtml, configOverride: userConfig, label: "Readability (fallback)" };
+        return {
+          html: rawHtml,
+          configOverride: userConfig,
+          label: "Readability (fallback)",
+        };
       }
     }
 
@@ -45,21 +49,21 @@ export function applyParserBackend(
       };
     }
 
-    case "flat":
-      return { html: rawHtml, configOverride: userConfig, label: "Browser Panel" };
-
     // VIPS runs its own internal parsePageToIR call with custom config.
     // usePipeline detects this case and calls parsePageWithVIPS directly.
     case "vips":
-      return { html: rawHtml, configOverride: userConfig, label: "VIPS (Visual Blocks)" };
-
-    // Web2VR bypasses the XR pipeline entirely — usePipeline returns null
-    // plan/scene for this backend.  Web2VRScene handles rendering directly.
-    case "web2vr":
-      return { html: rawHtml, configOverride: userConfig, label: "Web2VR" };
+      return {
+        html: rawHtml,
+        configOverride: userConfig,
+        label: "VIPS (Visual Blocks)",
+      };
 
     case "custom":
     default:
-      return { html: rawHtml, configOverride: userConfig, label: "Custom Pipeline" };
+      return {
+        html: rawHtml,
+        configOverride: userConfig,
+        label: "Custom Pipeline",
+      };
   }
 }

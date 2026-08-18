@@ -1,4 +1,5 @@
 import type { HomeSettings } from "./HomeScreen";
+import type { Axis, NavState } from "../links/memory";
 
 export type ViewMode =
   // Legacy bespoke views (hand-tuned SlotMaps + renderer branches)
@@ -32,6 +33,29 @@ export interface Tab {
   url: string;
   html: string;        // empty string = show home screen
   settings: HomeSettings;
+  /**
+   * Where this tab's reader has been (src/links/memory.ts).
+   *
+   * PER TAB, not global: a corridor is a reading session, and two tabs are two
+   * readers. Null until the tab loads its first document — a home screen has
+   * no session root to hang a corridor off.
+   */
+  nav: NavState | null;
+  /**
+   * A directional move in flight: the reader has taken a door and the document
+   * behind it is being fetched.
+   *
+   * The document they are ON stays mounted and rendered throughout. Clearing
+   * it the moment a door was taken swapped the whole scene for a DOM spinner,
+   * which meant the one thing the reader needed to see — the board turning, the
+   * table sliding, the direction they were actually going — was replaced by a
+   * loading screen before it had drawn a frame. The move is the feedback; a
+   * spinner is what you show when there is none.
+   *
+   * Null when nothing is in flight. `axis` is which way they went, so every
+   * view can say so in its own geometry.
+   */
+  pending: { url: string; axis: Axis | null } | null;
 }
 
 export function makeTabId(): string {

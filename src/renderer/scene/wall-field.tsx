@@ -51,12 +51,25 @@ import { useTheme, type XRTheme } from "../theme";
 import {
   computeWallBoard,
   computeWallCells,
+  wallArcAt,
   wallSectionOf,
   WALL_BOARD_STANDOFF,
   type SectionPageRange,
   type WallBoard,
   type WallCell,
 } from "../page-placements";
+import {
+  DoorPlate,
+  OverflowMark,
+  drawable,
+  overflowCount,
+  useDoorSlots,
+  type DirSlot,
+  type DirSlots,
+} from "./link-doors";
+import { useTraversal } from "./contexts";
+import { TravelGroup, TRAVEL_LEAD_MS } from "./travel";
+import type { Axis } from "../../links/memory";
 import { Surface } from "../primitives/surface";
 import {
   Z_LAYER_ACCENT,
@@ -729,6 +742,7 @@ export function WallField({
   setPage,
   primitiveMap,
   sectionRanges,
+  viewMode,
 }: {
   panel: XRPrimitive;
   plan: LayoutPlan;
@@ -736,6 +750,8 @@ export function WallField({
   setPage: (id: string, page: number) => void;
   primitiveMap: Map<string, XRPrimitive>;
   sectionRanges: SectionPageRange[];
+  /** Selects this view's window budget — see links/memory.ts WINDOWS. */
+  viewMode?: string;
 }) {
   const theme = useTheme();
   const entry = plan.entries[panel.id];
@@ -872,7 +888,81 @@ export function WallField({
     [entry, pageCount, layoutOpts],
   );
 
+  // ── The dice ──
+  //
+  // The strips only appear once the reader has OPENED a page, and then they
+  // carry every link that page has — not a window onto them.
+  //
+  // The board has three levels: an outline of section tiles, a section's pages
+  // as previews, and one page at full size. Only the last of those is a reader
+  // reading, and only then is "the links of the page you are on" a question
+  // with an answer — on the outline `focus` is just whichever page a section
+  // happens to start at, so its doors would belong to a page nobody chose.
+  //
+  // Once it IS one page, the ration a window exists to impose has nothing to
+  // ration: the census puts outbound links at a median of 0 and a p90 of 7 per
+  // rendered page. So the window is fitted to the page instead and every
+  // connected link gets a strip. (Anand, 2026-08-16.)
+  const { slots, take } = useDoorSlots(openPage ?? focus, viewMode, true);
+  const showStrips = openPage !== null;
+  const [turning, setTurning] = React.useState<Axis | null>(null);
+  const turnTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(
+    () => () => {
+      if (turnTimer.current) clearTimeout(turnTimer.current);
+    },
+    [],
+  );
+
+  // What the board re-normalises against: the document it is showing. A jump
+  // that lands on a document already in memory changes `nav.at` without
+  // changing the URL's identity, so both are folded in.
+  const traversal = useTraversal();
+  const traversalNav = traversal?.nav ?? null;
+  const resetKey = `${traversalNav?.at ?? 0}|${traversalNav ? traversalNav.history[traversalNav.at]?.url : panel.id}`;
+
+  // Select a strip: start the swing, THEN ask for the document. The order
+  // matters — a fetch that resolved instantly would otherwise replace the
+  // scene before the reader saw which way they went, and the direction is the
+  // entire channel this design navigates by.
+  //
+  // The document stays on screen for the whole fetch (see `Tab.pending`), so
+  // what the reader watches is their own page turning away, which is the
+  // truthful animation of what is happening.
+  const takeStrip = React.useCallback(
+    (slot: DirSlot) => {
+      if (turnTimer.current) clearTimeout(turnTimer.current);
+      setTurning(slot.axis);
+      turnTimer.current = setTimeout(() => {
+        turnTimer.current = null;
+        take(slot);
+      }, TRAVEL_LEAD_MS);
+    },
+    [take],
+  );
+
+  // The turn ends when the move does — on arrival, or on a fetch that failed.
+  // Without this the board would stay face-down against whichever document it
+  // is showing: `resetKey` snaps the GROUP back but `turning` would still be
+  // pointing it away.
+  const arrived = traversal?.pending == null;
+  React.useEffect(() => {
+    if (arrived) setTurning(null);
+  }, [arrived, resetKey]);
+
   if (!entry) return null;
+
+  // The open page's cell, in the board group's own frame. `cells` are already
+  // laid out for the current disclosure, so this follows the reflow for free.
+  const openCell = cells.find((c) => c.kind === "page" && c.open) ?? null;
+  const stripFrame: StripFrame | null = openCell
+    ? {
+        left: openCell.offset.x,
+        right: openCell.offset.x + entry.size.width * openCell.scale,
+        top: openCell.offset.y,
+        bottom: openCell.offset.y - entry.size.height * openCell.scale,
+      }
+    : null;
 
   const maxPages = ranges.reduce((m, r) => Math.max(m, r.end - r.start + 1), 1);
   const openRange = openSection === null ? null : ranges[openSection];
@@ -889,8 +979,18 @@ export function WallField({
     rotation: c.rotation,
   });
 
+  // The board's own centre, in the world space the children are placed in:
+  // the panel anchor plus half its extent, pushed back onto the board's plane.
+  const pivot: [number, number, number] = [
+    entry.position.x + entry.size.width / 2,
+    entry.position.y - entry.size.height / 2,
+    entry.position.z +
+      wallArcAt(entry.size.width / 2, entry.size.width).z -
+      WALL_BOARD_STANDOFF,
+  ];
+
   return (
-    <>
+    <TravelGroup mode="turn" axis={turning} pivot={pivot} resetKey={resetKey}>
       {board && (
         <group
           position={[entry.position.x, entry.position.y, entry.position.z]}
@@ -900,6 +1000,18 @@ export function WallField({
             centreX={entry.size.width / 2}
             tones={tones}
           />
+          {/* Links, on the edges the legend puts them on: parent above,
+              external below, siblings to the sides — hung off the OPEN PAGE's
+              own cell, which is the page whose links they are. Only while a
+              page is open; see the note at `showStrips`. */}
+          {showStrips && stripFrame && (
+            <WallLinkStrips
+              frame={stripFrame}
+              panelWidth={entry.size.width}
+              slots={slots}
+              onTake={takeStrip}
+            />
+          )}
           <WallHeader
             board={board}
             ranges={ranges}
@@ -1047,7 +1159,7 @@ export function WallField({
           </AtPos>
         );
       })}
-    </>
+    </TravelGroup>
   );
 }
 
@@ -1066,3 +1178,184 @@ function renderLive(
   const anchor = openPage ?? openRange?.start ?? 0;
   return Math.abs(c.pageIndex - anchor) <= WALL_LIVE_PREVIEWS;
 }
+
+// ─────────────────────────────────────────────────────────────
+// The dice: link strips on the board's edges
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The board's four edges, carrying the page's links
+ * (docs/directional-links.md, Phase 5).
+ *
+ *   top edge     parent / top-level
+ *   bottom edge  external
+ *   left, right  siblings
+ *
+ * The wall is first among the four views deliberately: it is the flattest
+ * geometry of the set, so it tests the IDEA — relation read as direction —
+ * rather than a view's own quirks.
+ *
+ * Strips sit OUTSIDE the grid, in the board's margin, and stop short of the
+ * header plate. They are read by turning the head, which is the whole channel:
+ * a reader who wants the level above looks up.
+ */
+/**
+ * Strip size, metres.
+ *
+ * Bigger than the first build's, which the reader could not read: a 0.052 m
+ * plate at 0.2 m wide gave the label about nine characters at a 1.5 m viewing
+ * distance, so every door on the wall said "Measuremen…" or "en.wikipedia…"
+ * and the reader had to guess. A door whose name is truncated to nothing is a
+ * door with no name.
+ *
+ * These are sized off the same viewing distance the wall itself is authored
+ * to: 0.076 m of height is about 2.9° of arc, comfortably over the 0.29°
+ * legibility floor for the body size inside it, and 0.42 m of width takes a
+ * two-to-three word destination name whole.
+ */
+const STRIP_H = 0.076;
+const STRIP_GAP = 0.016;
+/** Lateral strips stack down the side edges; this is their long axis. */
+const STRIP_W_LATERAL = 0.42;
+/**
+ * How far a strip stands off the CELL plane — the plane the pages hang in,
+ * `WALL_BOARD_STANDOFF` in front of the board's surface.
+ *
+ * The plane matters more than the number. Drawn on the board's own surface,
+ * the strips sat BEHIND the open page and its mount and were occluded by the
+ * very thing whose links they are: the wall looked like it had no links at
+ * all. They belong in the page's plane, standing slightly proud of it.
+ */
+const STRIP_LIFT = 0.02;
+
+/** The rectangle the strips hang off: the open page's own cell. */
+export interface StripFrame {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+function WallLinkStrips({
+  frame,
+  panelWidth,
+  slots,
+  onTake,
+}: {
+  frame: StripFrame;
+  panelWidth: number;
+  slots: DirSlots;
+  onTake: (slot: DirSlot) => void;
+}) {
+  // ── The strips hang off the OPEN PAGE, not off the board ──
+  //
+  // The board is the whole document's outline and grows to four metres wide
+  // with a long section open; its literal edges are then a metre either side
+  // of the reader and its top and bottom are past the top and bottom of what
+  // they can see without moving. Doors placed there are doors nobody finds.
+  //
+  // The page is the right frame for two reasons. It is a known, modest size —
+  // one reading panel — so the strips are always within a glance of the thing
+  // they belong to. And they ARE the page's links: "a corridor belongs to the
+  // page the reader is on" is the model, so hanging them off the page rather
+  // than off the building it sits in is what the model already said.
+  const centreX = (frame.left + frame.right) / 2;
+  const centreY = (frame.top + frame.bottom) / 2;
+  const gridW = Math.max(0.2, frame.right - frame.left);
+
+  /**
+   * Rows and columns both fill from the MIDDLE OUT (Anand, 2026-08-16).
+   *
+   * Filling from an edge put the nearest door — the way back, the first
+   * sibling — at whichever end of the board the packing happened to start,
+   * which changes as the board reflows. Fanning from the centre puts slot 0
+   * where the reader is already looking and grows the run outward, so the
+   * order is stable and reads as a rank rather than a queue.
+   *
+   * Offsets go 0, +1, −1, +2, −2 …, which is the sequence the reader's eye
+   * follows anyway.
+   */
+  const centreOut = (n: number): number[] =>
+    Array.from({ length: n }, (_, i) =>
+      i === 0 ? 0 : (i % 2 === 1 ? 1 : -1) * Math.ceil(i / 2),
+    );
+
+  /** The drawable slots plus the overflow mark, as one list to lay out. */
+  const runOf = (axis: Axis): (DirSlot | null)[] => {
+    const drawn = drawable(slots[axis]);
+    const extra = overflowCount(slots[axis]);
+    return extra > 0 ? [...drawn, null] : drawn;
+  };
+
+  const plate = (
+    s: DirSlot | null,
+    axis: Axis,
+    w: number,
+    x: number,
+    y: number,
+  ): React.ReactNode => {
+    const arc = wallArcAt(x, panelWidth);
+    return (
+      <group
+        key={s ? s.key : `${axis}-overflow`}
+        position={[x, y, arc.z + STRIP_LIFT]}
+        rotation={[0, arc.yaw, 0]}
+      >
+        {s ? (
+          <DoorPlate
+            slot={s}
+            width={w}
+            height={STRIP_H}
+            recession={s.distance - 1}
+            onSelect={() => onTake(s)}
+          />
+        ) : (
+          <OverflowMark count={overflowCount(slots[axis])} width={w} height={STRIP_H} />
+        )}
+      </group>
+    );
+  };
+
+  // Parent and external rows run ALONG the edge, fanning from the centre. The
+  // plate width is fixed rather than divided into the span: dividing made a
+  // two-door row into two half-metre banners and a six-door row into slivers,
+  // so the same link was a different size on every page.
+  const horizontal = (axis: "up" | "down", y: number): React.ReactNode => {
+    const run = runOf(axis);
+    if (run.length === 0) return null;
+    const w = Math.min(STRIP_W_LATERAL, (gridW - STRIP_GAP * 2) / Math.max(1, Math.min(run.length, 5)));
+    const pitch = w + STRIP_GAP;
+    return centreOut(run.length).map((k, i) =>
+      plate(run[i], axis, w, centreX + k * pitch, y),
+    );
+  };
+
+  // Lateral strips stack DOWN the side edges, fanning from the board's own
+  // vertical centre for the same reason the rows fan from its horizontal one.
+  const vertical = (axis: "left" | "right"): React.ReactNode => {
+    const run = runOf(axis);
+    if (run.length === 0) return null;
+    const x =
+      axis === "left"
+        ? frame.left - STRIP_GAP - STRIP_W_LATERAL / 2
+        : frame.right + STRIP_GAP + STRIP_W_LATERAL / 2;
+    const pitch = STRIP_H + STRIP_GAP;
+    return centreOut(run.length).map((k, i) =>
+      plate(run[i], axis, STRIP_W_LATERAL, x, centreY - k * pitch),
+    );
+  };
+
+  // Above the page's top edge and below its bottom one — up is up.
+  const upY = frame.top + STRIP_GAP + STRIP_H / 2;
+  const downY = frame.bottom - STRIP_GAP - STRIP_H / 2;
+
+  return (
+    <>
+      {horizontal("up", upY)}
+      {horizontal("down", downY)}
+      {vertical("left")}
+      {vertical("right")}
+    </>
+  );
+}
+

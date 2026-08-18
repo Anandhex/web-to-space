@@ -39,10 +39,6 @@ export const INTERACTIVE_ROLES = new Set([
   "spinbutton",
   "switch",
   "tab",
-  "menuitem",
-  "menuitemcheckbox",
-  "menuitemradio",
-  "treeitem",
   "option",
 ]);
 
@@ -72,7 +68,6 @@ export const DEFAULT_CONFIG: ParserConfig = {
   },
   aiFallbackThreshold: 0.6,
   aiFallbackIncludeWrappers: false,
-  readingOrderStrategy: "dom",
   excludeHiddenContent: true,
 };
 
@@ -141,20 +136,8 @@ export const PARSER_CONFIGS = {
   /** DOM reading order (same as full, explicit for comparison harness). */
   readingOrderDom: {
     ...DEFAULT_CONFIG,
-    readingOrderStrategy: "dom" as const,
   },
 
-  /** Landmark-first reading order — all landmarks before content nodes. */
-  readingOrderLandmarkFirst: {
-    ...DEFAULT_CONFIG,
-    readingOrderStrategy: "landmark-first" as const,
-  },
-
-  /** Flow-to-aware reading order — follows aria-flowto edges via graph traversal. */
-  readingOrderFlowtoAware: {
-    ...DEFAULT_CONFIG,
-    readingOrderStrategy: "flowto-aware" as const,
-  },
   /** Minimal label resolution - only semantic containers get labels */
   minimalLabels: {
     ...DEFAULT_CONFIG,
@@ -212,3 +195,43 @@ export const INLINE_TAGS = new Set([
   "u",
   "var",
 ]);
+
+export const PRUNE_SELECTORS = [
+  ".mw-editsection",
+  ".mw-editsection-bracket",
+  ".mw-jump-link",
+  ".mw-cite-backlink",
+  ".reference",
+  ".noprint",
+  ".mw-ui-button",
+  "#toc",
+  "#catlinks",
+  ".catlinks",
+  ".navbox",
+  ".sistersitebox",
+  ".metadata",
+  // Wikipedia Vector-2022 skin chrome that lives *inside* <main>, as
+  // siblings of the real article body (#bodyContent) rather than outside
+  // it — pruning the outer skip-to-main slice doesn't remove these, so
+  // without this they get paginated ahead of the article as blank pages.
+  ".vector-page-titlebar-toc",
+  "#p-lang-btn",
+  ".vector-page-toolbar",
+  ".vector-column-end",
+  "svg[aria-hidden='true']",
+  "img[aria-hidden='true']",
+  "span[aria-hidden='true']:empty",
+  ".Z3988",
+  "span[title^='ctx_ver=']",
+  // Deferred-hydration skeletons. A site that renders islands client-side
+  // (the Guardian's <gu-island deferUntil="visible">, and the same pattern
+  // under other names) ships a placeholder subtree that its own JS swaps for
+  // the real content. We parse static HTML and never run that JS, so all
+  // that survives is a set of contentless boxes — which still reserve height
+  // and paginate, reading as empty tiles where "most viewed" or the comment
+  // thread should be.
+  '[data-name="placeholder"]',
+  '[data-testid="placeholder"]',
+  "style",
+  "script",
+];

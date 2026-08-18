@@ -8,6 +8,12 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "benchmark": "tsx src/eval/run-benchmark.ts",
+    "census": "tsx src/eval/link-census.ts",
+    "census:fetch": "tsx src/eval/fetch-link-corpus.ts",
+    "census:real": "tsx src/eval/link-census.ts src/eval/link-corpus",
+    "test:links": "tsx src/links/__tests__/gold-set.ts",
+    "test:memory": "tsx src/links/__tests__/memory.ts",
+    "test:slots": "tsx src/links/__tests__/slots.ts",
     "verify:vips": "tsx src/eval/verify-vips-visual.ts"
   },
   "devDependencies": {

@@ -16,7 +16,12 @@ import {
   RENDER_ORDER_IMAGE,
   RENDER_ORDER_TEXT,
 } from "../constants";
-import { Surface, safeDim, entryTransform, CurvedTexturePlane } from "../surface";
+import {
+  Surface,
+  safeDim,
+  entryTransform,
+  CurvedTexturePlane,
+} from "../surface";
 import { useClipPlanes } from "../contexts";
 import { ClippedText } from "../inline";
 import { proxyImageSrc } from "../../../proxy";
@@ -59,31 +64,6 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
   // Poster/thumbnail background, loaded the same way XRImageMesh loads its
   // texture — makes the placeholder read as a real media widget rather than
   // a flat placeholder color, without wiring up actual playback.
-  const proxiedPoster = primitive.poster ? proxyImageSrc(primitive.poster) : "";
-  const [posterTexture, setPosterTexture] =
-    React.useState<THREE.Texture | null>(null);
-
-  React.useEffect(() => {
-    setPosterTexture(null);
-    if (!proxiedPoster) return;
-    let cancelled = false;
-    const loader = new THREE.TextureLoader();
-    loader.load(
-      proxiedPoster,
-      (loaded) => {
-        loaded.colorSpace = THREE.SRGBColorSpace;
-        if (!cancelled) setPosterTexture(loaded);
-      },
-      undefined,
-      () => {
-        // Broken/unreachable poster — leave null so the plain backing
-        // panel renders instead.
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [proxiedPoster]);
 
   return (
     <group position={pos} rotation={rot}>
@@ -92,20 +72,6 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
 
       {/* Poster thumbnail — sits between the backing panel and the icon
           overlay so the play/audio icon still reads on top of it. */}
-      {posterTexture && (
-        <CurvedTexturePlane
-          width={w}
-          height={h}
-          position={[w / 2, -h / 2, Z_LAYER_IMAGE]}
-          renderOrder={RENDER_ORDER_IMAGE}
-        >
-          <meshBasicMaterial
-            map={posterTexture}
-            transparent
-            clippingPlanes={clips}
-          />
-        </CurvedTexturePlane>
-      )}
 
       {/* Play / audio icon */}
       <group position={[w / 2, -h / 2, Z_LAYER_OVERLAY_TEXT]}>
@@ -191,12 +157,10 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
 // 6. XRCodeBlockMesh
 // ─────────────────────────────────────────────────────────────
 
-
 export interface XRImageMeshProps {
   primitive: import("../../../mapper/types").XRImage;
   entry: LayoutEntry;
 }
-
 
 export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
   const { pos, rot } = entryTransform(entry);
@@ -362,4 +326,3 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
 // ─────────────────────────────────────────────────────────────
 // 11. XRListItemMesh
 // ─────────────────────────────────────────────────────────────
-

@@ -114,3 +114,35 @@ the existing end-to-end pipeline metrics, aggregated across the corpus.
 - Cai, Yu, Wen, Ma. *VIPS: a Vision-based Page Segmentation Algorithm.* MSR-TR-2003-79.
 - *The influence of text rotation, font and distance on legibility in VR.* IEEE VR 2020.
 - *Perceiving Multilingual Text in Virtual Reality.* ACM VRST 2025.
+
+---
+
+## Link census (`npm run census`)
+
+Phase 0 of `docs/link-build-plan.md`. Measures how many references a rendered
+page carries, so the reference-neighbourhood's capacity claim — roughly 16–24
+destinations of lateral room — can be checked against real documents before any
+of the geometry is built.
+
+```bash
+npm run census          # the hand-written fixtures in ./corpus
+npm run census:fetch    # download the real-page corpus (see link-corpus.urls)
+npm run census:real     # measure it
+```
+
+`census:fetch` writes into `./link-corpus/` (gitignored) plus a `sources.json`
+recording the URL each file came from. The census reads that map, and it
+matters: `same-site` vs `off-site` is an origin comparison, and a page measured
+at the `file://` path it happens to be saved at has no origin — every absolute
+href would come back off-site and the entire near field would move out into the
+far field.
+
+The fixtures in `./corpus` are for the segmentation benchmark. Between them
+they carry fourteen anchors, all table-of-contents fragments, so a census over
+them reports a median of zero and passes the gate on no evidence. Run
+`census:real` for a number worth quoting.
+
+Both runs write `eval-out/link-census*.{csv,md}`. The `.md` carries the G0
+verdict, the distribution weighted three ways, and the per-document table —
+pooling every rendered page lets one 745-page specification cast 745 votes, so
+the pooled median is reported beside an equal-weight roll-up rather than alone.

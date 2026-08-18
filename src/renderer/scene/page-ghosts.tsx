@@ -37,6 +37,7 @@ import {
   computeFieldLabels,
   computeRoomShell,
   computeRoomSlabs,
+  computeRoomStairs,
   computeRoomFixtures,
   computeReadingSpots,
   computeElevatorShell,
@@ -64,8 +65,14 @@ import {
 } from "./page-cells";
 import { WallField } from "./wall-field";
 import { DeckField } from "./deck-field";
+import { useDoorSlots, type DirSlots } from "./link-doors";
+import { usePageLinks } from "./contexts";
+import { buildSlots, drawable } from "../../links/slots";
+import { windowFor } from "../../links/memory";
+import type { SpatialLink } from "../../links/types";
 import { NavigateContext } from "../primitives/contexts";
 import {
+  RoomStairs,
   RoomWalk,
   RoomTeleport,
   LinkDoors,
@@ -79,6 +86,7 @@ import { RoomShell, RoomSlabs, RoomLights, GALLERY_SIGN } from "./room-decor";
 import {
   ElevatorShaft,
   ElevatorDirectory,
+  ElevatorLinkRing,
   ElevatorSlotMark,
 } from "./elevator-decor";
 
@@ -192,60 +200,12 @@ export function deepSectionRangesFor(
 
 
 /**
- * Every outbound link a section's pages contain, in reading order, de-duped
- * by target — what the `rooms` view hangs down the corridor past that
- * section's room.
- *
- * Links are `XRLink` primitives whether they came from a nav list or from
- * mid-prose (see `primitives/inline.tsx`), and pagination has already stamped
- * each one with the page it landed on, so bucketing them by section is a walk
- * of the primitive map. Same-page fragments count: a link to another part of
- * this document is still a door out of this room, and NavigateContext knows
- * how to follow one.
- */
-const LINKS_PER_SECTION_CAP = 14;
-
-/**
  * rooms: how close the reader has to be for a page to render for real rather
  * than as a numbered ghost card. Roughly three reading distances — near
  * enough that the page is worth mounting, far enough that walking into a
  * room brings its near wall to life before you reach it.
  */
 const ROOM_LIVE_RADIUS = 4.2;
-
-export function sectionLinksFor(
-  ranges: SectionPageRange[],
-  panel: XRPrimitive,
-  plan: LayoutPlan,
-): SectionLink[][] {
-  const out: SectionLink[][] = ranges.map(() => []);
-  const seen = ranges.map(() => new Set<string>());
-  // Walk the panel's subtree carrying the page down. An inline link has no
-  // layout entry of its own — the paragraph around it is what pagination
-  // stamped, and the link is drawn as one of its inline runs — so asking a
-  // link which page it is on only ever answers "none". Its page is its
-  // nearest placed ancestor's, and walking the tree also gets them in
-  // reading order, which iterating the primitive map does not guarantee.
-  const visit = (p: XRPrimitive, page: number | undefined) => {
-    const e = plan.entries[p.id];
-    if (e?.suppressed) return;
-    const at = e?.pageIndex ?? page;
-    const href = p.type === "XRLink" ? p.href : null;
-    if (href && at !== undefined) {
-      const s = ranges.findIndex((r) => at >= r.start && at <= r.end);
-      if (s >= 0 && out[s].length < LINKS_PER_SECTION_CAP && !seen[s].has(href)) {
-        seen[s].add(href);
-        const raw =
-          (p as { text?: string }).text ?? p.label ?? p.content ?? href;
-        const label = raw.replace(/\s+/g, " ").trim();
-        out[s].push({ label: label || href, href });
-      }
-    }
-    for (const c of p.children ?? []) visit(c, at);
-  };
-  visit(panel, undefined);
-  return out;
-}
 
 /**
  * A section plaque. Rooms marks it a `sign`: an illuminated plate over the
@@ -379,16 +339,68 @@ export function PageGhostField({
 
   const viewingDistance = plan.config.viewingDistance;
 
-  // rooms: every outbound link each section's pages contain. These hang on the
-  // corridor past that section's room — the payoff of its second door — and
-  // their count sizes that stretch of corridor, so the SAME list has to reach
-  // every rooms entry point below or their floor plans disagree.
+  // rooms: the corridor past a section's room carries the links of the page
+  // the reader is ON — not every link the section contains.
+  //
+  // "Corridors are per rendered page, not per document section" is a decision
+  // the spec settles (docs/directional-links.md, item 5), and the census says
+  // why: one MDN page carries 167 parent links on a single rendered page,
+  // because a nav sidebar is one landmark and pagination drops it whole onto
+  // one page. Hanging a section's whole link set off its corridor built a
+  // stretch nobody could walk to the end of. Only the live page's corridor is
+  // furnished; the others are empty stretches the reader passes through.
+  //
+  // The SAME list has to reach every rooms entry point below, because its
+  // length sizes the stretch — a corridor built for one list and doored from
+  // another disagrees with its own floor plan.
+  // Fit mode (every link, no window) for the ELEVATOR, whose corridor is a ring
+  // the reader turns to read; the WINDOW for rooms, whose corridor is one they
+  // have to walk. One Wikipedia page's 28 ascent links built a fifty-six-metre
+  // branch before this — the census had warned that a nav sidebar lands whole
+  // on one page, up to 167 of them, and "build the parent corridor flat and
+  // revisit if it bites" is exactly the revisit.
+  const { slots: roomSlots, take: takeDirectional } = useDoorSlots(
+    focus,
+    mode,
+    mode === "elevator",
+  );
+
+  // ── rooms: every page's corridor, built with the building ──
+  //
+  // Not just the focused page's. Anand, 2026-08-16: "I want the corridors
+  // present irrespective whether the user is standing on the page, they should
+  // be pre-rendered before not after standing." A reader walking a gallery has
+  // to see which pages lead somewhere BEFORE choosing which to stand at, and a
+  // corridor that appears only once they are already there cannot be part of
+  // that choice.
+  //
+  // Windowed, not fitted: a corridor is walked, and one Wikipedia page's 28
+  // ascent links once built a fifty-six-metre one.
+  const allPageLinks = usePageLinks();
+  const roomPageLinks = React.useMemo(() => {
+    if (mode !== "rooms") return undefined;
+    const budget = windowFor("rooms");
+    const byPage: SpatialLink[][] = Array.from({ length: pageCount }, () => []);
+    for (const l of allPageLinks?.links ?? [])
+      if (l.pageIndex >= 0 && l.pageIndex < pageCount) byPage[l.pageIndex].push(l);
+    return byPage.map((links) => {
+      if (links.length === 0) return [];
+      // `nav` is deliberately left out: a page the reader is not standing on
+      // has no way back FROM it, and threading the current corridor into every
+      // page's door list would put the same return door in forty places.
+      const slots = buildSlots({ links, nav: null, budget });
+      const out: SectionLink[] = [];
+      for (const axis of ["left", "right", "up", "down"] as const)
+        for (const s of drawable(slots[axis]))
+          out.push({ label: s.label, href: s.url, axis, isReturn: false });
+      return out;
+    });
+  }, [mode, pageCount, allPageLinks]);
+  // The elevator still takes one flat list for the page the reader is on — its
+  // corridor is a ring they turn to, opened one at a time.
   const sectionLinks = React.useMemo(
-    () =>
-      mode === "rooms"
-        ? sectionLinksFor(sectionRanges, panel, plan)
-        : undefined,
-    [mode, sectionRanges, panel, plan],
+    () => (mode === "elevator" ? directionalSectionLinks(roomSlots) : undefined),
+    [mode, roomSlots],
   );
 
   const roomOpts = React.useMemo(
@@ -396,11 +408,12 @@ export function PageGhostField({
       sectionRanges,
       viewingDistance,
       sectionLinks,
+      pageLinks: roomPageLinks,
       // The floor is world y = 0, which in the panel-anchor space these
       // offsets live in sits the panel's own height below the anchor line.
       floorY: entry ? -entry.position.y : undefined,
     }),
-    [sectionRanges, viewingDistance, sectionLinks, entry],
+    [sectionRanges, viewingDistance, sectionLinks, roomPageLinks, entry],
   );
 
   const placements = React.useMemo(
@@ -584,11 +597,21 @@ export function PageGhostField({
   );
 
   const navigate = React.useContext(NavigateContext);
+  // The flights at the end of every page's corridor: up to the parents'
+  // landing, down to the externals'.
+  const roomStairs = React.useMemo(
+    () =>
+      mode && entry ? computeRoomStairs(mode, pageCount, entry.size, roomOpts) : [],
+    [mode, entry, pageCount, roomOpts],
+  );
+
+
   useRoomWalking({
     enabled: isRooms,
     poseRef,
     jumpRef,
     walls: roomShell,
+    stairs: roomStairs,
     floorY: entry ? -entry.position.y : 0,
     onRoomChange: updateRoom,
     // Walking into a link door goes through it, the same as clicking it.
@@ -610,6 +633,7 @@ export function PageGhostField({
       mode && entry ? computeRoomSlabs(mode, pageCount, entry.size, roomOpts) : [],
     [mode, entry, pageCount, roomOpts],
   );
+
 
   // The light fittings: luminaires over every space and a gallery light over
   // every page. Static, like the walls — the reader's position decides which
@@ -731,6 +755,7 @@ export function PageGhostField({
         setPage={setPage}
         primitiveMap={primitiveMap}
         sectionRanges={sectionRanges}
+        viewMode={mode}
       />
     );
 
@@ -746,6 +771,7 @@ export function PageGhostField({
         setPage={setPage}
         primitiveMap={primitiveMap}
         sectionRanges={sectionRanges}
+        viewMode={mode}
       />
     );
 
@@ -771,6 +797,15 @@ export function PageGhostField({
             anchor={entry.position}
             onStep={rideShaft}
           />
+          {/* The corridor off this storey: siblings on an arc inside the ring
+              of pages, parents and externals stacked on the plaque's own
+              bearing — the elevator's own up and down. */}
+          <ElevatorLinkRing
+            shell={elevatorShell}
+            anchor={entry.position}
+            slots={roomSlots}
+            onTake={takeDirectional}
+          />
         </>
       )}
       {roomShell.length > 0 && (
@@ -793,6 +828,9 @@ export function PageGhostField({
       )}
       {roomShell.some((w) => w.portal) && (
         <LinkDoors walls={roomShell} anchor={entry.position} />
+      )}
+      {roomStairs.length > 0 && (
+        <RoomStairs stairs={roomStairs} anchor={entry.position} />
       )}
       {isRooms && entry && (
         <RoomTeleport
@@ -976,4 +1014,30 @@ export function PageGhostField({
   ) : (
     field
   );
+}
+
+/**
+ * The branch corridor's doors, from the directional slot model.
+ *
+ * ONE list, not one per section. The corridor belongs to the page the reader
+ * is on — `computeRoomShell` builds it off the wall beside that page — so
+ * there is nothing to bucket. The nesting survives only because
+ * `PagePlacementOptions.sectionLinks` is still typed as a list of lists, which
+ * the elevator and the older room plan both read.
+ *
+ * Order within it is `buildSlots`'s: the way back first, then the rest of the
+ * walked corridor, then this page's own links. Nothing is dropped — the slots
+ * were built in fit mode, so the branch is sized for every one of them.
+ */
+function directionalSectionLinks(slots: DirSlots): SectionLink[][] {
+  const out: SectionLink[] = [];
+  for (const axis of ["left", "right", "up", "down"] as const)
+    for (const s of slots[axis])
+      out.push({
+        label: s.label,
+        href: s.url,
+        axis,
+        isReturn: s.kind === "return",
+      });
+  return [out];
 }

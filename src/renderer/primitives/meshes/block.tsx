@@ -563,14 +563,12 @@ export interface XRSeparatorMeshProps {
   entry: LayoutEntry;
 }
 
-export function XRSeparatorMesh({ primitive, entry }: XRSeparatorMeshProps) {
+export function XRSeparatorMesh({ entry }: XRSeparatorMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
   const curve = usePanelCurve();
   const w = safeDim(entry.size.width);
-  const h = safeDim(entry.size.height);
-  const isHoriz = primitive.orientation !== "vertical";
 
   // Render the rule as a thin <Surface> so it BENDS onto the panel cylinder
   // instead of staying a flat chord that the curved backing bulges in front of
@@ -582,8 +580,8 @@ export function XRSeparatorMesh({ primitive, entry }: XRSeparatorMeshProps) {
   return (
     <group position={pos} rotation={rot}>
       <Surface
-        width={isHoriz ? w : 0.002}
-        height={isHoriz ? 0.002 : h}
+        width={w}
+        height={0.002}
         radius={0.0005}
         color={theme.panelRim}
         opacity={0.6}

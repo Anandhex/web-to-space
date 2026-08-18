@@ -26,9 +26,17 @@ import { carouselGhostPlacement } from "../../layout/placement";
 import { NavigateContext } from "../primitives";
 import {
   CurrentPageContext,
+  LinkBindingContext,
+  PageLinksContext,
   PageRangeContext,
+  TraversalContext,
+  type PageLinksApi,
   type PageState,
+  type TraversalApi,
 } from "./contexts";
+import { collectSpatialLinks } from "../../links/collect";
+import { directionOf } from "../../links/direction";
+import type { SpatialLink } from "../../links/types";
 import { hasDescendant } from "./dispatch-children";
 import { PrimitiveDispatcher } from "./dispatcher";
 import { CarouselGhostPanel } from "./panels";
@@ -36,8 +44,8 @@ import { sectionRangesFor } from "./page-ghosts";
 import { isDarkTheme, sectionTint } from "./section-tint";
 import { useTheme } from "../theme";
 import { PageGhostField } from "./page-ghosts";
-import { LinkPreviewProvider } from "./link-preview";
 import { MIN_PAGES_FOR_PAGE_VIEWS } from "../page-placements";
+import type { Axis, NavState } from "../../links/memory";
 
 export function buildPrimitiveMap(
   root: XRPrimitive,
@@ -263,6 +271,11 @@ export function XRSceneGraph({
   setPage,
   viewMode,
   onExternalNavigate,
+  onTraverse,
+  onTraverseBack,
+  onTraverseJump,
+  nav,
+  pending,
   sourceUrl,
   ghostOverride,
 }: {
@@ -272,6 +285,13 @@ export function XRSceneGraph({
   setPage: (id: string, page: number) => void;
   viewMode?: ViewMode;
   onExternalNavigate?: (href: string) => void;
+  /** Directional traversal — see XRSceneRendererProps.onTraverse. */
+  onTraverse?: (url: string, axis: Axis, label?: string) => void;
+  onTraverseBack?: () => void;
+  onTraverseJump?: (historyIndex: number) => void;
+  nav?: NavState | null;
+  /** A directional move in flight — see XRSceneRendererProps.pending. */
+  pending?: { url: string; axis: Axis | null } | null;
   sourceUrl?: string;
   /** Live ghost overrides keyed "ghost-prev"/"ghost-next" (tuning HUD). */
   ghostOverride?: Record<string, GhostPose>;
@@ -474,9 +494,70 @@ export function XRSceneGraph({
     ? (pageState[paginatedPanel.id] ?? 0)
     : -1;
 
+  // Every reference on the page, classified once. Both the inline marks and
+  // the doors read this, so a mark and its door cannot disagree about which
+  // way the link goes — which is the one thing that would break the legend.
+  //
+  // `dedupe: false`: the collector's default folds repeat destinations into
+  // one, which is right for a door budget and wrong here — every OCCURRENCE of
+  // an anchor needs its own mark, and two mentions of the same page in one
+  // paragraph are two anchors the reader can look at.
+  const pageLinks = React.useMemo<PageLinksApi>(() => {
+    let links: SpatialLink[] = [];
+    try {
+      links = collectSpatialLinks(scene, plan, {
+        pageUrl: sourceUrl ?? null,
+        dedupe: false,
+      });
+    } catch (err) {
+      // A classification failure must not take the document down with it: the
+      // page still reads, it simply reads without marks.
+      console.error("[links] classification failed", err);
+    }
+    const byId = new Map(links.map((l) => [l.id, l]));
+    return {
+      links,
+      byId,
+      directionOf: (id) => {
+        const l = byId.get(id);
+        return l ? directionOf(l) : null;
+      },
+    };
+  }, [scene, plan, sourceUrl]);
+
+  // Directional-link plumbing, provided once for whichever view is mounted.
+  // A view reaches it through `useTraversal()` rather than through four
+  // components that each take the props and pass them on unchanged.
+  const traversal = React.useMemo<TraversalApi | null>(
+    () =>
+      onTraverse || onTraverseBack || onTraverseJump
+        ? {
+            traverse: onTraverse ?? (() => {}),
+            back: onTraverseBack ?? (() => {}),
+            jump: onTraverseJump ?? (() => {}),
+            nav: nav ?? null,
+            pending: pending ?? null,
+          }
+        : null,
+    [onTraverse, onTraverseBack, onTraverseJump, nav, pending],
+  );
+
+  // The gaze binding between an inline mark and its door — the only channel
+  // left now that colour is gone.
+  const [litLink, setLitLink] = React.useState<string | null>(null);
+  const linkBinding = React.useMemo(
+    () => ({ lit: litLink, setLit: setLitLink }),
+    [litLink],
+  );
+  // A new document has no lit anchor; leaving one set would light a door that
+  // belongs to a page the reader has walked away from.
+  React.useEffect(() => setLitLink(null), [scene.root.id]);
+
   return (
     <NavigateContext.Provider value={navigate}>
-      <LinkPreviewProvider viewMode={viewMode}>
+      <PageLinksContext.Provider value={pageLinks}>
+      <TraversalContext.Provider value={traversal}>
+      <LinkBindingContext.Provider value={linkBinding}>
       <PageRangeContext.Provider value={focusedRange}>
       {scene.root.children.map((primitive) => {
         // In carousel mode, the main content panel is rendered via CarouselPanelGroup
@@ -625,7 +706,9 @@ export function XRSceneGraph({
         />
       )}
       </PageRangeContext.Provider>
-      </LinkPreviewProvider>
+      </LinkBindingContext.Provider>
+      </TraversalContext.Provider>
+      </PageLinksContext.Provider>
     </NavigateContext.Provider>
   );
 }

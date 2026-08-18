@@ -84,10 +84,13 @@ export function readNodeState(element: Element): IRNodeState {
     tag === "meter";
 
   return {
-    expanded: element.getAttribute("aria-expanded") ?? null,
     checked:
       element.getAttribute("aria-checked") ??
-      (isCheckable ? (element.hasAttribute("checked") ? "true" : "false") : null),
+      (isCheckable
+        ? element.hasAttribute("checked")
+          ? "true"
+          : "false"
+        : null),
     selected:
       element.getAttribute("aria-selected") ??
       (tag === "option" && element.hasAttribute("selected") ? "true" : null),
@@ -108,9 +111,6 @@ export function readNodeState(element: Element): IRNodeState {
     readonly:
       element.getAttribute("aria-readonly") ??
       (element.hasAttribute("readonly") ? "true" : null),
-    modal: element.getAttribute("aria-modal") ?? null,
-    multiselectable: element.getAttribute("aria-multiselectable") ?? null,
-    orientation: element.getAttribute("aria-orientation") ?? null,
     valueNow:
       element.getAttribute("aria-valuenow") ??
       (isRangey ? element.getAttribute("value") : null),
@@ -190,13 +190,18 @@ export function intrinsicDimsFromUrl(
     const m = raw?.match(/^(\d{1,4})\s*[:x]\s*(\d{1,4})$/);
     if (m) {
       const a = parseInt(m[1], 10) / parseInt(m[2], 10);
-      if (Number.isFinite(a) && a > 0) { aspect = a; break; }
+      if (Number.isFinite(a) && a > 0) {
+        aspect = a;
+        break;
+      }
     }
   }
 
   if (aspect === null) {
     // CDN crop rectangle: /<x>_<y>_<w>_<h>/master/… — use the w/h of the crop.
-    const m = pathname.match(/\/(\d{1,5})_(\d{1,5})_(\d{2,5})_(\d{2,5})\/(?=[a-z]+\/)/);
+    const m = pathname.match(
+      /\/(\d{1,5})_(\d{1,5})_(\d{2,5})_(\d{2,5})\/(?=[a-z]+\/)/,
+    );
     if (m) {
       const cw = parseInt(m[3], 10);
       const ch = parseInt(m[4], 10);
@@ -237,30 +242,20 @@ export function readNodeAttributes(
   };
 
   return {
-    expanded: element.getAttribute("aria-expanded") ?? null,
     checked: element.getAttribute("aria-checked") ?? null,
     selected: element.getAttribute("aria-selected") ?? null,
     disabled:
       element.getAttribute("aria-disabled") ??
       (element.hasAttribute("disabled") ? "true" : null),
-    pressed: element.getAttribute("aria-pressed") ?? null,
-    current: element.getAttribute("aria-current") ?? null,
     hidden:
       element.getAttribute("aria-hidden") ??
       (element.hasAttribute("hidden") ? "true" : null),
-    busy: element.getAttribute("aria-busy") ?? null,
     required: element.getAttribute("aria-required") ?? null,
-    controls: element.getAttribute("aria-controls") ?? null,
     describedby: element.getAttribute("aria-describedby") ?? null,
     labelledby: element.getAttribute("aria-labelledby") ?? null,
-    owns: element.getAttribute("aria-owns") ?? null,
-    details: element.getAttribute("aria-details") ?? null,
-    errormessage: element.getAttribute("aria-errormessage") ?? null,
-    flowto: element.getAttribute("aria-flowto") ?? null,
     haspopup: element.getAttribute("aria-haspopup") ?? null,
     alt: element.getAttribute("alt") ?? null,
     src: resolveUrl(element.getAttribute("src")),
-    poster: resolveUrl(element.getAttribute("poster")),
     intrinsicWidth:
       readIntrinsicDim("width", "data-file-width") ?? urlDims?.width ?? null,
     intrinsicHeight:
@@ -280,11 +275,7 @@ export function readNodeAttributes(
     valueNow: element.getAttribute("aria-valuenow") ?? null,
     valueMin: element.getAttribute("aria-valuemin") ?? null,
     valueMax: element.getAttribute("aria-valuemax") ?? null,
-    orientation: element.getAttribute("aria-orientation") ?? null,
-    invalid: element.getAttribute("aria-invalid") ?? null,
     readonly: element.getAttribute("aria-readonly") ?? null,
-    modal: element.getAttribute("aria-modal") ?? null,
-    multiselectable: element.getAttribute("aria-multiselectable") ?? null,
     captions: (() => {
       const tracks = Array.from(
         element.querySelectorAll("track[kind='captions']"),
@@ -292,7 +283,6 @@ export function readNodeAttributes(
       return tracks.map((t) => t.getAttribute("src") ?? "").filter(Boolean);
     })(),
     componentType: null,
-    autoplay: element.getAttribute("autoplay") ?? null,
     content: element.textContent?.trim() ?? null,
     styleTags: [],
     domId: element.getAttribute("id") ?? null,
@@ -310,14 +300,7 @@ export const ARIA_ROLE_MAP: Partial<Record<string, IRRole>> = {
   region: "region",
   heading: "heading",
   dialog: "dialog",
-  tablist: "tablist",
-  tabpanel: "tabpanel",
-  menu: "menu",
-  menubar: "menubar",
-  menuitem: "menuitem",
   grid: "grid",
-  tree: "tree",
-  treeitem: "treeitem",
   progressbar: "progressbar",
   status: "status",
   alert: "alert",
@@ -343,19 +326,12 @@ export const ARIA_ROLE_MAP: Partial<Record<string, IRRole>> = {
   slider: "slider",
   spinbutton: "spinbutton",
   switch: "switch",
-  tab: "tab",
   group: "group",
-  menuitemcheckbox: "menuitemcheckbox",
-  menuitemradio: "menuitemradio",
   option: "option",
-  application: "application",
   article: "article",
   document: "document",
-  note: "note",
-  log: "log",
   marquee: "marquee",
   timer: "timer",
-  toolbar: "toolbar",
   presentation: "presentation",
   none: "none",
 };
@@ -366,26 +342,16 @@ export function parseIdRefs(value: string | null): string[] {
 
 export function createEmptyAttributes(): IRNodeAttributes {
   return {
-    expanded: null,
     checked: null,
     selected: null,
     disabled: null,
-    pressed: null,
-    current: null,
     hidden: null,
-    busy: null,
     required: null,
-    controls: null,
     describedby: null,
     labelledby: null,
-    owns: null,
-    details: null,
-    errormessage: null,
-    flowto: null,
     haspopup: null,
     alt: null,
     src: null,
-    poster: null,
     intrinsicWidth: null,
     intrinsicHeight: null,
     href: null,
@@ -398,14 +364,9 @@ export function createEmptyAttributes(): IRNodeAttributes {
     valueNow: null,
     valueMin: null,
     valueMax: null,
-    orientation: null,
-    invalid: null,
     readonly: null,
-    modal: null,
-    multiselectable: null,
     captions: [],
     componentType: null,
-    autoplay: null,
     content: null,
     styleTags: [],
     domId: null,
@@ -414,7 +375,6 @@ export function createEmptyAttributes(): IRNodeAttributes {
 
 export function createEmptyState(): IRNodeState {
   return {
-    expanded: null,
     checked: null,
     selected: null,
     disabled: null,
@@ -426,9 +386,6 @@ export function createEmptyState(): IRNodeState {
     live: null,
     invalid: null,
     readonly: null,
-    modal: null,
-    multiselectable: null,
-    orientation: null,
     valueNow: null,
     valueMin: null,
     valueMax: null,
@@ -437,14 +394,8 @@ export function createEmptyState(): IRNodeState {
 
 export function createEmptyRelations(): IRNodeRelations {
   return {
-    controls: [],
     labelledBy: [],
     describedBy: [],
-    owns: [],
-    details: [],
-    errorMessage: [],
-    flowTo: [],
-    figureCaption: [],
     headers: [],
   };
 }
@@ -494,10 +445,40 @@ export function mergeAttributes(
  * markup has no whitespace there.
  */
 const INLINE_TEXT_TAGS = new Set([
-  "a", "abbr", "b", "bdi", "bdo", "cite", "code", "data", "dfn", "em", "i",
-  "kbd", "mark", "q", "rp", "rt", "ruby", "s", "samp", "small", "span",
-  "strong", "sub", "sup", "time", "u", "var", "wbr", "font", "big", "tt",
-  "nobr", "label", "output",
+  "a",
+  "abbr",
+  "b",
+  "bdi",
+  "bdo",
+  "cite",
+  "code",
+  "data",
+  "dfn",
+  "em",
+  "i",
+  "kbd",
+  "mark",
+  "q",
+  "rp",
+  "rt",
+  "ruby",
+  "s",
+  "samp",
+  "small",
+  "span",
+  "strong",
+  "sub",
+  "sup",
+  "time",
+  "u",
+  "var",
+  "wbr",
+  "font",
+  "big",
+  "tt",
+  "nobr",
+  "label",
+  "output",
 ]);
 
 /**
@@ -858,11 +839,6 @@ export function hydrateRelations(
   elementToNodeId: WeakMap<Element, string>,
 ): void {
   for (const node of Object.values(nodes)) {
-    node.relations.controls = relationTargets(
-      node.attributes.controls,
-      doc,
-      elementToNodeId,
-    );
     node.relations.labelledBy = relationTargets(
       node.attributes.labelledby,
       doc,
@@ -873,32 +849,6 @@ export function hydrateRelations(
       doc,
       elementToNodeId,
     );
-    node.relations.owns = relationTargets(
-      node.attributes.owns,
-      doc,
-      elementToNodeId,
-    );
-    node.relations.details = relationTargets(
-      node.attributes.details,
-      doc,
-      elementToNodeId,
-    );
-    node.relations.errorMessage = relationTargets(
-      node.attributes.errormessage,
-      doc,
-      elementToNodeId,
-    );
-    node.relations.flowTo = relationTargets(
-      node.attributes.flowto,
-      doc,
-      elementToNodeId,
-    );
-
-    if (node.role === "figure") {
-      node.relations.figureCaption = node.children.filter(
-        (id) => nodes[id]?.role === "caption",
-      );
-    }
   }
 
   if (doc) {
@@ -1122,4 +1072,59 @@ export function areStructurallySimilar(
   }
 
   return Math.abs(getContentDepth(el1) - getContentDepth(el2)) <= 1;
+}
+
+/** An element's text, whitespace-collapsed, for structural comparison. */
+function comparableText(el: Element): string {
+  return (el.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The nearest enclosing "one piece of content" boundary. Duplicate detection is
+ * scoped to it so that a headline legitimately appearing in two different parts
+ * of a page (a feed and a "most viewed" rail) is never mistaken for a
+ * responsive duplicate.
+ */
+const DUPLICATE_SCOPE = "li, article, section, [data-link-name]";
+
+/**
+ * Drop breakpoint duplicates.
+ *
+ * Responsive sites routinely emit the same content once per breakpoint and hide
+ * all but one copy with a media query — the Guardian ships every card's
+ * `<ul class="sublinks">` twice, in two differently-classed wrappers. A browser
+ * shows one; we have no CSSOM, so both reach the IR. The cost is not only the
+ * visible double: each duplicate doubles its card's estimated height, which is
+ * what pushes a card past the page box and inflates the page count.
+ *
+ * Rule: within one content boundary, if two subtrees carry identical text and
+ * neither contains the other, the later one is a duplicate. The length floor
+ * keeps short repeats that are genuinely meant to appear twice ("Read more",
+ * a byline echoed in a caption) out of scope.
+ */
+export function pruneResponsiveDuplicates(doc: Document): void {
+  const MIN_TEXT_LEN = 30;
+  const seen = new Map<string, Element>();
+
+  for (const el of Array.from(doc.body?.querySelectorAll("*") ?? [])) {
+    // Removing a subtree disconnects its descendants; they are still in this
+    // snapshot, so skip anything already detached.
+    if (!el.isConnected) continue;
+
+    const text = comparableText(el);
+    if (text.length < MIN_TEXT_LEN) continue;
+
+    const first = seen.get(text);
+    if (!first || !first.isConnected) {
+      seen.set(text, el);
+      continue;
+    }
+    // A wrapper always repeats its own child's text — never a duplicate.
+    if (first.contains(el) || el.contains(first)) continue;
+
+    const scope = el.closest(DUPLICATE_SCOPE);
+    if (!scope || scope !== first.closest(DUPLICATE_SCOPE)) continue;
+
+    el.parentNode?.removeChild(el);
+  }
 }

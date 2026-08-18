@@ -24,7 +24,6 @@ import type {
   XRSection,
   XRListItem,
   XRTable,
-  XRTabGroup,
   XRGenericPanel,
 } from "../../mapper/types";
 import type { LayoutEntry, LayoutPlan } from "../../layout/types";
@@ -58,7 +57,6 @@ import {
   XRSliderMesh,
   XRComboBoxMesh,
   XRSearchBoxMesh,
-  XRTabGroupMesh,
   ClipPlanesContext,
   PanelOriginYContext,
   CardSelfClipContext,
@@ -119,7 +117,9 @@ function renderInlineOwningContainer(args: {
   setPage: (id: string, page: number) => void;
   primitiveMap: Map<string, XRPrimitive>;
   renderChild: (childId: string) => React.ReactNode;
-  makeMesh: (renderChild: (childId: string) => React.ReactNode) => React.ReactNode;
+  makeMesh: (
+    renderChild: (childId: string) => React.ReactNode,
+  ) => React.ReactNode;
 }): React.ReactNode {
   const {
     entry,
@@ -605,23 +605,23 @@ export function PrimitiveDispatcher({
         return (
           <InsideCardContext.Provider value={true}>
             <SurfaceBgContext.Provider value={cardTile}>
-            <WithSiblingChildren
-              entry={entry}
-              backing={
-                <XRListItemMesh
-                  primitive={primitive as XRListItem}
-                  entry={zeroedEntry(entry)}
-                  renderChild={() => null}
-                  panelRelativeY={entry.position.y}
-                  nested={insideCard}
-                />
-              }
-              primitives={primitive.children}
-              plan={plan}
-              pageState={pageState}
-              setPage={setPage}
-              primitiveMap={primitiveMap}
-            />
+              <WithSiblingChildren
+                entry={entry}
+                backing={
+                  <XRListItemMesh
+                    primitive={primitive as XRListItem}
+                    entry={zeroedEntry(entry)}
+                    renderChild={() => null}
+                    panelRelativeY={entry.position.y}
+                    nested={insideCard}
+                  />
+                }
+                primitives={primitive.children}
+                plan={plan}
+                pageState={pageState}
+                setPage={setPage}
+                primitiveMap={primitiveMap}
+              />
             </SurfaceBgContext.Provider>
           </InsideCardContext.Provider>
         );
@@ -657,23 +657,23 @@ export function PrimitiveDispatcher({
       return (
         <InsideCardContext.Provider value={true}>
           <SurfaceBgContext.Provider value={cardTile}>
-          <WithSiblingChildren
-            entry={entry}
-            backing={
-              <XRListItemMesh
-                primitive={primitive as XRListItem}
-                entry={zeroedEntry(entry)}
-                renderChild={() => null}
-                panelRelativeY={entry.position.y}
-                nested={insideCard}
-              />
-            }
-            primitives={blockChildrenForDispatch}
-            plan={plan}
-            pageState={pageState}
-            setPage={setPage}
-            primitiveMap={primitiveMap}
-          />
+            <WithSiblingChildren
+              entry={entry}
+              backing={
+                <XRListItemMesh
+                  primitive={primitive as XRListItem}
+                  entry={zeroedEntry(entry)}
+                  renderChild={() => null}
+                  panelRelativeY={entry.position.y}
+                  nested={insideCard}
+                />
+              }
+              primitives={blockChildrenForDispatch}
+              plan={plan}
+              pageState={pageState}
+              setPage={setPage}
+              primitiveMap={primitiveMap}
+            />
           </SurfaceBgContext.Provider>
         </InsideCardContext.Provider>
       );
@@ -735,24 +735,6 @@ export function PrimitiveDispatcher({
       );
     }
 
-    case "XRTabGroup":
-      return (
-        <AtPos entry={entry}>
-          <XRTabGroupMesh
-            primitive={primitive as XRTabGroup}
-            entry={zeroedEntry(entry)}
-            renderChild={renderChild}
-          />
-        </AtPos>
-      );
-
-    case "XRTab":
-    case "XRTabPanel":
-    case "XRMenu":
-    case "XRMenuItem":
-    case "XRTree":
-    case "XRTreeItem":
-    case "XRDialog":
     case "XRTooltip":
     case "XRToggle":
       return (
@@ -951,4 +933,3 @@ function CardClickBacking({
     </group>
   );
 }
-
