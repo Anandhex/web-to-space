@@ -59,9 +59,40 @@ const OFF_X = -0.33;
 const OFF_Y = -0.24;
 /** Lazy follow: fraction of the remaining error closed per frame at 90 Hz. */
 const FOLLOW = 0.06;
-/** Largest lattice pitch. Beyond this a two-node map would sprawl. */
-const MAX_PITCH = 0.05;
+/**
+ * Lattice pitch at full size. The drawing is laid out at this pitch and then
+ * fitted to the panel as a whole (see `plot`), so this is the spacing a short
+ * history gets rather than a spacing every history is forced into.
+ */
+const PITCH = 0.05;
 const NODE_R = 0.009;
+/**
+ * Half the box a node needs to itself, at full size — the widest of the three
+ * glyphs below, not the dot they used to be.
+ *
+ * This is the number the layout used to be missing. Pitch was fitted to the
+ * panel from the lattice span alone, so six rooms in a line got a 9 mm pitch
+ * while a room plan is 29 mm across: the glyphs were laid out edge to edge on
+ * a grid three times too fine and stacked on top of each other. Whatever the
+ * spacing ends up being, it is now spacing for THESE shapes.
+ *
+ * (deck's lifted card reaches 1.68u across and 1.68u down with its lip;
+ * rooms' plan is 1.6u × 1.2u; wall's rim reaches 1.45u. u is NODE_R * 2.)
+ */
+const GLYPH_HALF = NODE_R * 2 * 0.9;
+/** The band between the two captions — all the map is allowed to draw in. */
+const PLOT_TOP = H / 2 - 0.026;
+const PLOT_BOTTOM = -H / 2 + 0.038;
+const PLOT_HALF_W = W / 2 - 0.012;
+const PLOT_MID_Y = (PLOT_TOP + PLOT_BOTTOM) / 2;
+/**
+ * Floor on the fit. Past this a glyph is under half a degree wide and the
+ * shape stops being readable as a shape, so a very long history is allowed to
+ * run off the panel edge rather than shrink into an unreadable smudge — the
+ * map stays true about WHERE, and the reader can still tell a room from a
+ * card. Reached at about eleven documents in a straight line.
+ */
+const MIN_SCALE = 0.3;
 
 interface Plotted {
   node: NavNode;
@@ -71,16 +102,29 @@ interface Plotted {
   y: number;
 }
 
+interface Plot {
+  points: Plotted[];
+  /** Uniform scale the drawing was fitted by — glyphs wear it too. */
+  scale: number;
+}
+
 /**
- * Lay the history out on its lattice, scaled to fit the panel.
+ * Lay the history out on its lattice, then fit the whole drawing to the panel.
+ *
+ * Two steps rather than one, and the order is the point. Laying out first at a
+ * fixed pitch and fitting after means the thing being fitted is the drawing
+ * the reader actually sees — glyph extents and collision nudges included —
+ * instead of a set of bare centres that the glyphs then overflow. The glyphs
+ * are scaled by the same factor, so a node can never grow into its neighbour:
+ * pitch and mark shrink together or not at all.
  *
  * Coordinates can collide — going east then west then east again returns to a
  * coordinate already occupied by a different document — so a collided node is
  * nudged rather than drawn on top of its predecessor. Nudging is honest here
  * in a way that dropping would not be: the reader visited both.
  */
-function plot(history: NavNode[], padX: number, padY: number): Plotted[] {
-  if (history.length === 0) return [];
+function plot(history: NavNode[]): Plot {
+  if (history.length === 0) return { points: [], scale: 1 };
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const n of history) {
     minX = Math.min(minX, n.coord.x);
@@ -88,27 +132,50 @@ function plot(history: NavNode[], padX: number, padY: number): Plotted[] {
     minY = Math.min(minY, n.coord.y);
     maxY = Math.max(maxY, n.coord.y);
   }
-  const spanX = Math.max(1, maxX - minX);
-  const spanY = Math.max(1, maxY - minY);
-  const pitch = Math.min(MAX_PITCH, padX / spanX, padY / spanY);
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
 
   const used = new Map<string, number>();
-  return history.map((node, historyIndex) => {
+  const raw = history.map((node, historyIndex) => {
     const key = `${node.coord.x},${node.coord.y}`;
     const collisions = used.get(key) ?? 0;
     used.set(key, collisions + 1);
     // A spiral nudge, so a third visit to one coordinate does not land on the
-    // second. Small: it must read as "the same place, twice".
-    const nudge = collisions * NODE_R * 1.6;
+    // second. Sized off the glyph, not off a dot radius, so it keeps reading
+    // as a stack rather than a merge whatever shape the view draws: enough
+    // offset to see two outlines, little enough to read "the same place".
+    const nudge = collisions * GLYPH_HALF * 0.9;
     return {
       node,
       historyIndex,
-      x: (node.coord.x - cx) * pitch + nudge,
-      y: (node.coord.y - cy) * pitch + nudge,
+      x: (node.coord.x - cx) * PITCH + nudge,
+      y: (node.coord.y - cy) * PITCH + nudge,
     };
   });
+
+  // The box the drawing occupies, glyphs and all.
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of raw) {
+    x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
+    y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+  }
+  const drawW = x1 - x0 + GLYPH_HALF * 2;
+  const drawH = y1 - y0 + GLYPH_HALF * 2;
+  const scale = Math.max(
+    MIN_SCALE,
+    Math.min(1, (PLOT_HALF_W * 2) / drawW, (PLOT_TOP - PLOT_BOTTOM) / drawH),
+  );
+
+  // Recentre on the plot band rather than on the panel: the captions own the
+  // top and bottom of it, and a map centred on the panel drifts under them.
+  const midX = (x0 + x1) / 2;
+  const midY = (y0 + y1) / 2;
+  const points = raw.map((p) => ({
+    ...p,
+    x: (p.x - midX) * scale,
+    y: (p.y - midY) * scale + PLOT_MID_Y,
+  }));
+  return { points, scale };
 }
 
 /**
@@ -228,9 +295,7 @@ function MinimapPanel({
   const fontType = React.useContext(FontContext);
   const [hovered, setHovered] = React.useState<number | null>(null);
 
-  const padX = W / 2 - 0.045;
-  const padY = H / 2 - 0.055;
-  const nodes = React.useMemo(() => plot(nav.history, padX, padY), [nav.history, padX, padY]);
+  const { points: nodes, scale } = React.useMemo(() => plot(nav.history), [nav.history]);
   const byIndex = React.useMemo(() => new Map(nodes.map((p) => [p.historyIndex, p])), [nodes]);
 
   const here = nav.at;
@@ -289,14 +354,17 @@ function MinimapPanel({
       {/* Nodes, in the view's own material. */}
       {nodes.map((p) => (
         <group key={`node-${p.historyIndex}`} position={[p.x, p.y, 0.003]}>
-          <NodeGlyph
-            view={viewMode}
-            here={p.historyIndex === here}
-            hover={p.historyIndex === hovered}
-          />
+          <group scale={scale}>
+            <NodeGlyph
+              view={viewMode}
+              here={p.historyIndex === here}
+              hover={p.historyIndex === hovered}
+            />
+          </group>
           {/* One hit target per node, sized to be reachable rather than to the
               glyph — a room plan is mostly empty and a ray through its middle
-              would otherwise hit nothing. */}
+              would otherwise hit nothing. Capped at the fitted pitch, because
+              a target that outgrows the spacing answers for its neighbour. */}
           <mesh
             position={[0, 0, 0.004]}
             onPointerOver={(e) => {
@@ -309,7 +377,12 @@ function MinimapPanel({
               if (p.historyIndex !== here) onJump(p.historyIndex);
             }}
           >
-            <planeGeometry args={[NODE_R * 4.6, NODE_R * 3.4]} />
+            <planeGeometry
+              args={[
+                Math.min(NODE_R * 4.6, PITCH * scale * 0.95),
+                Math.min(NODE_R * 3.4, PITCH * scale * 0.95),
+              ]}
+            />
             <meshBasicMaterial transparent opacity={0} depthWrite={false} />
           </mesh>
         </group>
