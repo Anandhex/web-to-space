@@ -66,7 +66,7 @@ export interface DirSlot {
   overflow: boolean;
 }
 
-export interface SlotOptions {
+interface SlotOptions {
   /** The current rendered page's references, in reading order. */
   links: readonly SpatialLink[];
   /** The tab's navigation memory. Null before the first document loads. */

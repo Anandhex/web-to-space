@@ -166,7 +166,7 @@ export interface WindowBudget {
  * has — see `links/slots.ts`'s `fitBudget`, and the census figure behind it:
  * outbound links are a median of 0 and a p90 of 7 per rendered page.
  */
-export const WINDOWS: Record<string, WindowBudget> = {
+const WINDOWS: Record<string, WindowBudget> = {
   wall: { up: 2, down: 2, left: 3, right: 3 },
   deck: { up: 5, down: 5, left: 5, right: 5 },
   // Rooms' corridor is WALKED, not glanced down, so its budget is what a
@@ -193,7 +193,7 @@ export function windowFor(viewMode: string | undefined): WindowBudget {
 
 // ── Construction and moves ───────────────────────────────────────────────
 
-export interface NavMove {
+interface NavMove {
   url: string;
   label: string;
   axis: Axis;
@@ -265,7 +265,7 @@ export function canTake(state: NavState, axis: Axis): boolean {
 // ── Rendering ────────────────────────────────────────────────────────────
 
 /** One rendered slot: a travelled node and how to describe it to the reader. */
-export interface VisibleNode {
+interface VisibleNode {
   node: NavNode;
   /** Its index in `history`, so a click can `jump` straight to it. */
   historyIndex: number;

@@ -26,8 +26,8 @@ import type { DeviceProfile } from "../layout/types";
 import type { SemanticScene, XRPrimitive, XRPrimitiveType } from "../mapper/types";
 
 // Legibility thresholds in degrees of visual angle (cap-height).
-export const LEGIBILITY_FLOOR_DEG = 0.29;
-export const COMFORT_TARGET_DEG = 1.375;
+const LEGIBILITY_FLOOR_DEG = 0.29;
+const COMFORT_TARGET_DEG = 1.375;
 
 export interface XRSpatialQuality {
   // ── Angular legibility (weighted by text length) ──────────────

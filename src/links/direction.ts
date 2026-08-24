@@ -48,17 +48,6 @@ export const DIRECTIONS: readonly LinkDirection[] = [
 ];
 
 /**
- * The directions that open something — a corridor, a stair, a face of the
- * dice, a path off the table. `here` moves the reader inside the current
- * structure and `inline` moves them out of the browser, so neither travels.
- */
-export const TRAVELLED: readonly LinkDirection[] = ["up", "lateral", "down"];
-
-export function isTravelled(d: LinkDirection): boolean {
-  return d === "up" || d === "lateral" || d === "down";
-}
-
-/**
  * The inline mark that reinforces the legend at the anchor.
  *
  * Direction tells the reader the KIND of a link; it cannot tell them WHICH
@@ -71,7 +60,7 @@ export function isTravelled(d: LinkDirection): boolean {
  * no blue text anywhere in this design, and a mark that reintroduced a
  * chromatic channel would reintroduce the thing it replaced.
  */
-export const DIRECTION_MARKS: Record<LinkDirection, string> = {
+const DIRECTION_MARKS: Record<LinkDirection, string> = {
   up: "▴", // ▴ small up-pointing triangle
   lateral: "▸", // ▸ small right-pointing triangle
   here: "•", // • filled dot: a pointer, not a direction
@@ -85,12 +74,6 @@ export function markFor(d: LinkDirection): string {
 
 /** The space that separates an anchor from its mark. Hair-thin, not a word gap. */
 export const MARK_SEPARATOR = " "; // thin space
-
-/** An anchor's text with its mark, exactly as troika is handed it. */
-export function textWithMark(text: string, d: LinkDirection): string {
-  const mark = DIRECTION_MARKS[d];
-  return mark === "" ? text : text + MARK_SEPARATOR + mark;
-}
 
 /**
  * What a mark costs the inline flow, for the LAYOUT ESTIMATE.
@@ -134,7 +117,7 @@ export function directionFor(region: Region, locus: Locus): LinkDirection {
 }
 
 /** Locus alone, once a region has handed over. */
-export function directionForLocus(locus: Locus): LinkDirection {
+function directionForLocus(locus: Locus): LinkDirection {
   switch (locus) {
     case "operational":
       return "inline";
@@ -182,21 +165,3 @@ export function assignLateralSides<T>(
   return out;
 }
 
-// ── Grouping ─────────────────────────────────────────────────────────────
-
-/** A page's references sorted into the four kinds, in reading order. */
-export interface DirectionGroups<T> {
-  up: T[];
-  lateral: T[];
-  down: T[];
-  here: T[];
-  inline: T[];
-}
-
-export function groupByDirection<T extends { region: Region; locus: Locus }>(
-  links: readonly T[],
-): DirectionGroups<T> {
-  const groups: DirectionGroups<T> = { up: [], lateral: [], down: [], here: [], inline: [] };
-  for (const l of links) groups[directionOf(l)].push(l);
-  return groups;
-}

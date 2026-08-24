@@ -30,7 +30,7 @@ import {
 import { useClipPlanes, useRenderMetrics } from "../contexts";
 import { ClippedText, buildInlineRows, InlineProseRows } from "../inline";
 
-export interface XRButtonMeshProps {
+interface XRButtonMeshProps {
   primitive: import("../../../mapper/types").XRButton;
   entry: LayoutEntry;
 }
@@ -99,7 +99,7 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
 // 13. XRAlertMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRAlertMeshProps {
+interface XRAlertMeshProps {
   primitive: import("../../../mapper/types").XRAlert;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;
@@ -201,7 +201,7 @@ export function XRAlertMesh({
 // 14. XRTableMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRTableMeshProps {
+interface XRTableMeshProps {
   primitive: import("../../../mapper/types").XRTable;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;
@@ -263,7 +263,7 @@ export function XRTableMesh({
 // 15. XRFormFieldMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRFormFieldMeshProps {
+interface XRFormFieldMeshProps {
   primitive: import("../../../mapper/types").XRFormField;
   entry: LayoutEntry;
 }

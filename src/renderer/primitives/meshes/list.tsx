@@ -26,7 +26,7 @@ import {
 import { isDarkTheme, shade } from "../../scene/section-tint";
 import { ClippedText, buildInlineRows, InlineProseRows } from "../inline";
 
-export interface XRListItemMeshProps {
+interface XRListItemMeshProps {
   primitive: import("../../../mapper/types").XRListItem;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;

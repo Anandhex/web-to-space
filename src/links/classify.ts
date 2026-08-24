@@ -124,7 +124,7 @@ export function resolveHref(href: string, pageUrl: string | null): URL | null {
   }
 }
 
-export function isOperationalScheme(href: string): boolean {
+function isOperationalScheme(href: string): boolean {
   const h = href.trim().toLowerCase();
   for (const s of OPERATIONAL_SCHEMES) if (h.startsWith(s)) return true;
   return false;
@@ -138,7 +138,7 @@ export function extensionOf(pathname: string): string | null {
   return last.slice(dot + 1).toLowerCase();
 }
 
-export function isFileHref(href: string, pageUrl: string | null): boolean {
+function isFileHref(href: string, pageUrl: string | null): boolean {
   const u = resolveHref(href, pageUrl);
   const path = u ? u.pathname : href.split(/[?#]/)[0];
   const ext = extensionOf(path);
@@ -171,29 +171,29 @@ export function anchorIdentifiesNothing(text: string): boolean {
 }
 
 /** Text that is a citation marker on its own evidence. */
-export function isCitationMarker(text: string): boolean {
+function isCitationMarker(text: string): boolean {
   const t = normaliseText(text).replace(/[.,;:]+$/, "");
   return t !== "" && CITATION_MARKER.test(t);
 }
 
 /** Text that confirms a citation a fragment has already identified. */
-export function isBackrefMarker(text: string): boolean {
+function isBackrefMarker(text: string): boolean {
   const t = normaliseText(text).replace(/[.,;:]+$/, "");
   return t !== "" && (CITATION_MARKER.test(t) || BACKREF_MARKER.test(t));
 }
 
-export function isCitationFragment(href: string): boolean {
+function isCitationFragment(href: string): boolean {
   return CITATION_FRAGMENT.test(href.trim());
 }
 
-export function isBibliographyHeading(title: string | null): boolean {
+function isBibliographyHeading(title: string | null): boolean {
   return title !== null && BIBLIOGRAPHY_HEADINGS.test(normaliseText(title));
 }
 
 // ── Ancestry ─────────────────────────────────────────────────────────────
 
 /** What the walk in collect.ts hands the classifier about a link's setting. */
-export interface LinkContext {
+interface LinkContext {
   /** Ancestors of the anchor, ROOT FIRST, not including the anchor itself. */
   ancestors: XRPrimitive[];
   /** The document's own URL, for the origin comparison. Null → same-site. */
@@ -218,7 +218,7 @@ const NAV_TYPES = new Set<string>(["XRNavigationBar", "XRMenu", "XRTabGroup"]);
 const FOOT_TYPES = new Set<string>(["XRFooter"]);
 
 /** True when a navigation landmark encloses the anchor. */
-export function inNavigation(
+function inNavigation(
   ancestors: XRPrimitive[],
   navIds?: ReadonlySet<string>,
 ): boolean {
@@ -226,7 +226,7 @@ export function inNavigation(
 }
 
 /** True when the anchor sits in a bibliography — by landmark or by heading. */
-export function inBibliography(ancestors: XRPrimitive[]): boolean {
+function inBibliography(ancestors: XRPrimitive[]): boolean {
   for (const a of ancestors) {
     if (a.type === "XRSection") {
       // A section carries its heading twice: as `title` (set by the mapper from
@@ -238,13 +238,13 @@ export function inBibliography(ancestors: XRPrimitive[]): boolean {
   return false;
 }
 
-export function inFooter(ancestors: XRPrimitive[]): boolean {
+function inFooter(ancestors: XRPrimitive[]): boolean {
   return ancestors.some((a) => FOOT_TYPES.has(a.type));
 }
 
 // ── The decision ─────────────────────────────────────────────────────────
 
-export interface Classification {
+interface Classification {
   region: Region;
   locus: Locus;
   citation: boolean;
@@ -339,7 +339,7 @@ export function classifyLink(
  * Handles `#x`, `?q=1#x` against the same path, and the absolute form of the
  * page's own URL. An href of `#` alone was already taken as an action.
  */
-export function sameDocumentFragment(
+function sameDocumentFragment(
   href: string,
   pageUrl: string | null,
 ): string | null {
@@ -364,7 +364,7 @@ export function sameDocumentFragment(
  * every relative one is same-site — which is the right answer for the offline
  * corpus and for a pasted HTML fragment alike.
  */
-export function locusOf(href: string, pageUrl: string | null): Locus {
+function locusOf(href: string, pageUrl: string | null): Locus {
   const raw = href.trim();
   const absolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || raw.startsWith("//");
   if (!absolute) return "same-site";

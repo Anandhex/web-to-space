@@ -44,7 +44,7 @@ import * as THREE from "three";
  * tracking's own recognition latency is inside this budget — but short enough
  * that two deliberate, separate clicks on two different links never collide.
  */
-export const DOUBLE_TAP_MS = 450;
+const DOUBLE_TAP_MS = 450;
 
 /**
  * Fires `onTap` when one input source selects twice in quick succession.
@@ -81,7 +81,7 @@ export function useXRDoubleTap(enabled: boolean, onTap: () => void) {
 }
 
 /** A thumbstick's position: +x right, +y forward (the stick pushed away). */
-export interface StickAxes {
+interface StickAxes {
   x: number;
   y: number;
 }
@@ -140,6 +140,7 @@ const GAZE_MAX_RANGE = 14;
 
 /** Scratch, module-level: this runs every frame and must not allocate. */
 const gazeDir = new THREE.Vector3();
+const gazeEye = new THREE.Vector3();
 
 /**
  * Where the reader is looking, on the floor plane — in WORLD space, or null if
@@ -148,9 +149,12 @@ const gazeDir = new THREE.Vector3();
  *
  * The head, not a controller ray, on purpose: a headset always has one, hands
  * and controllers alike, and it is the aim the reader is already using to read
- * with. Taking it from `state.camera` is exact in both worlds — inside a
- * session `<XR>` swaps in the XR camera, whose world matrix already carries the
- * player origin `XRViewerAnchor` set.
+ * with. Taking it from `state.camera` is exact in both worlds — provided the
+ * eye is read off the WORLD matrix and not off `camera.position`, which inside
+ * a session is the head in the player's frame. See {@link headWorldPose}: the
+ * aim came from `getWorldDirection` and the eye from the local position, so the
+ * ray was cast from a point displaced by the whole recentre and the reticle
+ * solved against floor the reader was not looking at.
  */
 export function gazeFloorPoint(
   camera: THREE.Camera,
@@ -159,13 +163,61 @@ export function gazeFloorPoint(
 ): THREE.Vector3 | null {
   camera.getWorldDirection(gazeDir);
   if (-gazeDir.y < GAZE_MIN_PITCH) return null;
-  const drop = camera.position.y - floorWorldY;
+  headWorldPose(camera, gazeEye);
+  const drop = gazeEye.y - floorWorldY;
   if (drop <= 0.05) return null;
   const t = drop / -gazeDir.y;
   if (t > GAZE_MAX_RANGE) return null;
   return out.set(
-    camera.position.x + gazeDir.x * t,
+    gazeEye.x + gazeDir.x * t,
     floorWorldY,
-    camera.position.z + gazeDir.z * t,
+    gazeEye.z + gazeDir.z * t,
   );
+}
+
+// ── Where the head actually is ───────────────────────────────
+
+/**
+ * The head's pose in WORLD space, written into the caller's vectors.
+ *
+ * Not `camera.position` / `camera.quaternion`, and the difference is a whole
+ * class of bug. Outside a session R3F's default camera hangs off the scene and
+ * the two are the same thing. Inside one, `<XR>` swaps `state.camera` for
+ * three's XR `ArrayCamera` — and @react-three/xr parents THAT to the
+ * `<XROrigin>` group, which is how the origin moves the player at all. Its
+ * `.position` is therefore the head in the PLAYER's frame, and the origin
+ * offset only appears in `matrixWorld`.
+ *
+ * Read the local pose as if it were world and everything anchored to the head
+ * is displaced by exactly the recentre `XRViewerAnchor` applied — which is
+ * metres in `rooms`, where the reader is stood at a point in the building. The
+ * minimap drifted out of its corner, the teleport reticle was solved against a
+ * piece of floor nowhere near the one the reader was looking at, and both went
+ * wrong only AFTER the recentre landed, a frame into the session.
+ *
+ * The world matrix is REFRESHED first, and that is not belt and braces. three
+ * writes `cameraXR.matrix` (and decomposes it into position/quaternion) inside
+ * `onAnimationFrame`, BEFORE it calls the render loop — but it only writes
+ * `matrixWorld` later, inside `render()`. So on any frame this is called from a
+ * `useFrame`, `matrixWorld` is one frame old, and on the FIRST frame of a
+ * session it is worse than old: it still holds what the flat preview left
+ * there, where the XR camera sat in the graph with an identity matrix, i.e. the
+ * origin itself. Read raw, the head came back as (0, 0, 0) on exactly the frame
+ * <XRViewerAnchor> takes its one-shot measurement — so it solved the recentre
+ * against a head that was nowhere, and the reader entered VR standing a play
+ * space away from the room. `updateWorldMatrix(true, false)` walks the
+ * ancestors and then this object, which is the same composition three is about
+ * to do, so nothing is lost by doing it early.
+ *
+ * A camera's world matrix carries no scale, so its upper 3×3 is a rotation as
+ * it stands and `setFromRotationMatrix` needs no normalising.
+ */
+export function headWorldPose(
+  camera: THREE.Camera,
+  position: THREE.Vector3,
+  quaternion?: THREE.Quaternion,
+): void {
+  camera.updateWorldMatrix(true, false);
+  position.setFromMatrixPosition(camera.matrixWorld);
+  quaternion?.setFromRotationMatrix(camera.matrixWorld);
 }

@@ -19,12 +19,12 @@ import type {
 } from "./types";
 
 /** Collapse whitespace + lowercase, for content-based matching. */
-export function norm(s: string): string {
+function norm(s: string): string {
   return s.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 /** Interactive XR primitive types (affordances the user can act on). */
-export const INTERACTIVE_XR_TYPES = new Set([
+const INTERACTIVE_XR_TYPES = new Set([
   "XRButton", "XRLink", "XRFormField", "XRToggle", "XRSlider",
   "XRComboBox", "XRSearchBox", "XRTab", "XRMenuItem", "XRTreeItem",
 ]);
@@ -153,7 +153,7 @@ function setCoverage(domTexts: string[], irTexts: Set<string>): number {
 // ─────────────────────────────────────────────────────────────
 
 
-export function pct(numerator: number, denominator: number): number {
+function pct(numerator: number, denominator: number): number {
   if (denominator === 0) return 0;
   return Math.round((numerator / denominator) * 100);
 }
@@ -439,7 +439,7 @@ export function deriveStructuralFidelity(
  * identical order, 50 = uncorrelated, 0 = fully reversed. 100 when < 2 units
  * align. Grounded in screen-reader/DOM reading-order accessibility.
  */
-export function deriveReadingOrderFidelity(
+function deriveReadingOrderFidelity(
   scene: SemanticScene,
   refRoot: Element,
 ): number {

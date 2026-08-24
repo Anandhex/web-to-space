@@ -34,7 +34,7 @@ function visibleTextContent(element: Element): string {
   return text;
 }
 
-export interface InlineRun {
+interface InlineRun {
   type: "text" | "element";
   text?: string;
   element?: Element;
@@ -43,7 +43,7 @@ export interface InlineRun {
   styleStack?: string[];
 }
 
-export interface InlineContext {
+interface InlineContext {
   inlineTags: Set<string>;
   skipTags: Set<string>;
   config: ParserConfig;
@@ -351,7 +351,7 @@ function hasTextAndInlineChildren(
  * This is useful when we want to preserve the semantic structure but
  * keep the DOM order for reading purposes
  */
-export function flattenInlineRuns(
+function flattenInlineRuns(
   runs: InlineRun[],
   parentId: string,
   ctx: BuildContext,

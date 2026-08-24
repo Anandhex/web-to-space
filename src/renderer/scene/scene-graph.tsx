@@ -33,7 +33,7 @@ import { PageGhostField } from "./page-ghosts";
 import { MIN_PAGES_FOR_PAGE_VIEWS } from "../page-placements";
 import type { Axis, NavState } from "../../links/memory";
 
-export function buildPrimitiveMap(
+function buildPrimitiveMap(
   root: XRPrimitive,
   out: Map<string, XRPrimitive> = new Map(),
 ): Map<string, XRPrimitive> {

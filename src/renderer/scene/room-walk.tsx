@@ -872,6 +872,24 @@ const gazeLocal = new THREE.Vector3();
  * the reader — including when a wall cuts the journey short, where it stops at
  * the last clear point and goes quiet rather than pretending.
  *
+ * ── It happens on the reader's OWN storey ──
+ *
+ * Every one of the three questions below — which floor plane the gaze meets,
+ * which walls are in the way, how high the reader ends up — used to be answered
+ * against the READING floor, whatever storey the reader was actually standing
+ * on. A reader on a landing looked down at the floor under their feet and the
+ * ray went straight through it to a plane one storey below, landing metres
+ * further out, usually off the end of the building, where `roomFloorContains`
+ * said "not floor" and the reticle went out. From up there the gesture simply
+ * did nothing. Their height was then left untouched on arrival as well, so
+ * anything that did land put them at the old rise over new ground.
+ *
+ * `walkSurfaceAt` is the same function the walk samples every step, so a
+ * teleport onto a flight puts the reader on the tread their feet would have
+ * reached, and a whole storey still has to be climbed rather than jumped: past
+ * the head of a flight the surface is the reading floor again, which is what
+ * the gaze plane at their own level can see.
+ *
  * Rendered INSIDE the carrier (`RoomWalk`), which is why it can hand the pose
  * building coordinates at all: the carrier's inverse is what turns "where the
  * head is looking, in the world" into "where that is in the building", and
@@ -883,6 +901,7 @@ export function RoomTeleport({
   poseRef,
   jumpRef,
   walls,
+  stairs,
   slabs,
   anchor,
   floorY,
@@ -893,6 +912,8 @@ export function RoomTeleport({
   /** Bumped on arrival so the carrier lands rather than glides — see RoomWalk. */
   jumpRef: React.MutableRefObject<number>;
   walls: RoomWall[];
+  /** The flights, so a teleport lands on the walking surface the walk would. */
+  stairs: RoomStair[];
   /** The up-facing slabs: the floor the building actually laid. */
   slabs: RoomSlab[];
   anchor: { x: number; y: number; z: number };
@@ -914,6 +935,7 @@ export function RoomTeleport({
   const landing = React.useRef<{
     x: number;
     z: number;
+    rise: number;
     blocked: boolean;
   } | null>(null);
 
@@ -926,7 +948,9 @@ export function RoomTeleport({
       m.visible = false;
       return;
     }
-    const hit = gazeFloorPoint(state.camera, anchor.y + floorY, gazeWorld);
+    const rise = poseRef.current.rise ?? 0;
+    // The floor UNDER THE READER, not the reading floor — see the note above.
+    const hit = gazeFloorPoint(state.camera, anchor.y + floorY + rise, gazeWorld);
     if (!hit) {
       landing.current = null;
       m.visible = false;
@@ -944,24 +968,49 @@ export function RoomTeleport({
       m.visible = false;
       return;
     }
+    // The walls of the reader's own storey, and the walking surface carried
+    // along the sweep — so the landing is on the tread their feet would have
+    // reached, and no tap crosses a storey they have not climbed.
     const path = roomTeleportPath(
       poseRef.current,
       { x: bx, z: bz },
       walls,
       floorY,
+      stairs,
     );
-    landing.current = path;
+    // ── Where the mark stands, and how loud it is ──
+    //
+    // Normally at the point a tap would actually reach. But a journey can make
+    // NO progress — a wall between the reader and everything they are aiming
+    // at, which the spine between the two flights is for anyone standing on
+    // the hall's centre line — and then the reachable point is the reader's
+    // own feet. Neither of the two obvious things to do with that is any use:
+    // a mark on your own boots reads as "tap here" and does nothing, and going
+    // out altogether reads as "the teleport is broken", which is what it looked
+    // like from inside the stair hall.
+    //
+    // So it falls back to where they are LOOKING, dimmed: "there, but not from
+    // where you are standing" — which is a sentence the reader can act on, by
+    // aiming a stride to one side of the wall in front of them.
+    const reached =
+      Math.hypot(
+        path.x - poseRef.current.x,
+        path.z - poseRef.current.z,
+      ) > 0.05;
+    // Only a reachable landing is something a tap may take.
+    landing.current = reached ? path : null;
+    const markRise = reached
+      ? path.rise
+      : walkSurfaceAt(stairs, bx, bz, floorY, rise) - floorY;
     m.visible = true;
     m.position.set(
-      anchor.x + path.x,
-      anchor.y + floorY + 0.014,
-      anchor.z + path.z,
+      anchor.x + (reached ? path.x : bx),
+      anchor.y + floorY + markRise + 0.014,
+      anchor.z + (reached ? path.z : bz),
     );
-    // A blocked aim still shows where the reader WOULD get to, quietly. Going
-    // dark rather than vanishing is the difference between "not there" and
-    // "not anywhere", and only one of those tells them to look further left.
-    if (ring.current) ring.current.opacity = path.blocked ? 0.3 : 0.95;
-    if (disc.current) disc.current.opacity = path.blocked ? 0.1 : 0.34;
+    const quiet = path.blocked || !reached;
+    if (ring.current) ring.current.opacity = quiet ? 0.3 : 0.95;
+    if (disc.current) disc.current.opacity = quiet ? 0.1 : 0.34;
   });
 
   useXRDoubleTap(enabled, () => {
@@ -973,6 +1022,10 @@ export function RoomTeleport({
     // nobody asked for — see the square-up in `useRoomWalking`.
     pose.x = at.x;
     pose.z = at.z;
+    // Arriving at ground level, not at the height they left from: without this
+    // a teleport across a landing set the reader down at the old rise over the
+    // new floor, and one onto a flight left them walking through the treads.
+    pose.rise = at.rise;
     jumpRef.current += 1;
     onArrive(pose);
   });

@@ -24,9 +24,6 @@ import type { Vec3 } from "../mapper/types";
  */
 export type Region = "page" | "footing" | "field" | "ascent" | "arrangement";
 
-/** Every region that is given a body in space. `arrangement` and `page` are not. */
-export const BODIED_REGIONS: readonly Region[] = ["footing", "field", "ascent"];
-
 /**
  * How far the destination is to reach — the only thing radius is allowed to
  * encode (§13C rule 1). `same-document` and `operational` are the two loci
@@ -38,9 +35,6 @@ export type Locus =
   | "off-site"
   | "operational"
   | "unknown";
-
-/** Progressive disclosure, §6. Phase 3 builds only `standing`. */
-export type SpatialLinkState = "standing" | "regarded" | "examined";
 
 /**
  * One reference, classified and bound to the place on the page it came from.

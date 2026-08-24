@@ -19,25 +19,3 @@
 
 export { XRSceneRenderer } from "./XRSceneRenderer";
 export type { XRSceneRendererProps } from "./XRSceneRenderer";
-
-export { useXRSession } from "./useXRSession";
-export type {
-  UseXRSessionReturn,
-  XRSessionState,
-  XRSessionCapabilities,
-} from "./useXRSession";
-
-export {
-  XRHeadingMesh,
-  XRParagraphMesh,
-  XRSectionMesh,
-  XRNavigationMesh,
-  XRMediaMesh,
-} from "./primitives";
-export type {
-  XRHeadingMeshProps,
-  XRParagraphMeshProps,
-  XRSectionMeshProps,
-  XRNavigationMeshProps,
-  XRMediaMeshProps,
-} from "./primitives";

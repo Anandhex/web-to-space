@@ -2,7 +2,7 @@ import { Readability } from "@mozilla/readability";
 import { PARSER_CONFIGS } from "./defaults";
 import type { ParserBackend, ParserConfig } from "./types";
 
-export interface BackendTransform {
+interface BackendTransform {
   /** HTML string to feed into parsePageToIR (may differ from raw input). */
   html: string;
   /** ParserConfig overrides to merge on top of the user's settings. */

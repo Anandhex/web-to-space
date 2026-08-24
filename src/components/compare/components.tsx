@@ -19,7 +19,7 @@ const NUM: React.CSSProperties = {
   fontFeatureSettings: '"tnum"',
 };
 
-export function Tooltip({ text }: { text: string }) {
+function Tooltip({ text }: { text: string }) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const iconRef = useRef<HTMLSpanElement>(null);
 
@@ -108,7 +108,7 @@ export function SectionHeader({
   );
 }
 
-export function Cell({
+function Cell({
   value,
   best,
   worst,

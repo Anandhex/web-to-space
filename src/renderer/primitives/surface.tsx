@@ -52,7 +52,7 @@ export function cornerRadius(
  * Corner radius rounds freely (no coupling to any extrusion depth), which is
  * what lets Horizon-scale corners exist at all — see the PANEL_RADIUS note.
  */
-export function roundedRectShape(w: number, h: number, r: number): THREE.Shape {
+function roundedRectShape(w: number, h: number, r: number): THREE.Shape {
   const s = new THREE.Shape();
   const x = -w / 2;
   const y = -h / 2;
@@ -78,7 +78,7 @@ export function roundedRectShape(w: number, h: number, r: number): THREE.Shape {
  * gradient is requested the geometry carries no colour attribute and the
  * material's flat `color` shows through unchanged.
  */
-export function useSurfaceGeometry(
+function useSurfaceGeometry(
   w: number,
   h: number,
   r: number,
@@ -110,13 +110,13 @@ export function useSurfaceGeometry(
 }
 
 /** Lighten a hex colour in HSL space — used to derive a gradient's top stop. */
-export function liftColor(hex: string, amount = 0.05): string {
+function liftColor(hex: string, amount = 0.05): string {
   const c = new THREE.Color(hex);
   c.offsetHSL(0, 0, amount);
   return `#${c.getHexString()}`;
 }
 
-export interface SurfaceProps {
+interface SurfaceProps {
   /** Panel width/height in metres (already safeDim'd by the caller). */
   width: number;
   height: number;

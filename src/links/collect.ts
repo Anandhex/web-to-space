@@ -42,7 +42,7 @@ const SOURCE_TEXT_TYPES = new Set<string>([
 /** Longest source snippet kept. Enough for a sentence, not for a paragraph. */
 const SOURCE_TEXT_MAX = 320;
 
-export interface CollectOptions {
+interface CollectOptions {
   /** The document's own URL. Drives origin comparison and href resolution. */
   pageUrl?: string | null;
   /**
@@ -192,13 +192,6 @@ export function collectSpatialLinks(
   if (opts.pageIndex !== undefined)
     out = out.filter((l) => l.pageIndex === opts.pageIndex);
   return out;
-}
-
-/** The references that get a body: field, footing and ascent. */
-export function bodiedLinks(links: SpatialLink[]): SpatialLink[] {
-  return links.filter(
-    (l) => l.region === "field" || l.region === "footing" || l.region === "ascent",
-  );
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────

@@ -1273,7 +1273,7 @@ const STRIP_W_LATERAL = 0.42;
 const STRIP_LIFT = 0.02;
 
 /** The rectangle the strips hang off: the backing wall's own silhouette. */
-export interface StripFrame {
+interface StripFrame {
   left: number;
   right: number;
   top: number;

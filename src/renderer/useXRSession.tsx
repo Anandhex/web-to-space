@@ -30,6 +30,7 @@
 
 import { useEffect, useState, useCallback, useMemo, useSyncExternalStore } from "react";
 import { createXRStore, type XRStore } from "@react-three/xr";
+import { MeshBasicMaterial } from "three";
 import {
   installXRErrorCapture,
   markEnterRequested,
@@ -43,18 +44,18 @@ import { xrSessionUsesLayers } from "./xr-render-path";
 // Types
 // ─────────────────────────────────────────────────────────────
 
-export type XRSessionState =
+type XRSessionState =
   /** No XR session active; showing inline 3-D preview. */
   | "idle"
   /** Immersive-VR session is active. */
   | "immersive";
 
-export interface XRSessionCapabilities {
+interface XRSessionCapabilities {
   /** True when immersive-vr can be entered — real device or injected emulator. */
   immersiveVR: boolean;
 }
 
-export interface UseXRSessionReturn {
+interface UseXRSessionReturn {
   /** Pass to <XR store={...}> inside the Canvas. */
   store: XRStore;
   sessionState: XRSessionState;
@@ -68,6 +69,70 @@ export interface UseXRSessionReturn {
   /** Error from the last failed enterVR attempt. */
   error: string | null;
 }
+
+// ─────────────────────────────────────────────────────────────
+// The pointer the reader aims with
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * WHAT THE READER IS POINTING AT HAS TO BE VISIBLE.
+ *
+ * @pmndrs/xr draws its ray with a material that fades the alpha to nothing
+ * along the beam (`PointerRayMaterial` multiplies by the vertex's own
+ * position), on top of a global opacity of 0.4 — so the far half of the line,
+ * the half nearest whatever is being aimed at, is the faintest part of it. Over
+ * a lit panel it is not there at all. This material is the same beam without
+ * the taper: one weight from the hand to the hit, which is the only part of it
+ * the reader is actually reading.
+ *
+ * Left transparent (the ray crosses the page it lands on) and left depth-TESTED
+ * (a beam drawn over the wall it stops behind is a lie about where it stopped),
+ * but not depth-WRITING, so it never occludes the text underneath it.
+ */
+class SolidRayMaterial extends MeshBasicMaterial {
+  constructor() {
+    super({ transparent: true, toneMapped: false, depthWrite: false });
+  }
+}
+
+/**
+ * How the ray and its cursor are drawn, for every input source that has one.
+ *
+ * Three faults, all of them in the defaults:
+ *
+ *  - **`maxLength` is 1 metre.** The beam is clamped to the SHORTER of that and
+ *    the distance to the hit, so anything further than a metre away — which is
+ *    every panel in every view, at a reading distance of about one and a half —
+ *    got a stub hanging in mid-air with nothing on the end of it. The reader
+ *    could see they were pointing; they could not see where. Twenty metres
+ *    reaches the far end of the longest corridor `rooms` builds.
+ *  - **0.4 opacity, tapered to zero.** See {@link SolidRayMaterial}.
+ *  - **A 0.4-opacity white cursor.** The one mark that says exactly WHERE the
+ *    ray landed, drawn fainter than the page under it.
+ *
+ * The colour is the app's own accent (`DARK_THEME.accentCol`), written out
+ * rather than imported: the store is created once, outside the canvas and
+ * outside the theme context, and a ray that changed colour with the page would
+ * be reading the wrong thing to the reader anyway. It is the one blue nothing
+ * in the building is painted, so the beam never disappears into a panel.
+ */
+const RAY_POINTER = {
+  rayModel: {
+    color: "#4DA3FF",
+    opacity: 0.95,
+    // The whole distance to whatever was hit, not the first metre of it.
+    maxLength: 20,
+    // Thin enough to aim a word with, thick enough to see across a room.
+    size: 0.0075,
+    materialClass: SolidRayMaterial,
+  },
+  cursorModel: {
+    color: "#4DA3FF",
+    opacity: 0.95,
+    size: 0.02,
+    materialClass: SolidRayMaterial,
+  },
+} as const;
 
 // ─────────────────────────────────────────────────────────────
 // Hook
@@ -90,6 +155,14 @@ export function useXRSession(): UseXRSessionReturn {
       createXRStore({
         emulate: false,
         handTracking: true,
+
+        // See RAY_POINTER: the default beam is a faint metre-long stub, which
+        // in a scene whose panels stand a reading distance away never reaches
+        // the thing it is pointing at. Both input kinds get the same one — a
+        // pinch aims exactly as a trigger does, and two pointers that looked
+        // different would be two things to learn.
+        controller: { rayPointer: RAY_POINTER },
+        hand: { rayPointer: RAY_POINTER },
         // Must match the render path picked in xr-render-path.ts. @pmndrs/xr
         // asks for `layers` by default; once a runtime grants it, three's
         // legacy `updateRenderState({ baseLayer })` is rejected outright

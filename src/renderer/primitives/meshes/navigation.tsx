@@ -31,7 +31,7 @@ import {
 import { ClippedText } from "../inline";
 import { capturePointer, releasePointer } from "../pointer-capture";
 
-export interface XRNavigationMeshProps {
+interface XRNavigationMeshProps {
   primitive: XRNavigationBar;
   entry: LayoutEntry;
   onNavigate?: (href: string) => void;

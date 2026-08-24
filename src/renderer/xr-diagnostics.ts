@@ -49,7 +49,7 @@ export interface LogEntry {
   uncaught: boolean;
 }
 
-export interface XRDiagnostics {
+interface XRDiagnostics {
   /** Enter-VR was clicked (ms since page load), or null if never. */
   enterRequestedAt: number | null;
   /** navigator.xr.requestSession() was called. */

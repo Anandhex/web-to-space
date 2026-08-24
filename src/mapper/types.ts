@@ -301,21 +301,6 @@ export interface XRFigure extends XRPrimitiveBase {
 }
 
 /**
- * XR-specific table layout strategy.
- * to be implemented by the layout engine based on IR analytics (table size, cell complexity) and panel geometry.
- *
- * "flat-2d"     — traditional 2-D floating table (≤4 columns, ≤8 rows).
- * "curved-2d"   — large table rendered on a curved surface for ergonomics.
- * "scrollable"  — table too large to show all at once; rendered in a scroll panel.
- * "cards"       — pivot: each row becomes a card (better for wide, few-column tables).
- */
-export type TableLayoutStrategy =
-  | "flat-2d"
-  | "curved-2d"
-  | "scrollable"
-  | "cards";
-
-/**
  * Data table.
  * Mapped from: table.
  */
@@ -424,19 +409,6 @@ export interface XRComboBox extends XRPrimitiveBase {
   state: XRInteractionState;
 }
 
-// TODO: need to implement xr-specific presentation hints in the layout engine and since we have removed here the layout to should handle it
-/**
- * XR-specific presentation style for a live-region alert.
- *
- * "floating-notification" — ephemeral toast that appears in peripheral zone.
- * "audio-cue"             — audio-only announcement (no visual panel).
- * "inline-banner"         — rendered inline as a banner within the parent panel.
- */
-export type AlertXRPresentation =
-  | "floating-notification"
-  | "audio-cue"
-  | "inline-banner";
-
 /** Live-region alert (assertive). */
 export interface XRAlert extends XRPrimitiveBase {
   type: "XRAlert";
@@ -444,27 +416,10 @@ export interface XRAlert extends XRPrimitiveBase {
   liveRegion: "assertive" | "polite";
 }
 
-/**
- * XR-specific presentation style for a tooltip.
- *
- * "contextual-bubble" — floating bubble anchored near the trigger element.
- * "gaze-reveal"       — revealed on gaze dwell (eye-tracking hint).
- */
-export type TooltipXRPresentation = "contextual-bubble" | "gaze-reveal";
-
 /** Tooltip (shown on hover / focus). */
 export interface XRTooltip extends XRPrimitiveBase {
   type: "XRTooltip";
 }
-
-/**
- * XR-specific media sizing strategy. to be implemented by the layout engine based on IR analytics and panel geometry.
- *
- * "large-panel"    — video rendered as a large (cinema-scale) curved panel.
- * "compact-widget" — audio or short video rendered as a small floating widget.
- * "ambient"        — background media, rendered outside the primary comfort zone.
- */
-export type MediaSizingStrategy = "large-panel" | "compact-widget" | "ambient";
 
 /** Video or audio player. */
 export interface XRMediaPlayer extends XRPrimitiveBase {
@@ -647,7 +602,7 @@ export interface MappingDiagnostics {
  * Replaces the previous bare MappingRule string so evaluators can trace
  * exactly how each XR primitive was derived from the IR.
  */
-export interface TransformationRecord {
+interface TransformationRecord {
   /** The named mapping rule that produced this primitive. */
   rule: MappingRule;
   /**

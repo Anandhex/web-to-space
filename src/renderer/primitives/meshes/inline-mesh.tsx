@@ -28,7 +28,7 @@ import {
   useLinkRects,
 } from "../inline";
 
-export interface XRTextMeshProps {
+interface XRTextMeshProps {
   primitive: import("../../../mapper/types").XRText;
   entry: LayoutEntry;
 }
@@ -118,7 +118,7 @@ export function XRTextMesh({ primitive, entry }: XRTextMeshProps) {
 
 // primitives.tsx - Add XRLinkMesh
 
-export interface XRLinkMeshProps {
+interface XRLinkMeshProps {
   primitive: import("../../../mapper/types").XRLink;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;

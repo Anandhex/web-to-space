@@ -36,6 +36,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 
 import { useTheme } from "../theme";
+import { headWorldPose } from "./xr-locomotion";
 import { FontContext } from "./contexts";
 import { markForAxis } from "./link-doors";
 import type { Axis } from "../../links/memory";
@@ -115,6 +116,8 @@ export function TransitionMark({
   const camera = useThree((s) => s.camera);
   const group = React.useRef<THREE.Group>(null);
   const target = React.useRef(new THREE.Vector3());
+  const eye = React.useRef(new THREE.Vector3());
+  const quat = React.useRef(new THREE.Quaternion());
   const settled = React.useRef(false);
 
   const visible = Boolean(pending);
@@ -123,16 +126,20 @@ export function TransitionMark({
     const g = group.current;
     if (!g || !visible) return;
     try {
-      target.current.set(OFF_X, OFF_Y, -DIST).applyQuaternion(camera.quaternion);
-      target.current.add(camera.position);
+      // The head in WORLD space — `camera.position` is the player-frame pose
+      // inside a session, and this mark rides beside the minimap, which was
+      // displaced by the recentre for exactly that reason. See headWorldPose.
+      headWorldPose(camera, eye.current, quat.current);
+      target.current.set(OFF_X, OFF_Y, -DIST).applyQuaternion(quat.current);
+      target.current.add(eye.current);
       if (!settled.current) {
         g.position.copy(target.current);
-        g.quaternion.copy(camera.quaternion);
+        g.quaternion.copy(quat.current);
         settled.current = true;
         return;
       }
       g.position.lerp(target.current, FOLLOW);
-      g.quaternion.slerp(camera.quaternion, FOLLOW);
+      g.quaternion.slerp(quat.current, FOLLOW);
     } catch {
       // See Sweep.
     }

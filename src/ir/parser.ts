@@ -55,7 +55,7 @@ import {
  * what a parse gets when no AI provider is configured. Every node keeps the
  * role layers 1 and 2 gave it.
  */
-export class StubAIProvider implements AIFallbackProvider {
+class StubAIProvider implements AIFallbackProvider {
   async classifyBatch(
     items: AIClassifyRequest[],
   ): Promise<(AIFallbackResponse | null)[]> {
@@ -1631,16 +1631,6 @@ function buildLandmarkTree(
     label: rootLabel ?? "main",
     children: buildChildren("landmarks"),
   };
-}
-
-export function collectLandmarkIds(tree: LandmarkTOCNode): string[] {
-  const ids: string[] = [];
-  const walk = (node: LandmarkTOCNode): void => {
-    ids.push(node.id);
-    for (const child of node.children) walk(child);
-  };
-  walk(tree);
-  return ids;
 }
 
 function pruneUIChrome(

@@ -14,20 +14,6 @@ import type { Axis, NavState } from "../links/memory";
  */
 export type ViewMode = "wall" | "deck" | "rooms";
 
-/** ViewModes that route through the arrangement (two-axis) path. */
-export const ARRANGEMENT_VIEW_MODES: ReadonlySet<ViewMode> = new Set<ViewMode>([
-  "wall",
-  "deck",
-  "rooms",
-]);
-
-/** Page views: content-only mode with a spatialised page set. */
-export const PAGE_VIEW_MODES: ReadonlySet<ViewMode> = new Set<ViewMode>([
-  "wall",
-  "deck",
-  "rooms",
-]);
-
 export interface Tab {
   id: string;
   label: string;       // hostname or "New Tab"

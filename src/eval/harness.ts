@@ -40,7 +40,7 @@ export const PIPELINE_BACKENDS = [
   { id: "vips" as const, label: "VIPS" },
 ];
 
-export type PipelineBackendId = (typeof PIPELINE_BACKENDS)[number]["id"];
+type PipelineBackendId = (typeof PIPELINE_BACKENDS)[number]["id"];
 
 export interface BackendBenchmark {
   id: PipelineBackendId;

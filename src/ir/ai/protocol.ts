@@ -14,7 +14,7 @@
  * back keyed by node id, which is what makes layer 3 affordable — see
  * `AIFallbackProvider.classifyBatch`.
  */
-import type { AIClassifyRequest, AIFallbackResponse, IRRole } from "../types";
+import type { AIClassifyRequest, AIFallbackResponse } from "../types";
 import { AI_CLASSIFIABLE_ROLES, isClassifiableRole } from "./types";
 
 /**
@@ -36,14 +36,6 @@ Answer "generic" when the element is a layout wrapper with no meaning of its own
 Confidence is your own probability that the role is right, from 0 to 1. Keep the reasoning to one short clause naming the evidence you used.
 
 Return one entry for every item you are given, using the id exactly as supplied, and nothing else.`;
-
-/** Shape both the structured-output schema and the tolerant reader expect. */
-export interface AIBatchResultEntry {
-  id: string;
-  role: IRRole;
-  confidence: number;
-  reasoning: string;
-}
 
 /**
  * JSON schema for the batch answer.

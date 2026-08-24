@@ -388,7 +388,7 @@ export const IMAGE_CAPTION_FONT_SIZE = 0.016;
  * block.tsx). The mesh wraps at w − 2·X_INSET, so the height estimator uses the
  * same width to avoid under-counting lines (which overflowed behind the code).
  */
-export const BLOCKQUOTE_X_INSET = 0.026;
+const BLOCKQUOTE_X_INSET = 0.026;
 
 /**
  * Height (metres) of the caption band drawn beneath a captioned image. Shared by
@@ -740,7 +740,7 @@ export function estimateHeight(
  * as "empty". Resolved exactly the way the renderer resolves it, via
  * leafNodeText — see the note there about empty content plus a metadata label.
  */
-export function nodeHasText(p: XRPrimitive): boolean {
+function nodeHasText(p: XRPrimitive): boolean {
   return leafNodeText(p) !== "";
 }
 
@@ -771,7 +771,7 @@ export function isEmptyContainerNode(p: XRPrimitive): boolean {
   return cfg?.paginate === "recursive" || cfg?.forceNewPage === true;
 }
 
-export function sumChildrenHeights(
+function sumChildrenHeights(
   children: XRPrimitive[],
   panelUsableWidth: number,
   metrics: RenderMetrics,

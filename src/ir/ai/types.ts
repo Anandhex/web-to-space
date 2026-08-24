@@ -40,7 +40,7 @@ export interface AIProviderSettings {
   timeoutMs: number;
 }
 
-export interface AIProviderMeta {
+interface AIProviderMeta {
   id: AIProviderId;
   label: string;
   /** Local models need no key; everything hosted does. */
@@ -175,16 +175,14 @@ export const AI_CLASSIFIABLE_ROLES = [
   "code",
   "heading",
   "paragraph",
-  "note",
   "group",
-  "toolbar",
   "dialog",
   "feed",
   "status",
   "generic",
 ] as const satisfies readonly IRRole[];
 
-export type AIClassifiableRole = (typeof AI_CLASSIFIABLE_ROLES)[number];
+type AIClassifiableRole = (typeof AI_CLASSIFIABLE_ROLES)[number];
 
 const ROLE_SET: ReadonlySet<string> = new Set(AI_CLASSIFIABLE_ROLES);
 

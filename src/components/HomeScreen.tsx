@@ -21,9 +21,6 @@ import { DARK_THEME, type XRTheme } from "../renderer/theme";
 
 import { SR_ONLY, usePrefersReducedMotion } from "./a11y";
 
-// Re-exported so existing importers of these from this module keep working.
-export { SR_ONLY };
-
 // ─────────────────────────────────────────────────────────────
 // Types & defaults
 // ─────────────────────────────────────────────────────────────
@@ -107,7 +104,7 @@ export interface HomeSettings {
  * the secondary and muted inks somewhere to go, and the boundary moved from
  * the fill to the rim.
  */
-export const DEFAULT_HOME_THEME: HomeTheme = {
+const DEFAULT_HOME_THEME: HomeTheme = {
   accent: "#0082FB",
   accentText: "#6BAEFF",
   accentDim: "#0A4A8A",
@@ -135,53 +132,6 @@ export const DEFAULT_HOME_SETTINGS: HomeSettings = {
   aiRememberKey: false,
   viewMode: "rooms",
 };
-
-/**
- * Every foreground/background pair the launcher actually draws, with the WCAG
- * level each has to clear: 4.5:1 for text, 3:1 for the boundaries and rings
- * that identify a control.
- *
- * The palette is user-editable, and a colour picker will happily produce a
- * launcher nobody can read — the defaults shipped with seven failing pairs,
- * including a URL line at 1.82:1. This is what the Settings panel checks
- * against so a broken palette says so instead of just looking a bit murky.
- */
-export function homeContrastPairs(
-  t: HomeTheme,
-): { label: string; fg: string; bg: string; need: number }[] {
-  return [
-    { label: "Card title", fg: t.textPrimary, bg: t.cardBg, need: 4.5 },
-    { label: "Card subtitle", fg: t.textSecondary, bg: t.cardBg, need: 4.5 },
-    {
-      label: "Card subtitle (hover)",
-      fg: t.textSecondary,
-      bg: t.cardHover,
-      need: 4.5,
-    },
-    { label: "Card URL", fg: t.textMuted, bg: t.cardBg, need: 4.5 },
-    { label: "Card URL (hover)", fg: t.textMuted, bg: t.cardHover, need: 4.5 },
-    { label: "Open hint", fg: t.accentText, bg: t.cardHover, need: 4.5 },
-    { label: "Chip initial", fg: t.accentText, bg: t.chipBg, need: 4.5 },
-    {
-      label: "Chip initial (hover)",
-      fg: t.accentText,
-      bg: t.chipBgActive,
-      need: 4.5,
-    },
-    { label: "Card border on board", fg: t.cardRim, bg: t.boardBg, need: 3 },
-    { label: "Card border on canvas", fg: t.cardRim, bg: t.canvasBg, need: 3 },
-    { label: "Card rule", fg: t.divider, bg: t.cardBg, need: 3 },
-    { label: "Focus ring on card", fg: t.accent, bg: t.cardBg, need: 3 },
-    { label: "Focus ring on board", fg: t.accent, bg: t.boardBg, need: 3 },
-    { label: "Heading on canvas", fg: t.textPrimary, bg: t.canvasBg, need: 3 },
-    {
-      label: "Subheading on canvas",
-      fg: t.textSecondary,
-      bg: t.canvasBg,
-      need: 4.5,
-    },
-  ];
-}
 
 const LS_KEY = "fsw-home-settings";
 /**
@@ -253,10 +203,10 @@ function hexToRgb(hex: string): string {
 // Sentinel URL for the built-in renderer test page. Resolved to an absolute
 // same-origin URL at click time (see handleLoad) so it can be fetched directly
 // without the CORS proxy, and so the parser can resolve relative asset URLs.
-export const TEST_PAGE_TOKEN = "__test_elements__";
+const TEST_PAGE_TOKEN = "__test_elements__";
 const TEST_PAGE_PATH = "/test-elements.html";
 
-export interface PresetSite {
+interface PresetSite {
   id: string;
   title: string;
   subtitle: string;
@@ -371,7 +321,7 @@ const BOARD_INNER_H =
   UTIL_H + CARD_GAP_Y + GRID_ROWS * CARD_H + (GRID_ROWS - 1) * CARD_GAP_Y;
 const BOARD_PAD = 0.12;
 
-export interface CardPose {
+interface CardPose {
   position: [number, number, number];
   /** Yaw that turns the card square-on to the eye. */
   yaw: number;
@@ -395,17 +345,12 @@ function arcPose(alongX: number, y: number): CardPose {
 }
 
 /** Pose of the i-th destination card, in reading order (left→right, top→down). */
-export function cardPose(i: number): CardPose {
+function cardPose(i: number): CardPose {
   const col = i % CARD_COLS;
   const row = Math.floor(i / CARD_COLS);
   const alongX = (col - (CARD_COLS - 1) / 2) * (CARD_W + CARD_GAP_X);
   const topRowY = BOARD_BOTTOM_Y + BOARD_INNER_H - CARD_H / 2;
   return arcPose(alongX, topRowY - row * (CARD_H + CARD_GAP_Y));
-}
-
-/** Pose of the utility strip, under the last grid row. */
-export function utilityPose(): CardPose {
-  return arcPose(0, BOARD_BOTTOM_Y + UTIL_H / 2);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -691,7 +636,7 @@ function SceneTitle({ theme }: { theme: HomeTheme }) {
 //    ring in the scene is a mirror of that state, never a substitute for it.
 // ─────────────────────────────────────────────────────────────
 
-export interface A11yTarget {
+interface A11yTarget {
   id: string;
   label: string;
   hint: string;
@@ -705,7 +650,7 @@ export interface A11yTarget {
  * it, which is what a grid of peers should do — six separate tab stops would
  * make getting past the launcher a six-key journey. Home/End jump to the ends.
  */
-export function CardGridA11y({
+function CardGridA11y({
   targets,
   focusIndex,
   setFocusIndex,
@@ -1436,7 +1381,7 @@ function SettingsPanel({
 // Main component
 // ─────────────────────────────────────────────────────────────
 
-export interface HomeScreenProps {
+interface HomeScreenProps {
   onLoad: (url: string, settings: HomeSettings) => void;
   loading: boolean;
   /** Open tabs — rendered as the in-world 3D tab switcher. */

@@ -53,7 +53,7 @@ const now = (): number =>
 // Geometry
 // ─────────────────────────────────────────────────────────────
 
-export interface Rect {
+interface Rect {
   x: number;
   y: number;
   w: number;
@@ -79,7 +79,7 @@ function unionAll(rects: Rect[]): Rect {
 // ─────────────────────────────────────────────────────────────
 
 /** Visual style facts read once per element and reused across all three phases. */
-export interface VisualStyle {
+interface VisualStyle {
   /** Effective painted background colour, resolved through transparent ancestors. */
   background: string;
   fontSizePx: number;
@@ -93,7 +93,7 @@ export interface VisualStyle {
   rendered: boolean;
 }
 
-export interface VisualBlock {
+interface VisualBlock {
   id: string;
   /** Source elements. More than one after a merge. */
   els: Element[];
@@ -544,7 +544,7 @@ function extractBlocks(el: Element, ctx: ExtractContext, depth: number): VisualB
 // Phase 2 — Visual separator detection
 // ─────────────────────────────────────────────────────────────
 
-export interface Separator {
+interface Separator {
   /** "h" spans horizontally and separates top from bottom; "v" is the converse. */
   axis: "h" | "v";
   /** Start coordinate along the separating axis (y for "h", x for "v"). */
@@ -852,7 +852,7 @@ function mergeGroup(
 // Entry point
 // ─────────────────────────────────────────────────────────────
 
-export interface VipsVisualResult {
+interface VipsVisualResult {
   /** The leaf visual blocks, in reading order. */
   blocks: VisualBlock[];
   diagnostics: VipsVisualDiagnostics;

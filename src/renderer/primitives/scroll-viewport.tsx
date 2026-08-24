@@ -28,7 +28,7 @@ import { capturePointer, releasePointer } from "./pointer-capture";
  * the pointer can suppress its own click on release. Dragging a panel by its
  * text must scroll it, not navigate away.
  */
-export const ScrollDragContext =
+const ScrollDragContext =
   React.createContext<React.MutableRefObject<boolean> | null>(null);
 
 /** True when the current click is really the tail of a drag — and clears it. */
@@ -41,7 +41,7 @@ export function useConsumeScrollDrag(): () => boolean {
   }, [dragRef]);
 }
 
-export interface ScrollViewportProps {
+interface ScrollViewportProps {
   /** Panel width, metres — the scroll capture surface and bar span it. */
   width: number;
   /** Visible height, metres. Content taller than this scrolls. */

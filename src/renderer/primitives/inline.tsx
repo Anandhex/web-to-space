@@ -149,9 +149,9 @@ type TextSeg = { kind: "text"; text: string; bold?: boolean; italic?: boolean };
  * light the mark and its door as one thing.
  */
 type LinkSeg = { kind: "link"; text: string; href?: string | null; id?: string };
-export type InlineSeg = TextSeg | LinkSeg;
+type InlineSeg = TextSeg | LinkSeg;
 
-export type InlineRow =
+type InlineRow =
   | { kind: "inline"; segments: InlineSeg[] }
   | { kind: "block"; childId: string };
 
@@ -256,7 +256,7 @@ export function buildInlineRows(children: any[]): InlineRow[] {
  * left — the census says alignment cannot do the job, because 49.8% of anchors
  * share a block with another anchor.
  */
-export function buildRowMeta(
+function buildRowMeta(
   segments: InlineSeg[],
   theme: XRTheme,
   forceColor?: number,
@@ -397,10 +397,6 @@ export function InlineProseRows({
 
 // Transparent click target for one contiguous run of a link's glyphs on a
 // single visual line, in the ProseRow group's local coordinate space.
-/** Underline thickness (metres) and how far above the glyph box bottom it sits. */
-export const LINK_UNDERLINE_THICKNESS = 0.0012;
-export const LINK_UNDERLINE_RISE = 0.0015;
-
 interface LinkHitRect {
   cx: number;
   cy: number;

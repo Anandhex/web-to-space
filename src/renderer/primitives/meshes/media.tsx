@@ -30,7 +30,7 @@ import {
   IMAGE_CAPTION_FONT_SIZE,
 } from "../../../layout/positionConfigs";
 
-export interface XRMediaMeshProps {
+interface XRMediaMeshProps {
   primitive: XRMediaPlayer;
   entry: LayoutEntry;
 }
@@ -157,7 +157,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
 // 6. XRCodeBlockMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRImageMeshProps {
+interface XRImageMeshProps {
   primitive: import("../../../mapper/types").XRImage;
   entry: LayoutEntry;
 }

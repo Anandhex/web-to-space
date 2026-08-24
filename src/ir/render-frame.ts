@@ -60,7 +60,7 @@ import { proxyUrl } from "../proxy";
 // Types
 // ─────────────────────────────────────────────────────────────
 
-export interface RenderFrameOptions {
+interface RenderFrameOptions {
   /** Absolute page URL — used for `<base href>` and to resolve stylesheets. */
   baseHref?: string | null;
   /** Virtual viewport width in CSS px. Default 1200. */
@@ -128,7 +128,7 @@ export interface RenderFrameDiagnostics {
   documentHeightPx: number;
 }
 
-export interface RenderFrameResult<T> {
+interface RenderFrameResult<T> {
   /** `null` when the frame could not be rendered or the reader threw. */
   value: T | null;
   diagnostics: RenderFrameDiagnostics;

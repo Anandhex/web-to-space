@@ -39,7 +39,7 @@ import * as THREE from "three";
 import type { Axis } from "../../links/memory";
 
 /** How a view expresses travel. */
-export type TravelMode =
+type TravelMode =
   /** A face turns away and the next turns in — the wall's dice. */
   | "turn"
   /** The world translates past — the deck's table. */
@@ -57,7 +57,7 @@ export type TravelMode =
 const HALF_S = 0.42;
 
 /** How far the world travels on a slide, metres. */
-export const TRAVEL_SLIDE = 1.15;
+const TRAVEL_SLIDE = 1.15;
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;

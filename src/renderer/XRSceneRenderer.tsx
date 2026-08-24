@@ -91,11 +91,7 @@ import { ROOM_EYE_HEIGHT } from "./page-placements";
 import { SR_ONLY } from "../components/a11y";
 import { VRButton, styles } from "./scene/chrome";
 
-export {
-  FontContext,
-  CurrentPageContext,
-  PageRangeContext,
-} from "./scene/contexts";
+export { FontContext } from "./scene/contexts";
 
 export type XRDeviceType = "QUEST_3";
 

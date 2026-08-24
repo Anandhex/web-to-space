@@ -54,7 +54,7 @@ export interface SectionPageRange {
   label: string;
 }
 
-export interface PagePlacementOptions {
+interface PagePlacementOptions {
   /**
    * wall/deck/rooms: page ranges of the top-level sections, in
    * reading order.
@@ -185,7 +185,7 @@ const WALL_MAX_COLS = 8;
  * the smallest span whose block holds a whole panel in BOTH axes at
  * WALL_TILE_SCALE — "full size" has to mean full size, not almost.
  */
-export const WALL_OPEN_SPAN = 5;
+const WALL_OPEN_SPAN = 5;
 const WALL_YAW_PER_M = 0.16; // gentle arc: yaw ∝ horizontal offset from centre
 const WALL_DEPTH_PER_M = 0.06; // …and the board curls away by this much
 /**
@@ -223,7 +223,7 @@ export interface WallCell {
   recession: number;
 }
 
-export interface WallOptions {
+interface WallOptions {
   sectionRanges?: SectionPageRange[];
   /** Index of the expanded section, or null for the outline overview. */
   openSection?: number | null;
@@ -246,11 +246,11 @@ interface WallItem {
   col: number;
 }
 
-export function wallSectionKey(sectionIndex: number): string {
+function wallSectionKey(sectionIndex: number): string {
   return `wall-section-${sectionIndex}`;
 }
 
-export function wallPageKey(pageIndex: number): string {
+function wallPageKey(pageIndex: number): string {
   return `wall-page-${pageIndex}`;
 }
 
@@ -759,10 +759,10 @@ const DECK_MAX_STEP_FRACTION = 0.46;
 /** The shelf: a lane that stands for no section, for the reader to fill. */
 export const DECK_SHELF_ID = "lane-shelf";
 /** Lanes the reader made by carrying a card off the end of the row. */
-export const DECK_NEW_LANE_PREFIX = "lane-new-";
+const DECK_NEW_LANE_PREFIX = "lane-new-";
 
 /** True for a lane the reader made, as opposed to a section's or the shelf. */
-export function deckIsMadeLane(lane: { id: string }): boolean {
+function deckIsMadeLane(lane: { id: string }): boolean {
   return lane.id.startsWith(DECK_NEW_LANE_PREFIX);
 }
 
@@ -806,12 +806,12 @@ export type DeckDrop =
   | null;
 
 /** The card being dragged, and where it would land if dropped now. */
-export interface DeckDrag {
+interface DeckDrag {
   pageIndex: number;
   to: DeckDrop;
 }
 
-export interface DeckOptions {
+interface DeckOptions {
   sectionRanges?: SectionPageRange[];
   /** The reader's arrangement. Omitted → document order (deckDefaultLanes). */
   lanes?: DeckLane[];
@@ -1031,7 +1031,7 @@ function deckMetrics(
 }
 
 /** Where the table hangs, for a given number of lanes. */
-export function deckFrame(
+function deckFrame(
   panel: { width: number; height: number },
   laneCount: number,
 ): DeckFrame {
@@ -1063,10 +1063,10 @@ export function deckFrame(
  * It is here, with the rest of the geometry, rather than laid out inline in
  * the renderer, for one reason: a plate is at most 21 cm wide on a
  * nine-section document, five things have to fit on it, and whether they do
- * is arithmetic — so it can be CHECKED offline (`deckPlateOverlaps`) instead
- * of being something you notice colliding in a headset.
+ * is arithmetic — so it can be checked offline instead of being something you
+ * notice colliding in a headset.
  */
-export interface DeckRect {
+interface DeckRect {
   /** Centre. */
   x: number;
   y: number;
@@ -1074,7 +1074,7 @@ export interface DeckRect {
   height: number;
 }
 
-export interface DeckPlateSlots {
+interface DeckPlateSlots {
   spine: DeckRect;
   label: DeckRect;
   count: DeckRect;
@@ -1119,24 +1119,6 @@ export function deckPlateSlots(width: number, height: number): DeckPlateSlots {
     left,
     right,
   };
-}
-
-/** Pairs of plate furniture that overlap — empty is the only passing answer. */
-export function deckPlateOverlaps(slots: DeckPlateSlots): string[] {
-  const named = Object.entries(slots) as [string, DeckRect][];
-  const hit: string[] = [];
-  const laps = (a: DeckRect, b: DeckRect) =>
-    Math.abs(a.x - b.x) < (a.width + b.width) / 2 - 1e-9 &&
-    Math.abs(a.y - b.y) < (a.height + b.height) / 2 - 1e-9;
-  for (let i = 0; i < named.length; i++)
-    for (let j = i + 1; j < named.length; j++) {
-      // The spine runs the full height of the plate down its left margin; the
-      // label starts to the right of it, and nothing else goes near it.
-      if (named[i][0] === "spine" || named[j][0] === "spine") continue;
-      if (laps(named[i][1], named[j][1]))
-        hit.push(`${named[i][0]}×${named[j][0]}`);
-    }
-  return hit;
 }
 
 /**
@@ -1417,7 +1399,7 @@ export function deckSameDrop(a: DeckDrop, b: DeckDrop): boolean {
 }
 
 /** Move a page to `slot` of lane `to`, taking it out of wherever it was. */
-export function deckMoveCard(
+function deckMoveCard(
   lanes: DeckLane[],
   pageIndex: number,
   to: number,
@@ -1442,7 +1424,7 @@ export function deckMoveCard(
  * an id derived from the ones already there, which keeps this deterministic
  * and lets the renderer key on it across the reflow.
  */
-export function deckAddLane(
+function deckAddLane(
   lanes: DeckLane[],
   pageIndex: number,
   at: number,
@@ -1471,7 +1453,7 @@ export function deckAddLane(
  * document, and you have to be able to put pages back into it. The shelf
  * stays for the same reason.
  */
-export function deckPruneLanes(lanes: DeckLane[]): DeckLane[] {
+function deckPruneLanes(lanes: DeckLane[]): DeckLane[] {
   return lanes.filter((l) => !deckIsMadeLane(l) || l.pages.length > 0);
 }
 
@@ -1600,7 +1582,7 @@ const ROOM_WALL_HEADROOM = 0.95;
  * chrome is not mounted in rooms, and panel clipping is derived from each
  * page's own placed entry.
  */
-export const ROOM_HANG_CENTRE = 1.45;
+const ROOM_HANG_CENTRE = 1.45;
 /**
  * …and where the reader's eye is. A shade above the hang line, which is how
  * a standing adult meets a picture hung to centre.
@@ -2017,7 +1999,7 @@ const BRANCH_HALF = 1.05;
  * which is what makes "beside the page, never through it" arithmetic instead
  * of a search that can fail.
  */
-export const BRANCH_PAGE_CLEAR = 0.45;
+const BRANCH_PAGE_CLEAR = 0.45;
 /** Shortest branch, so a page with one link still gets a corridor. */
 const BRANCH_MIN = 3.2;
 /** Clear run past the last door before the end wall. */
@@ -2067,8 +2049,26 @@ const ARM_DOOR_START = 0.95;
 const ARM_END_RUN = 0.7;
 /** Shortest arm, so a hand with one door is still a stretch of corridor. */
 const ARM_MIN = 2.4;
-/** Clear floor between the crossing and the first riser. */
-const STAIR_LIP = 0.2;
+/**
+ * Clear floor between the crossing and the first riser.
+ *
+ * Not a nicety — it is where the reader CHOOSES. The two flights fill the hall
+ * side by side, so the channel wall between them (see the balustrade in
+ * `computeRoomShell`) starts a quarter-metre back from the first riser and runs
+ * the length of the flight. At 0.2 m that wall began 5 cm INSIDE the crossing:
+ * a reader who stepped out of their room and walked straight on met it before
+ * they had left the square, and `roomWalkStep`, finding them already between
+ * the two channel walls, pushed them out to whichever was a fraction of a
+ * millimetre nearer — the descending one, every time. Walking into the stair
+ * hall put you on the down flight and there was no way to go up but to strafe
+ * blind. The straight line from the crossing into the up channel crossed the
+ * same wall, so teleporting in came back blocked for the same reason.
+ *
+ * A stride clear of the crossing, so both flights are entered FROM a piece of
+ * landing that belongs to neither. `hallLengths` and `linkDoorsOf` measure off
+ * this, so the hall and its landings lengthen with it.
+ */
+const STAIR_LIP = 0.9;
 
 /**
  * Floor-to-floor height of the building, metres.
@@ -2100,6 +2100,17 @@ const STAIR_GOING = 0.29;
 const STAIR_RUN = STAIR_STEPS * STAIR_GOING;
 /** Floor kept solid at the end a flight ARRIVES at — a stride, not a lip. */
 const STAIR_ARRIVE = 0.4;
+/**
+ * How far BEFORE a flight its shaft opens, at the end it sets off from.
+ *
+ * The floor a flight climbs through has to be cut a little back from the first
+ * riser or the reader's head meets its edge on the last tread they can still
+ * stand upright under. Named because three places have to agree on it: the
+ * hole (`computeRoomSlabs`), the balustrade round the hole
+ * (`computeRoomShell`), and — the one that was missing — the ceiling
+ * luminaires, which must not be hung over it.
+ */
+const STAIR_SHAFT_LEAD = 0.25;
 /** Balustrade round the opening a flight leaves in the floor it climbs through. */
 const STAIR_RAIL_H = 1.0;
 
@@ -2223,7 +2234,7 @@ export interface RoomStair {
   landing: { x0: number; x1: number; z0: number; z1: number };
 }
 
-export interface LinkBranch {
+interface LinkBranch {
   /** Which page's corridor this is. */
   page: number;
   /** The room wall it opens through, and which side of the spine that is. */
@@ -2466,21 +2477,6 @@ function branchesOf(
   return out;
 }
 
-/**
- * The branches, for callers that need to reason about the corridors rather
- * than draw them — the walk (to know where a corridor runs) and the offline
- * checks (to assert it does not cross its own page).
- */
-export function computeLinkBranches(
-  mode: PageDistribution,
-  pageCount: number,
-  panel: { width: number; height: number },
-  opts: PagePlacementOptions = {},
-): LinkBranch[] {
-  if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return [];
-  return branchesOf(planFor(pageCount, panel, opts), opts.pageLinks, opts.activePage);
-}
-
 /** The plan every rooms entry point works from, built from the same options. */
 function planFor(
   pageCount: number,
@@ -2598,18 +2594,6 @@ export function computeReadingSpots(
   return out;
 }
 
-/** The centre of the page `page` hangs at — what proximity is measured to. */
-export function roomPageCentre(
-  mode: PageDistribution,
-  pageCount: number,
-  panel: { width: number; height: number },
-  page: number,
-  opts: PagePlacementOptions = {},
-): { x: number; y: number; z: number } | null {
-  if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return null;
-  return roomCellOf(page, planFor(pageCount, panel, opts), panel).centre;
-}
-
 /** Where the reader stands to read `focus`. */
 export function roomReadingPose(
   mode: PageDistribution,
@@ -2671,14 +2655,14 @@ export function roomAtPose(
  * `ROOM_PAGE_GAP` apart along the wall — so walking up to a page opens its
  * corridor beside it, while the page one bay along keeps its own.
  */
-export const VICINITY_REACH = 2.6;
+const VICINITY_REACH = 2.6;
 /**
  * How much nearer a page must be than the one whose corridor is already open
  * before it takes it over. A reader standing between two bays would otherwise
  * swap the whole corridor — floor, walls, doors and flights — back and forth
  * on every reported step.
  */
-export const VICINITY_MARGIN = 0.5;
+const VICINITY_MARGIN = 0.5;
 
 /**
  * Which page's corridor should be BUILT OUT, for a reader at `pose`.
@@ -2879,18 +2863,52 @@ export function roomWalkStep(
  * can teleport into a room they can see into and not through its back wall —
  * the same rule their feet obey.
  *
- * @returns the point actually reachable along the way to `to`, and whether a
- *   wall cut the journey short.
+ * ── The floor is walked, not skipped ──
+ *
+ * The sweep carries the walking surface with it, exactly as `useRoomWalking`
+ * samples it every step, and stops where the ground rises or drops faster than
+ * a flight does. Without that the line ran along the READING floor from end to
+ * end of a stair hall — under a flight it should have climbed and through the
+ * first four treads of it — and set the reader down beyond the head at ground
+ * level, having passed through the stairs. It also means a teleport up a
+ * flight lands on the tread their feet would have reached, and no tap can
+ * cross a storey the reader has not climbed.
+ *
+ * @param from where the reader is, and how high they are standing (`rise`,
+ *   metres above the reading floor — a landing, or part-way up a flight).
+ * @returns the point actually reachable along the way to `to`, the walking
+ *   surface there, and whether the journey was cut short.
  */
 export function roomTeleportPath(
-  from: { x: number; z: number },
+  from: { x: number; z: number; rise?: number },
   to: { x: number; z: number },
   walls: RoomWall[],
   floorY: number,
+  stairs: RoomStair[] = [],
   radius = WALK_RADIUS,
-): { x: number; z: number; blocked: boolean } {
+): { x: number; z: number; rise: number; blocked: boolean } {
+  // Walls are solid on the storey the reader is STANDING on, which on a
+  // landing is not the reading floor. Snapped to the nearest storey for the
+  // same reason the walk snaps: part-way up a flight the exact height is in
+  // the band between one ceiling and the next floor, where nothing spans.
+  const rise0 = from.rise ?? 0;
+  const storeyY = floorY + Math.round(rise0 / ROOM_STOREY_H) * ROOM_STOREY_H;
+
+  // A wall is solid to this reader when it SPANS their floor — the same test
+  // `roomWalkStep` makes, and for the same reason.
+  //
+  // This filter used to take the base alone, which on a one-storey building is
+  // the same thing and on this one is not. Every wall of the landing BELOW has
+  // its base under the reader's floor, and collision is worked in plan, where
+  // the two are the same line: from the top of a flight the whole length of
+  // the landing was walled off by the storey underneath it, and a gaze at the
+  // far end of a corridor the reader was standing in came back blocked. The
+  // reader's feet were never subject to any of it, which is exactly what makes
+  // the fault read as "the teleport doesn't work up here".
   const solid = walls.filter(
-    (w) => w.centre.y - w.size.height / 2 <= floorY + 0.05,
+    (w) =>
+      w.centre.y - w.size.height / 2 <= storeyY + 0.05 &&
+      w.centre.y + w.size.height / 2 > storeyY + 0.05,
   );
   const clear = (x: number, z: number) => {
     for (const w of solid) if (wallDistance(w, x, z) < radius) return false;
@@ -2899,20 +2917,30 @@ export function roomTeleportPath(
   const dx = to.x - from.x;
   const dz = to.z - from.z;
   const len = Math.hypot(dx, dz);
-  if (len < 1e-6) return { x: from.x, z: from.z, blocked: false };
+  if (len < 1e-6)
+    return { x: from.x, z: from.z, rise: rise0, blocked: false };
   // Same sub-step as the walk: half the reader's radius, so nothing thinner
   // than they are can be stepped over.
   const n = Math.max(1, Math.ceil(len / (radius * 0.5)));
+  const step = len / n;
+  // The most the ground may move under one sub-step. A flight's ramp is
+  // `ROOM_STOREY_H / STAIR_RUN` — about 0.9 — so a whole tread's worth is
+  // ordinary; a storey in one sub-step is a floor being passed through.
+  const maxClimb = step * (ROOM_STOREY_H / STAIR_RUN) + 0.12;
   let x = from.x;
   let z = from.z;
+  let rise = rise0;
   for (let i = 1; i <= n; i++) {
     const cx = from.x + (dx * i) / n;
     const cz = from.z + (dz * i) / n;
-    if (!clear(cx, cz)) return { x, z, blocked: true };
+    if (!clear(cx, cz)) return { x, z, rise, blocked: true };
+    const cr = walkSurfaceAt(stairs, cx, cz, floorY, rise) - floorY;
+    if (Math.abs(cr - rise) > maxClimb) return { x, z, rise, blocked: true };
     x = cx;
     z = cz;
+    rise = cr;
   }
-  return { x, z, blocked: false };
+  return { x, z, rise, blocked: false };
 }
 
 /**
@@ -3417,8 +3445,8 @@ export function computeRoomShell(
       const up = st.dir === 1;
       // The opening, in the floor the flight passes through: the shaft of
       // `computeRoomSlabs`, which these have to agree with piece for piece.
-      const a0 = up ? -0.25 : STAIR_ARRIVE;
-      const a1 = up ? climb - STAIR_ARRIVE : climb + 0.25;
+      const a0 = up ? -STAIR_SHAFT_LEAD : STAIR_ARRIVE;
+      const a1 = up ? climb - STAIR_ARRIVE : climb + STAIR_SHAFT_LEAD;
       const across = st.width + 0.04;
       const yOpen = floorY + (up ? ROOM_STOREY_H : 0);
       const xA = st.foot.x + ax * a0;
@@ -3587,8 +3615,8 @@ export function computeRoomSlabs(
     // flight but never ALONG it: a padding of 0.15 m at both ends of a margin
     // of 0.17 m left three centimetres of floor to arrive on, so the reader
     // stood at the head of the flight with the opening under their heels.
-    const a0 = up ? -0.25 : STAIR_ARRIVE;
-    const a1 = up ? run - STAIR_ARRIVE : run + 0.25;
+    const a0 = up ? -STAIR_SHAFT_LEAD : STAIR_ARRIVE;
+    const a1 = up ? run - STAIR_ARRIVE : run + STAIR_SHAFT_LEAD;
     const cAlong = (a0 + a1) / 2;
     const lenAlong = a1 - a0;
     // Across, the opening is the flight and a hair more. It was the flight
@@ -3882,27 +3910,63 @@ export function computeRoomFixtures(
     const armX = branch.wallX + (branch.side * BRANCH_CROSS) / 2;
     for (let i = 0; i < armN; i++)
       lamp(armX, branch.zLo + (armLen * (i + 0.5)) / armN, 0);
-    for (const level of [0, 1, -1] as const) {
-      if (level === 1 && branch.up.length === 0) continue;
-      if (level === -1 && branch.down.length === 0) continue;
-      // A landing's lamps hang over the stretch BEYOND the reading floor's own
-      // hall — which is the stretch its doors are on. Run over the whole
-      // landing and every one of them would stack directly above a hall lamp:
-      // `RoomLights` picks the handful nearest the reader in PLAN, knowing
-      // nothing about which storey they are standing on, so three lamps on one
-      // spot would take three of the six slots and light one storey between
-      // them.
-      const from = level === 0 ? branch.crossX : branch.hallEndX;
-      const to = level === 0 ? branch.hallEndX : branch.landingEndX;
+    /** A run of luminaires down the hall, on the ceiling of one storey. */
+    const hallRun = (from: number, to: number, dy: number) => {
       const len = Math.abs(to - from);
-      if (len < 0.01) continue;
+      if (len < 0.01) return;
       const n = Math.max(1, Math.round(len / CORRIDOR_LIGHT_PITCH));
       for (let i = 0; i < n; i++)
-        lamp(
-          from + (branch.side * len * (i + 0.5)) / n,
-          branch.zCentre,
-          level * ROOM_STOREY_H,
-        );
+        lamp(from + (branch.side * len * (i + 0.5)) / n, branch.zCentre, dy);
+    };
+
+    // ── The stair hall, on the reading floor ──
+    //
+    // A WELL IS LIT FROM ABOVE IT, not from a plane that passes through it.
+    //
+    // The ascending flight cuts its shaft out of the floor above, which is
+    // this storey's CEILING, along the whole of its run — and the hall's
+    // luminaires hang down the hall's centre line, where the two flights leave
+    // a spine of six centimetres between them. So every lamp over the run had
+    // most of its 0.62 m plate hanging over the hole, and from the treads it
+    // read as a fitting sticking out of the wall halfway up the flight with
+    // nothing holding it (Anand, 2026-08-22: "there are some lights sticking
+    // out in the staircase to the top floor").
+    //
+    // Where a flight climbs, the light hangs on the ceiling of the storey it
+    // climbs TO, so it lights the well down its whole height. The mouth and
+    // the stretch past the head keep their own, on a ceiling that is there.
+    //
+    // The well is the SHAFT's extent, not the flight's: the hole opens
+    // `STAIR_SHAFT_LEAD` back from the first riser, and half a luminaire's
+    // plate over that edge is still a luminaire hanging in the well. Both ends
+    // are pulled in by that half plate so every lamp left on this ceiling has
+    // ceiling under all of it.
+    const plate = CEILING_LIGHT_D / 2;
+    const wellFrom =
+      branch.crossX +
+      branch.side * (STAIR_LIP - STAIR_SHAFT_LEAD - plate);
+    const wellTo =
+      branch.crossX +
+      branch.side * (STAIR_LIP + STAIR_RUN + plate);
+    hallRun(branch.crossX, wellFrom, 0);
+    hallRun(wellTo, branch.hallEndX, 0);
+    // The descending flight cuts the FLOOR, not the ceiling, so the run over
+    // the well is lit from this storey's ceiling whenever nothing climbs
+    // through it.
+    hallRun(wellFrom, wellTo, branch.up.length > 0 ? ROOM_STOREY_H : 0);
+
+    // ── The landings ──
+    //
+    // Their lamps hang over the stretch BEYOND the reading floor's own hall —
+    // which is the stretch their doors are on. Run over the whole landing and
+    // every one of them would stack directly above a hall lamp: `RoomLights`
+    // picks the handful nearest the reader in PLAN, knowing nothing about
+    // which storey they are standing on, so three lamps on one spot would take
+    // three of the six slots and light one storey between them.
+    for (const level of [1, -1] as const) {
+      if (level === 1 && branch.up.length === 0) continue;
+      if (level === -1 && branch.down.length === 0) continue;
+      hallRun(branch.hallEndX, branch.landingEndX, level * ROOM_STOREY_H);
     }
   }
   return out;
@@ -3917,7 +3981,7 @@ export function computeRoomFixtures(
  * clicking it, follows the link through `NavigateContext`, which is how a
  * link becomes a door to another gallery rather than a note on a wall.
  */
-export interface LinkDoor extends SectionLink {
+interface LinkDoor extends SectionLink {
   /** Centre of the opening. */
   centre: { x: number; y: number; z: number };
   yaw: number;
@@ -4097,20 +4161,6 @@ export function computeRoomStairs(
   return out;
 }
 
-export function computeLinkDoors(
-  mode: PageDistribution,
-  pageCount: number,
-  panel: { width: number; height: number },
-  opts: PagePlacementOptions = {},
-): LinkDoor[] {
-  if (mode !== "rooms" || pageCount < MIN_PAGES_FOR_PAGE_VIEWS) return [];
-  return linkDoorsOf(
-    planFor(pageCount, panel, opts),
-    opts,
-    opts.floorY ?? -panel.height * 2,
-  );
-}
-
 // ── The walk ─────────────────────────────────────────────────
 
 /**
@@ -4133,7 +4183,7 @@ export function computeLinkDoors(
  * horizontal by construction (every page hangs at the same height), so a walk
  * never disturbs the world-space y that panel clipping is built from.
  */
-export interface RoomWalkPose {
+interface RoomWalkPose {
   position: { x: number; y: number; z: number };
   yaw: number;
 }

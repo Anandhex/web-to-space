@@ -34,7 +34,7 @@ const TABLE: Record<Region, LinkDirection[]> = {
   footing: ["here", "lateral", "down", "inline", "down"],
 };
 
-export interface TableResult {
+interface TableResult {
   checked: number;
   failures: string[];
 }

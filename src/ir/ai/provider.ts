@@ -42,7 +42,7 @@ export interface AIBatchReport {
   elapsedMs: number;
 }
 
-export interface AIProviderHooks {
+interface AIProviderHooks {
   /** Called once per `classifyBatch`. */
   onReport?: (report: AIBatchReport) => void;
 }

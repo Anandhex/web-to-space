@@ -102,14 +102,14 @@ export function XR3DButton({
 // View-mode toggle
 // ─────────────────────────────────────────────────────────────
 
-export type ViewDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
+type ViewDeviceType = "QUEST_3" | "QUEST_PRO" | "RAY_BAN_META";
 
 /**
  * View catalogue for the in-world switcher. `fit` lists the device types the
  * view is usable on — all three are page views built around a reader who can
  * walk and look, so they gate on 6DoF / room-scale.
  */
-export const VIEW_MODES: {
+const VIEW_MODES: {
   id: ViewMode;
   label: string;
   fit: ViewDeviceType[];
@@ -119,7 +119,7 @@ export const VIEW_MODES: {
   { id: "deck", label: "Deck", fit: ["QUEST_3", "QUEST_PRO"] },
 ];
 
-export interface XR3DViewToggleProps {
+interface XR3DViewToggleProps {
   mode: ViewMode;
   onChange: (m: ViewMode) => void;
   position?: [number, number, number];
@@ -196,7 +196,7 @@ export function XR3DViewToggle({
 // Search / URL bar
 // ─────────────────────────────────────────────────────────────
 
-export interface XR3DSearchBarProps {
+interface XR3DSearchBarProps {
   /** Current text (mirrors the hidden HTML input backing the field). */
   value: string;
   placeholder?: string;

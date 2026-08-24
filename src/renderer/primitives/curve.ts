@@ -32,7 +32,7 @@ import * as THREE from "three";
  * between flatten the curve (a smaller strength maps to a larger effective
  * radius). This is the one place to tune or disable curved panels globally.
  */
-export const PANEL_CURVE_STRENGTH = 1;
+const PANEL_CURVE_STRENGTH = 1;
 
 /**
  * Resolve a panel's authored curve radius into the effective render radius,
@@ -135,7 +135,7 @@ export function useCurvePlaced(): boolean {
 // Point placement (used by AtPos + any explicit-group placement)
 // ─────────────────────────────────────────────────────────────
 
-export interface CurvedPlacement {
+interface CurvedPlacement {
   position: [number, number, number];
   /** Y-axis yaw (radians) that faces the point tangent to the cylinder. */
   yaw: number;
@@ -185,7 +185,7 @@ export function curvePoint(
  * curved wide surfaces are built from a segmented PlaneGeometry and trade the
  * sub-millimetre rounded corners for a smoothly segmented arc.
  */
-export function bendGeometry(
+function bendGeometry(
   geo: THREE.BufferGeometry,
   radius: number,
   pivotX: number,
@@ -205,7 +205,7 @@ export function bendGeometry(
 }
 
 /** Horizontal segment count for a bent surface of the given width (≈ one every 2 cm). */
-export function bendSegments(width: number): number {
+function bendSegments(width: number): number {
   return THREE.MathUtils.clamp(Math.ceil(width / 0.02), 8, 64);
 }
 

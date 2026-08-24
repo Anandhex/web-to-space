@@ -544,7 +544,7 @@ export function RoomShell({
  * renderer. Built in ANCHOR-RELATIVE metres: moving the building is then moving
  * one transform rather than rebuilding a thousand.
  */
-export function buildShellGeometry(
+function buildShellGeometry(
   walls: RoomWall[],
   floorY: number,
   railY: number,
@@ -701,11 +701,57 @@ export function RoomSlabs({
 
 /** The floors, ceilings and soffit bands, welded by material. Pure — see
  *  `buildShellGeometry`. */
-export function buildSlabGeometry(slabs: RoomSlab[]) {
+function buildSlabGeometry(slabs: RoomSlab[]) {
   {
     const floor: Part[] = [];
     const ceiling: Part[] = [];
     const soffit: Part[] = [];
+
+    // ── Which edges are really EDGES ──────────────────────────
+    //
+    // The soffit is a band round the perimeter of a SPACE. The ceiling,
+    // though, is not one lid per space — it is one lid per piece the plan
+    // happens to emit: a room, each stretch of corridor between two rooms,
+    // each arm, and (once a flight cuts a shaft through it) three or four
+    // pieces of one stair hall. Banding every piece put a dropped band round
+    // every internal join, so walking the spine you passed under a pair of
+    // them — one from the room's lid, one from the stretch's, 0.52 m of
+    // dropped plaster together — at every single room boundary, and the
+    // ceiling read as a run of coffers nobody designed. Over the stairs it was
+    // worse: the strips left beside the well are 0.20 m and 1.25 m deep, and a
+    // 0.26 m band down each of their four sides swallowed the strip whole and
+    // hung a solid block over the flight (Anand, 2026-08-23: "the ceiling
+    // looks really weird").
+    //
+    // So an edge earns a band only where the ceiling actually STOPS. Sampled
+    // rather than solved: the lids are axis-aligned rectangles but they
+    // overlap deliberately at thresholds, and three points a hand's breadth
+    // past an edge answer "does it carry on?" without a rectangle algebra
+    // nobody needs.
+    const lids = slabs
+      .filter((s) => s.facing !== "up")
+      .map((s) => ({
+        src: s,
+        y: s.centre.y,
+        x0: s.centre.x - s.size.width / 2,
+        x1: s.centre.x + s.size.width / 2,
+        z0: s.centre.z - Math.abs(s.size.depth) / 2,
+        z1: s.centre.z + Math.abs(s.size.depth) / 2,
+      }));
+    /** Is there OTHER ceiling at this height over (x, z)? */
+    const ceilingOver = (self: RoomSlab, y: number, x: number, z: number) =>
+      lids.some(
+        (l) =>
+          l.src !== self &&
+          Math.abs(l.y - y) < 0.01 &&
+          x >= l.x0 - 0.01 &&
+          x <= l.x1 + 0.01 &&
+          z >= l.z0 - 0.01 &&
+          z <= l.z1 + 0.01,
+      );
+    /** How far past an edge to ask. Well inside a neighbouring lid, well
+     *  short of anything on the other side of a real one. */
+    const PAST_EDGE = 0.06;
 
     for (const s of slabs) {
       const { width } = s.size;
@@ -748,21 +794,108 @@ export function buildSlabGeometry(slabs: RoomSlab[]) {
         geom: new THREE.PlaneGeometry(width, depth),
         matrix: place.clone().multiply(at(0, 0, 0, Math.PI / 2, 0, 0)),
       });
-      // The dropped band round the edge of the ceiling.
+      // The dropped band, over the stretches of each edge where the ceiling
+      // really stops.
       const halfW = width / 2;
       const halfD = depth / 2;
       const y = -SOFFIT_DROP / 2 - 0.001;
-      const bands: Array<[number, number, number, number, number, number]> = [
-        [0, y, -halfD + SOFFIT_BAND / 2, width, SOFFIT_DROP, SOFFIT_BAND],
-        [0, y, halfD - SOFFIT_BAND / 2, width, SOFFIT_DROP, SOFFIT_BAND],
-        [-halfW + SOFFIT_BAND / 2, y, 0, SOFFIT_BAND, SOFFIT_DROP, depth],
-        [halfW - SOFFIT_BAND / 2, y, 0, SOFFIT_BAND, SOFFIT_DROP, depth],
+      // Never deeper than the piece it edges: the slivers left beside a
+      // stairwell are thinner than the band itself.
+      const bandX = Math.min(SOFFIT_BAND, width);
+      const bandZ = Math.min(SOFFIT_BAND, depth);
+      const alongX = (t: number) => s.centre.x - halfW + width * t;
+      const alongZ = (t: number) => s.centre.z - halfD + depth * t;
+
+      /**
+       * The runs of an edge, in [0, 1], with no other ceiling past them.
+       *
+       * PART of an edge is the case that matters, and treating the edge as one
+       * yes/no is what leaves the ceiling striped. A room's lid is wider than
+       * the corridor it opens onto, so its end edge stops over the two outer
+       * stretches and carries straight on through the middle: banded whole, a
+       * bulkhead crosses the opening the reader walks through; not banded at
+       * all, the room loses the edge that tells them how high it is. Both
+       * pieces are drawn, and nothing is drawn across the gap between them.
+       */
+      const openRuns = (
+        len: number,
+        px: (t: number) => number,
+        pz: (t: number) => number,
+      ): Array<[number, number]> => {
+        const n = Math.max(2, Math.ceil(len / 0.08));
+        const runs: Array<[number, number]> = [];
+        let start: number | null = null;
+        for (let i = 0; i < n; i++) {
+          const open = !ceilingOver(
+            s,
+            s.centre.y,
+            px((i + 0.5) / n),
+            pz((i + 0.5) / n),
+          );
+          if (open && start === null) start = i / n;
+          else if (!open && start !== null) {
+            runs.push([start, i / n]);
+            start = null;
+          }
+        }
+        if (start !== null) runs.push([start, 1]);
+        // A crumb of band is a speck of floating plaster, not an edge.
+        return runs.filter(([a, b]) => (b - a) * len > SOFFIT_BAND * 0.5);
+      };
+
+      /** The four edges: which way they run, and where their band sits. */
+      const edges: Array<{
+        len: number;
+        px: (t: number) => number;
+        pz: (t: number) => number;
+        /** Band centre and size, given a run's centre and length. */
+        band: (mid: number, run: number) => [number, number, number, number];
+      }> = [
+        {
+          len: width,
+          px: alongX,
+          pz: () => s.centre.z - halfD - PAST_EDGE,
+          band: (mid, run) => [mid, -halfD + bandZ / 2, run, bandZ],
+        },
+        {
+          len: width,
+          px: alongX,
+          pz: () => s.centre.z + halfD + PAST_EDGE,
+          band: (mid, run) => [mid, halfD - bandZ / 2, run, bandZ],
+        },
+        {
+          len: depth,
+          px: () => s.centre.x - halfW - PAST_EDGE,
+          pz: alongZ,
+          band: (mid, run) => [-halfW + bandX / 2, mid, bandX, run],
+        },
+        {
+          len: depth,
+          px: () => s.centre.x + halfW + PAST_EDGE,
+          pz: alongZ,
+          band: (mid, run) => [halfW - bandX / 2, mid, bandX, run],
+        },
       ];
-      for (const [bx, by, bz, sx, sy, sz] of bands)
-        soffit.push({
-          geom: new THREE.BoxGeometry(sx, sy, sz),
-          matrix: place.clone().multiply(at(bx, by, bz)),
-        });
+      // On a piece thinner than two bands the clamp above makes the band the
+      // whole piece, so its two facing edges ask for the same box twice — two
+      // coplanar drops fighting over the 0.20 m sliver beside a stairwell.
+      // One drop is what a sliver that narrow is.
+      const drawn = new Set<string>();
+      for (const e of edges)
+        for (const [t0, t1] of openRuns(e.len, e.px, e.pz)) {
+          const half = e.len / 2;
+          const [bx, bz, sx, sz] = e.band(
+            -half + e.len * ((t0 + t1) / 2),
+            e.len * (t1 - t0),
+          );
+          const key = [bx, bz, sx, sz].map((v) => v.toFixed(3)).join(",");
+          if (drawn.has(key)) continue;
+          drawn.add(key);
+          soffit.push({
+            geom: new THREE.BoxGeometry(sx, SOFFIT_DROP, sz),
+            matrix: place.clone().multiply(at(bx, y, bz)),
+          });
+        }
     }
 
     return {
@@ -1026,7 +1159,7 @@ export function RoomLights({
  * Every light fitting in the building, welded by material. Pure — see
  * `buildShellGeometry`.
  */
-export function buildFixtureGeometry(fixtures: RoomFixture[]) {
+function buildFixtureGeometry(fixtures: RoomFixture[]) {
   {
     const housing: Part[] = [];
     const warm: Part[] = [];

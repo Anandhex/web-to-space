@@ -55,7 +55,7 @@ export function markForAxis(axis: Axis): string {
   return axis === "left" ? "◂" : AXIS_MARK[axis];
 }
 
-export interface DoorSlots {
+interface DoorSlots {
   slots: DirSlots;
   /** Follow a slot: a link travels, a travelled node jumps back to itself. */
   take: (slot: DirSlot) => void;

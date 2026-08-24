@@ -42,8 +42,9 @@
  *
  * TWO CONSUMERS
  * -------------
- *  • scoreSegmentation() — compares standalone segmentation ALGORITHMS (flat,
- *    vips, readability, …). Used by the offline benchmark. No parser involved.
+ *  • scoreSegmentationRun() — compares standalone segmentation ALGORITHMS
+ *    (flat, vips, readability, …). Used by the offline benchmark. No parser
+ *    involved.
  *  • scoreSceneSegmentation() — scores ONE parser BACKEND's produced scene
  *    (Custom / Readability / Naive / VIPS). Used by the in-app panel so the
  *    Segmentation tab breaks down by the same backends as every other tab.
@@ -62,7 +63,7 @@ import { runVipsVisual } from "../ir/vips-visual";
  * DOM element so every segmenter partitions the *same* set (alignment is by
  * `id`, never by re-matching text across algorithms).
  */
-export interface AtomicUnit {
+interface AtomicUnit {
   /** Stable index within the page (assignment order == document order). */
   id: number;
   /** The DOM element this unit corresponds to. */
@@ -77,7 +78,7 @@ export interface AtomicUnit {
 /** How atomic-element weights were derived. Reported alongside every score. */
 export type WeightingMode = "pixel-area" | "text-length";
 
-export interface AtomicUnitOptions {
+interface AtomicUnitOptions {
   /**
    * Force a weighting mode. Omit to auto-detect: pixel area if the document
    * reports non-zero geometry, text length otherwise.
@@ -86,7 +87,7 @@ export interface AtomicUnitOptions {
 }
 
 /** Units plus the provenance a report needs to describe them honestly. */
-export interface AtomicUnitSet {
+interface AtomicUnitSet {
   units: AtomicUnit[];
   weighting: WeightingMode;
 }
@@ -111,7 +112,7 @@ function documentHasLayout(root: Element): boolean {
 }
 
 /** Partition of atomic units: unit id → segment label. */
-export type Segmentation = Map<number, string>;
+type Segmentation = Map<number, string>;
 
 /** Result of a BCubed comparison. All rates in [0, 1]. */
 export interface SegmentationScore {
@@ -180,7 +181,7 @@ function renderedArea(el: Element): number {
  * Returns the weighting mode alongside the units — the two are only meaningful
  * together, since scores computed under different weightings are not comparable.
  */
-export function extractAtomicUnitSet(
+function extractAtomicUnitSet(
   root: Element,
   options: AtomicUnitOptions = {},
 ): AtomicUnitSet {
@@ -263,7 +264,7 @@ export function extractAtomicUnits(
  * a split (algorithm shatters one reference segment) depresses recall — exactly
  * the accounting the framework requires.
  */
-export function bcubed(
+function bcubed(
   pred: Segmentation,
   ref: Segmentation,
   units: AtomicUnit[],
@@ -359,7 +360,7 @@ function elKey(el: Element, salt: string): string {
  * BASELINE — whole page is one segment. Represents "no segmentation": maximal
  * merge. Upper-bounds recall (everything grouped) and lower-bounds precision.
  */
-export function segFlat(units: AtomicUnit[]): Segmentation {
+function segFlat(units: AtomicUnit[]): Segmentation {
   const seg: Segmentation = new Map();
   for (const u of units) seg.set(u.id, "page");
   return seg;
@@ -370,7 +371,7 @@ export function segFlat(units: AtomicUnit[]): Segmentation {
  * pages authored with real landmarks/sectioning; degenerates to `segFlat` on
  * div-soup. Also serves as the default proxy reference (see proxyGroundTruth).
  */
-export function segDomSectioning(units: AtomicUnit[], root: Element): Segmentation {
+function segDomSectioning(units: AtomicUnit[], root: Element): Segmentation {
   const seg: Segmentation = new Map();
   for (const u of units) {
     const sec = nearestSection(u.el, root);
@@ -384,7 +385,7 @@ export function segDomSectioning(units: AtomicUnit[], root: Element): Segmentati
  * a new segment starts at every heading; content flows into the current
  * heading's segment. Independent of sectioning markup.
  */
-export function segHeadingBounded(units: AtomicUnit[]): Segmentation {
+function segHeadingBounded(units: AtomicUnit[]): Segmentation {
   const seg: Segmentation = new Map();
   let current = "intro";
   let counter = 0;
@@ -408,10 +409,10 @@ export function segHeadingBounded(units: AtomicUnit[]): Segmentation {
  *
  * The distinction matters for anything that reads the score. VIPS is explicitly
  * a *tag-tree independent* algorithm; scoring the tag-tree approximation and
- * labelling the row "VIPS" understates it. `scoreSegmentation` reports which
- * mode ran via `SegmentationRunInfo.vipsMode`.
+ * labelling the row "VIPS" understates it. `scoreSegmentationRun` reports
+ * which mode ran via `SegmentationRunInfo.vipsMode`.
  */
-export function segVips(units: AtomicUnit[], root: Element): Segmentation {
+function segVips(units: AtomicUnit[], root: Element): Segmentation {
   if (documentHasLayout(root)) {
     const visual = segVipsVisual(units, root);
     if (visual) return visual;
@@ -548,7 +549,7 @@ function segVipsDomOnly(units: AtomicUnit[], root: Element): Segmentation {
  * Mirrors what a Readability pass yields for downstream layout. Rendering-free
  * density heuristic so it runs identically in browser and Node.
  */
-export function segReadability(units: AtomicUnit[], root: Element): Segmentation {
+function segReadability(units: AtomicUnit[], root: Element): Segmentation {
   const score = (el: Element): number => {
     const text = (el.textContent ?? "").trim();
     if (text.length === 0) return 0;
@@ -591,7 +592,7 @@ export function segReadability(units: AtomicUnit[], root: Element): Segmentation
  * block. This reproduces the paper's core idea (blocks are bounded by density
  * discontinuities) without a CSS box model.
  */
-export function segBlockFusion(units: AtomicUnit[], thetaMax = 0.38): Segmentation {
+function segBlockFusion(units: AtomicUnit[], thetaMax = 0.38): Segmentation {
   const seg: Segmentation = new Map();
   if (units.length === 0) return seg;
   // Text density per unit: words normalised into (0,1] via a soft cap so the
@@ -620,7 +621,7 @@ export function segBlockFusion(units: AtomicUnit[], thetaMax = 0.38): Segmentati
  * Two-segment partition, density-driven (contrast with Readability's
  * link-density heuristic).
  */
-export function segTextDensity(units: AtomicUnit[], root: Element): Segmentation {
+function segTextDensity(units: AtomicUnit[], root: Element): Segmentation {
   const textDensity = (el: Element): number => {
     const textLen = (el.textContent ?? "").trim().length;
     if (textLen === 0) return 0;
@@ -654,7 +655,7 @@ export function segTextDensity(units: AtomicUnit[], root: Element): Segmentation
  * element matches a selector (closest ancestor wins) take that label. This is
  * the preferred reference when available (Kiesel uses crowd annotations).
  */
-export interface SegmentationAnnotation {
+interface SegmentationAnnotation {
   [selector: string]: string;
 }
 
@@ -665,7 +666,7 @@ export interface SegmentationAnnotation {
  * for gold annotations and is reported as such — it should not be read as a
  * human ground truth.
  */
-export function proxyGroundTruth(
+function proxyGroundTruth(
   units: AtomicUnit[],
   root: Element,
   annotation?: SegmentationAnnotation,
@@ -705,7 +706,7 @@ export type SegmenterId =
   | "block-fusion"
   | "text-density";
 
-export const SEGMENTERS: Record<
+const SEGMENTERS: Record<
   SegmenterId,
   (units: AtomicUnit[], root: Element) => Segmentation
 > = {
@@ -731,7 +732,7 @@ export interface SegmentationRunInfo {
   proxyReference: boolean;
 }
 
-export interface SegmentationRun {
+interface SegmentationRun {
   scores: Record<SegmenterId, SegmentationScore>;
   info: SegmentationRunInfo;
 }
@@ -763,14 +764,6 @@ export function scoreSegmentationRun(
       proxyReference: !annotation,
     },
   };
-}
-
-/** Scores only. Prefer `scoreSegmentationRun` when the result goes in a report. */
-export function scoreSegmentation(
-  root: Element,
-  annotation?: SegmentationAnnotation,
-): Record<SegmenterId, SegmentationScore> {
-  return scoreSegmentationRun(root, annotation).scores;
 }
 
 // ─────────────────────────────────────────────────────────────

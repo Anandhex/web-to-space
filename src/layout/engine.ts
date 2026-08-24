@@ -301,7 +301,7 @@ export function stackChildrenSimple(
 // Advances pageIdx past an overflow and returns the derived values.
 // Mutates pageYOffsets in place (appends one entry per overflow page).
 
-export function attachResolvedStrategies(
+function attachResolvedStrategies(
   entry: LayoutEntry,
   primitive: XRPrimitive,
   panelUsableWidth: number,
@@ -367,7 +367,7 @@ const PAGINATING_CONTAINER_TYPES = new Set([
 //   - layoutPaginatingContainer   — top-level paginating container (starts pagination)
 //   - layoutInsidePaginatedPanel  — descendant of an already-paginated panel
 //   - layoutStackedChildren       — outside any XRContentPanel entirely
-export function layoutPrimitive(
+function layoutPrimitive(
   primitive: XRPrimitive,
   worldPosition: Vec3,
   worldRotation: Rotation3,
@@ -1180,41 +1180,3 @@ export function computeLayoutPlan(
   };
 }
 
-// ─────────────────────────────────────────────────────────────
-// Convenience: merge LayoutPlan back into SemanticScene
-// ─────────────────────────────────────────────────────────────
-
-/**
- * Merge a LayoutPlan into a SemanticScene, overwriting each primitive's
- * `placement` field with the corresponding LayoutEntry.
- *
- * Returns a new SemanticScene (does not mutate the input).
- */
-export function mergeLayoutPlan(
-  scene: SemanticScene,
-  plan: LayoutPlan,
-): SemanticScene {
-  const newPrimitives: Record<string, XRPrimitive> = {};
-  for (const [id, primitive] of Object.entries(scene.primitives)) {
-    const entry = plan.entries[id];
-    if (!entry) {
-      newPrimitives[id] = primitive;
-      continue;
-    }
-    newPrimitives[id] = {
-      ...(primitive as object),
-      placement: {
-        position: entry.position,
-        rotation: entry.rotation,
-        preferredSize: entry.size,
-        curveRadius: entry.curveRadius,
-        worldLocked: entry.worldLocked,
-      },
-    } as XRPrimitive;
-  }
-  return {
-    ...scene,
-    primitives: newPrimitives,
-    root: (newPrimitives[scene.root.id] as typeof scene.root) ?? scene.root,
-  };
-}

@@ -517,9 +517,6 @@ export type SlotMap = Partial<Record<SlotName, LandmarkSlot>>;
  */
 export type ReferenceFrame = "world" | "body" | "head" | "hand";
 
-/** Distribution algorithm that turns a SlotRoster into positioned slots. */
-export type Distribution = "fan";
-
 /**
  * How a paginated content panel's PAGES are presented spatially. "flip"
  * (default) is the legacy behaviour: one page visible, prev/next controls.
@@ -538,29 +535,13 @@ export type PageDistribution = "flip" | "wall" | "deck" | "rooms";
 export type DeviceClass = "headset-6dof" | "headset-roomscale" | "glasses";
 
 /**
- * A single landmark slot's size + reading priority, WITHOUT a position.
- * Produced by the desk (`rosterFor`) and consumed by an arrangement's
- * distribution to compute the final SlotMap.
- */
-export interface SlotSpec {
-  role: SlotName;
-  size: Size2;
-  /** Reading priority in [0..1]; 1 = primary. Drives ordering/depth/angle. */
-  weight: number;
-}
-
-/** Ordered by reading priority, primary first. */
-export type SlotRoster = SlotSpec[];
-
-/**
- * A declarative view: a reference frame + a distribution algorithm, composed
- * over the desk. Adding a view is data, not a new SlotMap function.
+ * A declarative view: a reference frame plus the page presentation it chooses.
+ * Adding a view is data, not a new SlotMap function.
  */
 export interface Arrangement {
   /** Stable id — matches the ViewMode string in the UI. */
   id: string;
   frame: ReferenceFrame;
-  distribution: Distribution;
   /** Device classes this view is usable on. */
   deviceFit: DeviceClass[];
   /**

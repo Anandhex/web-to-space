@@ -27,9 +27,9 @@ import {
 } from "./classify";
 
 /** Ceiling on a body's name. Two lines at the wall's body size. */
-export const LABEL_MAX_CHARS = 42;
+const LABEL_MAX_CHARS = 42;
 
-export interface IdentityInput {
+interface IdentityInput {
   href: string;
   /** The primitive's accessible name — already aria-label ∨ title ∨ text. */
   accessibleName: string | null;
@@ -41,7 +41,7 @@ export interface IdentityInput {
   targetLabel?: string | null;
 }
 
-export interface Identity {
+interface Identity {
   label: string;
   host: string | null;
   /** True when the name came from steps 3–5, not from the page's own words. */
@@ -56,7 +56,7 @@ export interface Identity {
  * Leaves an ALLCAPS or CamelCase segment alone: those are names already
  * ("RFC2119", "getUserMedia"), and lower-casing them destroys information.
  */
-export function deslug(segment: string): string {
+function deslug(segment: string): string {
   let s = segment;
   try {
     s = decodeURIComponent(s);
@@ -72,14 +72,14 @@ export function deslug(segment: string): string {
 }
 
 /** Host without a leading `www.`, or null when the href has no host. */
-export function hostOf(href: string, pageUrl: string | null): string | null {
+function hostOf(href: string, pageUrl: string | null): string | null {
   const u = resolveHref(href, pageUrl);
   if (!u || !u.host) return null;
   return u.host.replace(/^www\./i, "");
 }
 
 /** The last meaningful path segment of a URL, or "" when there is none. */
-export function slugOf(href: string, pageUrl: string | null): string {
+function slugOf(href: string, pageUrl: string | null): string {
   const u = resolveHref(href, pageUrl);
   const path = u ? u.pathname : href.split(/[?#]/)[0];
   const parts = path.split("/").filter((p) => p !== "");
@@ -102,7 +102,7 @@ export function slugOf(href: string, pageUrl: string | null): string {
   return "";
 }
 
-export function truncate(s: string, max = LABEL_MAX_CHARS): string {
+function truncate(s: string, max = LABEL_MAX_CHARS): string {
   const t = normaliseText(s);
   if (t.length <= max) return t;
   // Break on a word boundary when one is near enough that the cut is not ugly.

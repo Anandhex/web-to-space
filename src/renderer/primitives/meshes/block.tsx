@@ -41,7 +41,7 @@ import { ClippedText, buildInlineRows, InlineProseRows } from "../inline";
 // 1. XRHeadingMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRHeadingMeshProps {
+interface XRHeadingMeshProps {
   primitive: XRHeading;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;
@@ -144,7 +144,7 @@ export function XRHeadingMesh({
 // 2. XRParagraphMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRParagraphMeshProps {
+interface XRParagraphMeshProps {
   primitive: XRParagraph;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;
@@ -257,7 +257,7 @@ export function XRParagraphMesh({
 // 3. XRSectionMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRSectionMeshProps {
+interface XRSectionMeshProps {
   primitive: XRSection;
   entry: LayoutEntry;
   /**
@@ -369,7 +369,7 @@ export function XRSectionMesh({
 // 4. XRNavigationMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRCodeBlockMeshProps {
+interface XRCodeBlockMeshProps {
   primitive: import("../../../mapper/types").XRCodeBlock;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;
@@ -458,7 +458,7 @@ export function XRCodeBlockMesh({
 // 7. XRBlockQuoteMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRBlockQuoteMeshProps {
+interface XRBlockQuoteMeshProps {
   primitive: import("../../../mapper/types").XRBlockQuote;
   entry: LayoutEntry;
   renderChild: (primitiveId: string) => React.ReactNode;
@@ -558,7 +558,7 @@ export function XRBlockQuoteMesh({
 // 8. XRSeparatorMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRSeparatorMeshProps {
+interface XRSeparatorMeshProps {
   primitive: import("../../../mapper/types").XRSeparator;
   entry: LayoutEntry;
 }
@@ -597,7 +597,7 @@ export function XRSeparatorMesh({ entry }: XRSeparatorMeshProps) {
 // 9. XRProgressBarMesh
 // ─────────────────────────────────────────────────────────────
 
-export interface XRProgressBarMeshProps {
+interface XRProgressBarMeshProps {
   primitive: import("../../../mapper/types").XRProgressBar;
   entry: LayoutEntry;
 }

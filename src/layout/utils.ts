@@ -5,7 +5,6 @@
 import type {
   Rotation3,
   Vec3,
-  XRParagraph,
   XRPrimitiveType,
   XRTable,
 } from "../mapper/types";
@@ -26,21 +25,6 @@ export function zeroRotation(): Rotation3 {
 
 export function zeroVec(): Vec3 {
   return { x: 0, y: 0, z: 0 };
-}
-
-// ── Slot factory helpers ─────────────────────────────────────
-
-export function angularPosition(
-  distance: number,
-  angleDeg: number,
-  eyeY: number,
-): Vec3 {
-  const rad = deg2rad(angleDeg);
-  return { x: distance * Math.sin(rad), y: eyeY, z: -distance * Math.cos(rad) };
-}
-
-export function angularRotation(angleDeg: number): Rotation3 {
-  return { x: 0, y: -deg2rad(angleDeg), z: 0 };
 }
 
 /**
@@ -87,7 +71,7 @@ export function containerInsetX(
  * This is the same trade list items already make with `listItemWrapCushion`,
  * applied at the wrap step so every text-bearing primitive gets it.
  */
-export const WRAP_SAFETY = 0.94;
+const WRAP_SAFETY = 0.94;
 
 /** Columns available for wrapping `width` metres of `m`-sized text. */
 export function charsPerLineFor(
@@ -187,56 +171,6 @@ export function FIXED_HEIGHT_LOOKUP(
     XRFooter: m.footer.height,
     XRNavigationBar: m.navigationBar.height,
   };
-}
-
-/**
- * Estimate the rendered height of a paragraph primitive.
- * Exported so paragraph continuation helpers can call it directly.
- */
-export function estimateParagraphHeight(
-  p: XRParagraph,
-  panelUsableWidth: number,
-  metrics: RenderMetrics,
-): number {
-  const wordCount =
-    p.wordCount != null && p.wordCount > 0
-      ? p.wordCount
-      : countWords(p.content ?? p.label ?? "");
-  if (wordCount === 0) {
-    return (
-      metrics.paragraph.fontSize * metrics.paragraph.lineHeightRatio +
-      metrics.paragraph.verticalPadding
-    );
-  }
-  const m = metrics.paragraph;
-  const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
-  const lineCount = Math.ceil(wordCount / wordsPerLine);
-  const lineH = m.fontSize * m.lineHeightRatio;
-  return Math.max(
-    m.fontSize * m.lineHeightRatio + m.verticalPadding, // floor = 1 line
-    lineCount * lineH + m.verticalPadding,
-  );
-}
-
-/**
- * Compute how many words of a paragraph fit within a given height budget.
- *
- * Used by the paginator to split a paragraph that straddles a page boundary.
- *
- * @returns number of words that fit (could be 0 if budget < 1 line).
- */
-export function paragraphWordsThatFit(
-  budget: number,
-  panelUsableWidth: number,
-  metrics: RenderMetrics,
-): number {
-  const m = metrics.paragraph;
-  const lineH = m.fontSize * m.lineHeightRatio;
-  const availableForText = budget - m.verticalPadding;
-  if (availableForText <= 0) return 0;
-  const lines = Math.floor(availableForText / lineH);
-  const wordsPerLine = computeWordsPerLine(panelUsableWidth, m);
-  return lines * wordsPerLine;
 }
 
 /**
@@ -347,10 +281,6 @@ export function resolveTableStrategy(
   if (columnCount > 2 && rowCount > 4) return "curved-2d";
   if (rowCount < columnCount) return "cards";
   return "flat-2d";
-}
-
-export function splitIntoWords(label: string): string[] {
-  return label.split(/\s+/);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -631,7 +561,7 @@ export function mergeAdjacentTextRuns<
  * token's real length instead, matching troika's word-boundary wrapping
  * (`overflowWrap="break-word"` splits any single token wider than a line).
  */
-export function countWrappedLines(text: string, charsPerLine: number): number {
+function countWrappedLines(text: string, charsPerLine: number): number {
   const cpl = Math.max(1, Math.floor(charsPerLine));
   const words = text.split(/\s+/).filter(Boolean);
   if (words.length === 0) return 0;

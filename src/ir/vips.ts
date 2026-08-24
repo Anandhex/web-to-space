@@ -27,7 +27,7 @@
  *
  * The dom-only path is still needed: the offline benchmark runs under jsdom,
  * which implements the DOM but performs no layout, so `getBoundingClientRect()`
- * returns all-zeros there. Rather than silently degrade, `parsePageWithVIPS`
+ * returns all-zeros there. Rather than silently degrade, `parsePageWithVIPSDetailed`
  * always reports its `mode` and the reason it chose it, and every consumer
  * labels its output accordingly.
  */
@@ -55,7 +55,7 @@ export type VipsFallbackReason =
   | "disabled" // caller asked for dom-only
   | null;
 
-export interface VipsDiagnostics {
+interface VipsDiagnostics {
   mode: VipsMode;
   fallbackReason: VipsFallbackReason;
   /** Number of visual/structural blocks fed into the semantic parser. */
@@ -66,12 +66,12 @@ export interface VipsDiagnostics {
   visual: VipsVisualDiagnostics | null;
 }
 
-export interface VipsResult {
+interface VipsResult {
   ir: PageIR;
   diagnostics: VipsDiagnostics;
 }
 
-export interface VipsOptions extends VipsVisualOptions {
+interface VipsOptions extends VipsVisualOptions {
   /** Force the rendering-free path. Used by the offline benchmark. */
   forceDomOnly?: boolean;
   /**
@@ -446,18 +446,3 @@ function describeFallback(reason: VipsFallbackReason): string {
   }
 }
 
-/**
- * Backwards-compatible entry point returning only the IR.
- *
- * Prefer `parsePageWithVIPSDetailed` — callers that discard the diagnostics
- * cannot tell whether they got the real algorithm or the approximation, which
- * is exactly the ambiguity this module exists to remove.
- */
-export async function parsePageWithVIPS(
-  html: string,
-  url: string,
-  options: VipsOptions = {},
-): Promise<PageIR> {
-  const { ir } = await parsePageWithVIPSDetailed(html, url, options);
-  return ir;
-}

@@ -41,6 +41,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 
 import { useTheme } from "../theme";
+import { headWorldPose } from "./xr-locomotion";
 import { FontContext } from "./contexts";
 import type { NavState } from "../../links/memory";
 import type { Side } from "./minimap-layout";
@@ -53,6 +54,18 @@ const OFF_X = -0.33;
 const OFF_Y = -0.24;
 /** Lazy follow: fraction of the remaining error closed per frame at 90 Hz. */
 const FOLLOW = 0.06;
+/**
+ * Past this the panel is not lagging, it is lost — so it is put back rather
+ * than flown back.
+ *
+ * The follow is a comfort device for a head that turned; it is not a way of
+ * travelling. A teleport, a jump to a history entry or the one-shot recentre
+ * at the top of a session all move the reader metres at once, and easing the
+ * corner overlay across that gap drags it through the walls of whatever room
+ * it is crossing. Half a metre is more than any head movement produces in the
+ * frame budget and less than the smallest jump.
+ */
+const SNAP_DIST = 0.5;
 
 /**
  * A visited document, drawn as the thing the reader's own view is made of.
@@ -354,6 +367,7 @@ export function Minimap({
   const camera = useThree((s) => s.camera);
   const group = React.useRef<THREE.Group>(null);
   const target = React.useRef(new THREE.Vector3());
+  const eye = React.useRef(new THREE.Vector3());
   const quat = React.useRef(new THREE.Quaternion());
   const settled = React.useRef(false);
 
@@ -365,11 +379,21 @@ export function Minimap({
     try {
       // Where the panel wants to be: DIST ahead of the eye, offset down-left,
       // in the eye's own frame so it stays in the corner as the head turns.
-      target.current.set(OFF_X, OFF_Y, -DIST).applyQuaternion(camera.quaternion);
-      target.current.add(camera.position);
-      quat.current.copy(camera.quaternion);
+      //
+      // The head in WORLD space, which `camera.position` is not once a session
+      // is running — see headWorldPose. Read locally, the panel was placed at
+      // the head's PLAYER-frame pose, i.e. displaced by exactly the recentre
+      // <XRViewerAnchor> applies a frame into the session: it opened in the
+      // corner, then left it and never came back, which in `rooms` (where the
+      // recentre carries the reader to a point in the building) put it up and
+      // away in the top corner for the rest of the session.
+      headWorldPose(camera, eye.current, quat.current);
+      target.current.set(OFF_X, OFF_Y, -DIST).applyQuaternion(quat.current);
+      target.current.add(eye.current);
 
-      if (!settled.current) {
+      // Lagging, or lost? Anything past SNAP_DIST is a jump the reader made,
+      // not a head they turned, and is put back in one frame.
+      if (!settled.current || g.position.distanceTo(target.current) > SNAP_DIST) {
         g.position.copy(target.current);
         g.quaternion.copy(quat.current);
         settled.current = true;

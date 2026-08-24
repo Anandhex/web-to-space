@@ -10,7 +10,12 @@
 import React from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { XROrigin } from "@react-three/xr";
-import type * as THREE from "three";
+import * as THREE from "three";
+
+import { headWorldPose } from "./xr-locomotion";
+
+/** Scratch: the recentre runs in a frame loop and must not allocate. */
+const head = new THREE.Vector3();
 
 /**
  * Recentres the viewer on `target` (the main content panel's centre) once per
@@ -73,14 +78,20 @@ export function XRViewerAnchor({
     const key = `${target.join(",")}|${standing}`;
     if (appliedKey.current === key) return;
 
-    // camera.position is the head in world space, i.e. it already includes the
-    // current origin. Shifting the origin by (target - head) therefore lands the
-    // head exactly on target, whatever the user's height.
-    const cam = state.camera;
+    // The head in WORLD space, which already includes the current origin.
+    // Shifting the origin by (target - head) therefore lands the head exactly
+    // on target, whatever the user's height.
+    //
+    // `camera.position` is NOT that once a session is running: <XR> swaps
+    // state.camera for three's XR camera and @react-three/xr parents it to the
+    // <XROrigin> group below, so the local pose is the head measured from the
+    // origin — with `prev` added on top, every recentre after the first
+    // double-counted the offset and threw the reader a room away.
+    headWorldPose(state.camera, head);
     setOrigin((prev) => [
-      prev[0] + (target[0] - cam.position.x),
-      prev[1] + (target[1] - cam.position.y),
-      standing ? prev[2] + (target[2] - cam.position.z) : prev[2],
+      prev[0] + (target[0] - head.x),
+      prev[1] + (target[1] - head.y),
+      standing ? prev[2] + (target[2] - head.z) : prev[2],
     ]);
     appliedKey.current = key;
   });

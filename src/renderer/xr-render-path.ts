@@ -46,7 +46,7 @@
  *   ?xr=layers   keep the projection-layer path even under an emulator
  */
 
-export type XRRenderPath = "projection-layers" | "webgl-layer";
+type XRRenderPath = "projection-layers" | "webgl-layer";
 
 let selected: XRRenderPath = "projection-layers";
 
@@ -80,11 +80,6 @@ export function selectXRRenderPath(): string {
   selected = "webgl-layer";
   delete (window as unknown as { XRWebGLBinding?: unknown }).XRWebGLBinding;
   return "XRWebGLLayer (no native WebXR — emulator or polyfill)";
-}
-
-/** The path chosen at startup. */
-export function xrRenderPath(): XRRenderPath {
-  return selected;
 }
 
 /**

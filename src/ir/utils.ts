@@ -150,7 +150,7 @@ export function readNodeState(element: Element): IRNodeState {
  * Returns null when nothing usable is present — callers keep the old fallback.
  */
 const CANONICAL_IMAGE_PX = 1000;
-export function intrinsicDimsFromUrl(
+function intrinsicDimsFromUrl(
   src: string | null,
 ): { width: number; height: number } | null {
   if (!src) return null;
@@ -289,7 +289,7 @@ export function readNodeAttributes(
   };
 }
 
-export const ARIA_ROLE_MAP: Partial<Record<string, IRRole>> = {
+const ARIA_ROLE_MAP: Partial<Record<string, IRRole>> = {
   main: "main",
   navigation: "navigation",
   banner: "banner",
@@ -336,7 +336,7 @@ export const ARIA_ROLE_MAP: Partial<Record<string, IRRole>> = {
   none: "none",
 };
 
-export function parseIdRefs(value: string | null): string[] {
+function parseIdRefs(value: string | null): string[] {
   return value?.trim() ? value.trim().split(/\s+/) : [];
 }
 
@@ -679,7 +679,7 @@ export function resolveRoleFromElement(
   return { ...tagResolved, source: "structural" };
 }
 
-export function resolveRoleFromTag(
+function resolveRoleFromTag(
   tag: string,
   element?: Element,
 ): { role: IRRole; level: number | null } {
@@ -816,7 +816,7 @@ export function isListCandidate(
   return tag !== "ul" && tag !== "ol" && tag !== "li";
 }
 
-export function relationTargets(
+function relationTargets(
   raw: string | null,
   doc: Document | undefined,
   elementToNodeId: WeakMap<Element, string>,
@@ -937,72 +937,6 @@ export function hydrateRelations(
       }
     }
   }
-}
-
-export function hasTextAndInlineChildren(
-  element: Element,
-  inlineTags: Set<string>,
-): boolean {
-  let hasText = false;
-  let hasInlineChild = false;
-
-  for (const child of Array.from(element.childNodes)) {
-    if (child.nodeType === Node.TEXT_NODE) {
-      if ((child.textContent ?? "").trim()) hasText = true;
-    } else if (child.nodeType === Node.ELEMENT_NODE) {
-      const tag = (child as Element).tagName.toLowerCase();
-      if (inlineTags.has(tag) && !SKIP_TAGS.has(tag)) hasInlineChild = true;
-    }
-  }
-  return hasText && hasInlineChild;
-}
-
-export function isLeafNode(
-  element: Element,
-  inlineTags: Set<string>,
-  skipTags: Set<string>,
-): boolean {
-  const tag = element.tagName.toLowerCase();
-  const LEAF_TAGS = new Set([
-    "p",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "a",
-    "button",
-    "summary",
-    "label",
-    "li",
-  ]);
-
-  if (LEAF_TAGS.has(tag)) {
-    for (const child of Array.from(element.childNodes)) {
-      if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim())
-        return true;
-      if (
-        child.nodeType === Node.ELEMENT_NODE &&
-        !skipTags.has((child as Element).tagName.toLowerCase())
-      )
-        return true;
-    }
-    return false;
-  }
-
-  for (const child of Array.from(element.children)) {
-    const childTag = child.tagName.toLowerCase();
-    if (!skipTags.has(childTag) && !inlineTags.has(childTag)) return false;
-  }
-
-  return Array.from(element.childNodes).some((node) => {
-    if (node.nodeType === Node.TEXT_NODE)
-      return (node.textContent ?? "").trim().length > 0;
-    if (node.nodeType === Node.ELEMENT_NODE)
-      return !skipTags.has((node as Element).tagName.toLowerCase());
-    return false;
-  });
 }
 
 export function getSemanticSignature(

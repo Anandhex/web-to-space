@@ -21,7 +21,7 @@
 // ShapeGeometry) whose radius is decoupled from depth, so we can use a
 // Horizon-scale radius. PANEL_RADIUS is kept only as a small floor for the
 // few remaining legacy <RoundedBox> call sites.
-export const PANEL_RADIUS = 0.004;
+const PANEL_RADIUS = 0.004;
 export const PANEL_DEPTH = 0.01;
 
 // Horizon rounds ~1/12 of the shorter edge, clamped to a sane metric range so
@@ -69,30 +69,3 @@ export const RENDER_ORDER_TEXT = 3;
 // Flat rounded-rect ShapeGeometry rounds freely, but a degenerate w/h still
 // produces NaN corners — floor both to a small safe minimum.
 export const MIN_DIM = PANEL_RADIUS * 2 + 0.001; // 0.025 m — safe floor for w and h
-
-/**
- * Grouped, discoverable view of the same constants above. Prefer importing the
- * individual named constants at call sites; this aggregate exists so the whole
- * primitive "style system" can be inspected (or spread into a variant) from one
- * object.
- */
-export const PRIMITIVE_STYLE = {
-  panel: { radius: PANEL_RADIUS, depth: PANEL_DEPTH },
-  corner: { fraction: CORNER_FRACTION, min: CORNER_MIN, max: CORNER_MAX },
-  z: {
-    surface: Z_SURFACE,
-    surfaceRim: Z_SURFACE_RIM,
-    accent: Z_LAYER_ACCENT,
-    inlineText: Z_LAYER_INLINE_TEXT,
-    bodyText: Z_LAYER_BODY_TEXT,
-    image: Z_LAYER_IMAGE,
-    overlayText: Z_LAYER_OVERLAY_TEXT,
-  },
-  renderOrder: {
-    surface: RENDER_ORDER_SURFACE,
-    accent: RENDER_ORDER_ACCENT,
-    image: RENDER_ORDER_IMAGE,
-    text: RENDER_ORDER_TEXT,
-  },
-  minDim: MIN_DIM,
-} as const;

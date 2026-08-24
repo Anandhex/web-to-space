@@ -135,7 +135,7 @@ export function useTraversal(): TraversalApi | null {
  * uses as a `SpatialLink`'s identity, so a mark and its door agree on the key
  * without either of them inventing one.
  */
-export interface LinkBindingApi {
+interface LinkBindingApi {
   /** The anchor currently lit, or null. */
   lit: string | null;
   /** Light an anchor and its door together. Pass null to clear. */

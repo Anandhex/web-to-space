@@ -752,6 +752,7 @@ export function PageGhostField({
           poseRef={poseRef}
           jumpRef={jumpRef}
           walls={roomShell}
+          stairs={roomStairs}
           slabs={roomSlabs}
           anchor={entry.position}
           floorY={-entry.position.y}

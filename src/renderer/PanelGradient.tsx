@@ -48,7 +48,7 @@ function useVerticalGradientGeometry(
   }, [width, height, topHex, bottomHex]);
 }
 
-export interface PanelGradientOverlayProps {
+interface PanelGradientOverlayProps {
   /** Panel width/height in metres (same as the RoundedBox it sits in front of). */
   width: number;
   height: number;

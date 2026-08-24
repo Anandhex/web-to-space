@@ -119,10 +119,18 @@ npm run benchmark     # parser benchmark: segmentation + XR legibility metrics
 
 ## Target devices
 
-Device profiles ship for Meta Quest 3, Meta Quest Pro and Ray-Ban Meta glasses
-(`src/layout/profiles.ts`); Quest 3 is the one it is developed against. A
-profile is the single source of dimensional truth — eye height, viewing
-distance, panel viewport, font sizes — so the layout engine hard-codes none of
-them and a new headset is a new profile rather than a new layout.
+A device profile is the single source of dimensional truth — eye height,
+viewing distance, panel viewport, font sizes — so the layout engine hard-codes
+none of them and a new headset is a new profile, not a new layout. Panel width,
+for instance, is derived as `2 · viewingDistance · tan(comfortHalfAngleDeg)`
+rather than stored.
+
+`src/layout/profiles.ts` exports exactly **one** profile, `QUEST_3_PROFILE`,
+and `XRSceneRenderer` hard-codes it (`XRSceneRenderer.tsx:213`). Quest 3 is the
+device the system is developed against. The Home screen's device picker selects
+a view roster, not a layout profile — it does not reach the layout engine.
+`QUEST_PRO_PROFILE` and `RAY_BAN_META_PROFILE` appear in older comments and in
+the `ViewDeviceType` union in `src/components/XR3DChrome.tsx`, but no such
+profiles exist; adding one is the work required to target another headset.
 
 Any WebXR-capable browser or headset should work.

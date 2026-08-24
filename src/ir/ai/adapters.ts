@@ -34,7 +34,7 @@ export class AIAdapterError extends Error {
   }
 }
 
-export type AIAdapter = (
+type AIAdapter = (
   items: AIClassifyRequest[],
   settings: AIProviderSettings,
   signal: AbortSignal,

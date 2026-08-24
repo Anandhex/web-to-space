@@ -89,7 +89,7 @@ export const Z_EDGE = 0.0005;
 /** Which wall of a room a corridor meets. */
 export type Side = "n" | "s" | "e" | "w";
 
-export interface Plotted {
+interface Plotted {
   node: NavNode;
   historyIndex: number;
   /** Panel-local position, metres. */
@@ -97,7 +97,7 @@ export interface Plotted {
   y: number;
 }
 
-export interface Plot {
+interface Plot {
   points: Plotted[];
   /** Uniform scale the drawing was fitted by — glyphs wear it too. */
   scale: number;

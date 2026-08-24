@@ -7,15 +7,10 @@
  * without pulling in the whole primitive library.
  */
 
-import { createContext, useContext, useMemo } from "react";
+import { createContext, useContext } from "react";
 import * as THREE from "three";
 
 import type { RenderMetrics } from "../../layout/types";
-import { useTheme } from "../theme";
-import { ensureContrast } from "../scene/section-tint";
-
-/** WCAG AA minimum contrast for normal-size body text. */
-export const WCAG_AA_TEXT = 4.5;
 
 // ─────────────────────────────────────────────────────────────
 // Panel clipping context
@@ -87,38 +82,13 @@ export const InsideCardContext = createContext<boolean>(false);
  * list-item card is its own, distinctly lighter fill, and a colour that clears
  * WCAG on the panel can fail badly on the card (the link blue measured ~2:1
  * there). Anything picking a text colour reads this and corrects against the
- * surface it will actually sit on; see useLinkColor and ensureContrast.
+ * surface it will actually sit on.
  *
  * Provided alongside InsideCardContext by the XRListItem branches in
  * scene/dispatcher.tsx, for the same reason: a card's children are dispatched
  * as siblings of its mesh, out of reach of any provider inside it.
  */
 export const SurfaceBgContext = createContext<string | null>(null);
-
-/** The fill under the current text, resolving null to the panel background. */
-export function useSurfaceBg(): string {
-  const theme = useTheme();
-  return useContext(SurfaceBgContext) ?? theme.panelBg;
-}
-
-/**
- * The theme accent, corrected to stay legible on whatever surface it lands on.
- *
- * NO LONGER USED FOR LINKS. Under the directional-link design there is no blue
- * text anywhere: an anchor is drawn in body colour with a directional mark
- * after it, and where it leads is the door, stair, strip or path it opens
- * (docs/directional-links.md). Kept because the contrast correction it wraps —
- * accent against whatever surface it lands on — is the right thing for any
- * future accented element, and `ensureContrast` is the part worth keeping.
- */
-export function useLinkColor(): string {
-  const theme = useTheme();
-  const bg = useSurfaceBg();
-  return useMemo(
-    () => ensureContrast(theme.accentCol, bg, WCAG_AA_TEXT),
-    [theme.accentCol, bg],
-  );
-}
 
 // ─────────────────────────────────────────────────────────────
 // Render metrics context

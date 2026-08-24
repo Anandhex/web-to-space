@@ -30,7 +30,7 @@ import type { Arrangement } from "./types";
 const FOLDED_TYPES = new Set(["XRBanner", "XRComplementary", "XRFooter"]);
 
 /** True when a scene has a top-level content panel and something to fold. */
-export function sceneHasFoldableLandmarks(scene: SemanticScene): boolean {
+function sceneHasFoldableLandmarks(scene: SemanticScene): boolean {
   const kids = scene.root.children;
   return (
     kids.some((p) => p.type === "XRContentPanel") &&
