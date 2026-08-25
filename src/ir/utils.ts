@@ -1,4 +1,9 @@
-import { SKIP_TAGS, LANDMARK_ROLES, INTERACTIVE_ROLES } from "./defaults";
+import {
+  SKIP_TAGS,
+  LANDMARK_ROLES,
+  INTERACTIVE_ROLES,
+  MEDIA_LEAF_TAGS,
+} from "./defaults";
 import type {
   IRNodeState,
   IRNodeAttributes,
@@ -15,9 +20,13 @@ export function getValidChildren(
   element: Element,
   skipTags: Set<string>,
 ): Element[] {
-  return Array.from(element.children).filter(
-    (c) => !skipTags.has(c.tagName.toLowerCase()),
-  );
+  return Array.from(element.children).filter((c) => {
+    const tag = c.tagName.toLowerCase();
+    // Media leaves are skipped for DESCENT but kept as siblings — see
+    // MEDIA_LEAF_TAGS. Filtering them here made them invisible to the media-leaf
+    // branch that exists to turn them into `img` nodes.
+    return !skipTags.has(tag) || MEDIA_LEAF_TAGS.has(tag);
+  });
 }
 
 export function createBaseNode(
@@ -42,6 +51,10 @@ export function createBaseNode(
     readingDepth: overrides.readingDepth ?? 0,
     parent: parentId,
     children: overrides.children ?? [],
+    // Provenance. Both default to "not from an element / not from a grouping";
+    // the call sites that know better say so.
+    sourceTag: overrides.sourceTag ?? null,
+    grouping: overrides.grouping ?? null,
     relations: overrides.relations ?? createEmptyRelations(),
     state: overrides.state ?? createEmptyState(),
     attributes: overrides.attributes ?? createEmptyAttributes(),
@@ -417,6 +430,25 @@ export function confidenceForSource(
   return config.sourceConfidence[source];
 }
 
+/**
+ * Escape a value for use inside a quoted attribute selector.
+ *
+ * `CSS.escape` is the obvious tool and is why this exists: `CSS` is a browser
+ * global that the offline DOM shim does not provide, so `resolveNodeLabel`
+ * threw `ReferenceError: CSS is not defined` on any `<input>`/`<select>`/
+ * `<textarea>` that carried an id and sat outside pruned chrome. In a browser
+ * the parse was fine; under Node — which is every benchmark, every evaluation
+ * run and every check in this repository — it aborted the whole parse. The
+ * corpus hid it only because its forms are all in page headers, which get
+ * pruned before this is reached; the app-like stratum walks straight into it.
+ *
+ * Inside a quoted selector only the quote and the backslash need escaping, so
+ * the full CSS.escape algorithm is not required here.
+ */
+function escapeAttr(value: string): string {
+  return value.replace(/(["\\])/g, "\\$1");
+}
+
 export function isAccessibilityHidden(element: Element): boolean {
   const html = element as HTMLElement;
   return (
@@ -571,7 +603,7 @@ export function resolveNodeLabel(
     if (doc && (tag === "input" || tag === "textarea" || tag === "select")) {
       const id = element.getAttribute("id");
       if (id) {
-        const labelEl = doc.querySelector(`label[for="${CSS.escape(id)}"]`);
+        const labelEl = doc.querySelector(`label[for="${escapeAttr(id)}"]`);
         const labelText = labelEl?.textContent?.trim();
         if (labelText) return cap(labelText);
       }
@@ -734,6 +766,10 @@ function resolveRoleFromTag(
   if (tag === "hr") return { role: "separator", level: null };
 
   if (tag === "table") return { role: "table", level: null };
+  // A <caption> is the table's title. It resolved to `generic` because only
+  // <figcaption> was listed above, which left every table caption as an
+  // unclassified wrapper — 164 of them on the WAI-ARIA specification alone.
+  if (tag === "caption") return { role: "caption", level: null };
   if (tag === "tr") return { role: "row", level: null };
   if (tag === "td") return { role: "cell", level: null };
   if (tag === "th") {
@@ -801,10 +837,19 @@ export function isListCandidate(
     // saw a row with one "cell" where the header row still had N real ones,
     // mismatching columnCount and rendering the header row as an empty bar
     // with no visible text. Cells must never be candidates for this
-    // structural list-run grouping.
+    // structural list-run grouping, and nor must the rows that hold them.
     role === "cell" ||
     role === "columnheader" ||
-    role === "rowheader"
+    role === "rowheader" ||
+    // ...and neither must ROWS, for the same reason and with worse
+    // consequences. A `<tbody>` with three or more structurally similar `<tr>`
+    // children is the ordinary shape of a data table, so this heuristic
+    // collected them into a synthesised list and rewrote every row as a
+    // `listitem` — the ARIA specification's role-characteristics tables lost
+    // their row structure entirely, 769 of them. mapTable then has no rows to
+    // reconstruct a grid from, so this was breaking the rendered table as well
+    // as the score.
+    role === "row"
   )
     return false;
 
@@ -983,6 +1028,70 @@ export function getSemanticSignature(
 
   return Array.from(new Set(roles)).sort().join("|");
 }
+
+/**
+ * Does this element read as a paragraph of prose?
+ *
+ * The run heuristics decide between two groupings that treat their members very
+ * differently: a paragraph-run keeps each member's own role and only wraps them,
+ * while a list-run REPLACES each member's role with `listitem`. Dispatching that
+ * choice on tag name alone meant `<p>` runs became article bodies and every
+ * other run became a list — so a page that writes its paragraphs as
+ * `<div class="p">` had its prose relabelled as list items, which is exactly the
+ * page the structural layer exists to rescue. On the div-soup fixture that was
+ * 12 of 14 disagreements with the annotator.
+ *
+ * The test is on shape rather than on tag, and deliberately conservative: prose
+ * is long, punctuated into sentences, and mostly not a link. A list item can be
+ * a full sentence too, so the threshold is set where a genuine list item is
+ * unlikely to reach rather than where prose begins — misfiring toward `list` is
+ * the status quo, and misfiring toward prose loses the grouping that makes a
+ * card grid lay out as a grid.
+ */
+export function isProseBlock(el: Element, config: ParserConfig): boolean {
+  // A block that contains its own structure is a container, whatever its text
+  // looks like: grouping it as a paragraph would flatten the structure inside.
+  for (const child of Array.from(el.children)) {
+    const tag = child.tagName.toLowerCase();
+    if (BLOCK_STRUCTURE_TAGS.has(tag)) return false;
+    const role = resolveRoleFromElement(child, config).role;
+    if (
+      LANDMARK_ROLES.has(role) ||
+      INTERACTIVE_ROLES.has(role) ||
+      role === "heading" ||
+      role === "list" ||
+      role === "table"
+    )
+      return false;
+  }
+
+  const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+  if (text.length < PROSE_MIN_CHARS) return false;
+
+  // Sentence structure. A caption or a nav label is long enough to pass a length
+  // test on its own; ending a sentence is what separates prose from a phrase.
+  if (!/[.!?][")\]]?$/.test(text) && !/[.!?]\s+[A-Z0-9"'(]/.test(text)) return false;
+
+  // Mostly-link text is a navigation affordance that happens to be wordy.
+  let linked = 0;
+  for (const a of Array.from(el.querySelectorAll("a[href]"))) {
+    linked += (a.textContent ?? "").replace(/\s+/g, " ").trim().length;
+  }
+  return linked / text.length < PROSE_MAX_LINK_DENSITY;
+}
+
+/** Shortest block that can count as prose rather than as a list item. */
+const PROSE_MIN_CHARS = 120;
+
+/** Above this share of linked text, a block is an affordance, not prose. */
+const PROSE_MAX_LINK_DENSITY = 0.3;
+
+/** Tags whose presence means the block is a container, not a paragraph. */
+const BLOCK_STRUCTURE_TAGS = new Set([
+  "ul", "ol", "dl", "li", "table", "thead", "tbody", "tr", "td", "th",
+  "h1", "h2", "h3", "h4", "h5", "h6", "figure", "form", "nav", "section",
+  "article", "aside", "header", "footer", "pre", "blockquote",
+]);
 
 export function areStructurallySimilar(
   el1: Element,

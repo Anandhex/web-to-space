@@ -1025,7 +1025,16 @@ export function WallField({
   ];
 
   return (
-    <TravelGroup mode="turn" axis={turning} pivot={pivot} resetKey={resetKey}>
+    <TravelGroup
+      mode="turn"
+      axis={turning}
+      pivot={pivot}
+      resetKey={resetKey}
+      // What is actually on screen. `resetKey` says the nav committed; this
+      // says the new document has been parsed, laid out and mounted — see
+      // TravelGroup's note on the cross.
+      contentKey={plan}
+    >
       {board && (
         <group
           position={[entry.position.x, entry.position.y, entry.position.z]}

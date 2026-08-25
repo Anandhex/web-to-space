@@ -10,7 +10,7 @@ import React from "react";
 import type { LayoutEntry } from "../../layout/types";
 import { Z_STACK_STEP, MAX_STACK_DEPTH } from "./config";
 import type { Axis, NavState } from "../../links/memory";
-import type { LinkDirection } from "../../links/direction";
+import type { LateralSide, LinkDirection } from "../../links/direction";
 import type { SpatialLink } from "../../links/types";
 
 export type PageState = Record<string, number>;
@@ -170,6 +170,25 @@ export interface PageLinksApi {
   byId: ReadonlyMap<string, SpatialLink>;
   /** The direction an anchor's mark and door share, or null if unknown. */
   directionOf: (linkId: string) => LinkDirection | null;
+  /**
+   * Which HAND a sibling's door ended up on, once a view has placed it.
+   *
+   * `directionOf` cannot answer this: `lateral` is one direction and two
+   * sides, and which side a given link takes depends on how many siblings the
+   * page has and how wide the view's window is — facts that live in
+   * `buildSlots`, not in the classifier. So the view that places the doors
+   * publishes what it decided (`publishSides`) and the inline mark reads it
+   * back, which is the only way the two can agree by construction rather than
+   * by coincidence.
+   *
+   * Null until the placing view has published, and for every non-lateral.
+   */
+  sideOf: (linkId: string) => LateralSide | null;
+  /**
+   * Called by whichever view placed this page's doors. Idempotent: publishing
+   * the same assignment twice is a no-op, so it is safe from an effect.
+   */
+  publishSides: (sides: ReadonlyMap<string, LateralSide>) => void;
 }
 
 export const PageLinksContext = React.createContext<PageLinksApi | null>(null);

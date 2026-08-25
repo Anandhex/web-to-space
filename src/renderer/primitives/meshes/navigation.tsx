@@ -93,6 +93,15 @@ function ellipsise(raw: string, maxW: number, fontSize: number): string {
   return (lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd() + "…";
 }
 
+/**
+ * Plane normals for the scroll viewport's clip band. Module scope because the
+ * loop that uses them runs every frame and must not allocate — `Plane.set`
+ * copies the normal in, so one shared pair is safe. Same rule as the scratch
+ * vector in scene/camera.tsx.
+ */
+const CLIP_DOWN = new THREE.Vector3(0, -1, 0);
+const CLIP_UP = new THREE.Vector3(0, 1, 0);
+
 function TOCPanel({
   items,
   w,
@@ -179,9 +188,9 @@ function TOCPanel({
     // on the very first frame).
     g.updateWorldMatrix(true, false);
     const m = g.matrixWorld;
-    clipPlanes[0].set(new THREE.Vector3(0, -1, 0), topLocalY);
+    clipPlanes[0].set(CLIP_DOWN, topLocalY);
     clipPlanes[0].applyMatrix4(m);
-    clipPlanes[1].set(new THREE.Vector3(0, 1, 0), -bottomLocalY);
+    clipPlanes[1].set(CLIP_UP, -bottomLocalY);
     clipPlanes[1].applyMatrix4(m);
   });
 

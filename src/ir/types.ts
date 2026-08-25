@@ -54,6 +54,29 @@ export type IRRole =
   | "text"
   | "generic";
 
+/**
+ * Which run-grouping inference produced or re-parented a node.
+ *
+ * Layer 2 does two different things and they deserve to be told apart. Most of
+ * it is CLASSIFICATION: this element is a heading, that one is a paragraph.
+ * `handleListRun`, `handleLinkRun` and `handleParagraphRun` do something else —
+ * they see a run of similar siblings and wrap it in a container that exists in
+ * no markup, so the run can be laid out as a unit.
+ *
+ * The distinction matters when the parser is scored against a human annotation.
+ * An annotator labelling four sibling `<div class="p">` blocks calls each of
+ * them prose; the parser calls them `listitem` inside a synthesised `list`. That
+ * disagreement is not the parser claiming those paragraphs are a bulleted list —
+ * it is a grouping decision, and this field says so, so the two kinds of
+ * disagreement can be counted separately.
+ *
+ * It does NOT excuse the disagreement. `XRListItem` renders as a card with its
+ * own surface, so a reader of the scene sees four separate cards where the
+ * annotator saw continuous prose. The reader is affected either way; the field
+ * explains the cause, it does not neutralise the effect.
+ */
+export type IRGrouping = "list-run" | "link-run" | "paragraph-run";
+
 export type IRSource =
   | "explicit"
   | "structural"
@@ -145,6 +168,15 @@ export interface IRNode {
   readingDepth: number;
   parent: string | null;
   children: string[];
+  /**
+   * The DOM tag this node was built from, lowercased. `null` when the parser
+   * synthesised the node — a `list` wrapping a run of divs has no element of its
+   * own, and its absence here is the signal that it is an inference rather than
+   * something the author wrote.
+   */
+  sourceTag: string | null;
+  /** Set when a run-grouping inference produced or re-parented this node. */
+  grouping: IRGrouping | null;
   relations: IRNodeRelations;
   state: IRNodeState;
   attributes: IRNodeAttributes;

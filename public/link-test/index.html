@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Link Direction Test — Hub</title>
+</head>
+<!--
+  ===================================================================
+  LINK DIRECTION TEST PAGE
+  ===================================================================
+
+  Companion to test-elements.html. That page exercises every PRIMITIVE;
+  this one exercises every LINK, against src/links/classify.ts →
+  src/links/direction.ts.
+
+  The legend under test (docs/directional-links.md):
+
+    up      ▴  ascent      — site navigation, breadcrumbs, footer nav
+    lateral ▸  same-site   — another document on this origin
+    here    •  same-doc    — a fragment of the page already drawn
+    down    ▾  off-site    — another origin
+    inline     operational — mailto:/tel:/javascript:/downloads; no direction
+
+  The thing worth knowing before reading the sections below: DIRECTION IS
+  NOT HREF SHAPE. `/about` and `./about.html` and `https://this.host/about`
+  all carry the same locus (same-site → lateral); what makes a link `up` is
+  sitting inside a <nav> or a <footer>, not being written root-relative. So
+  the same root-relative href appears twice on this page on purpose — once
+  in the nav (up) and once in prose (lateral) — and if both come out the
+  same way, the classifier is reading href shape instead of setting.
+
+  Every same-site target here is a real file, so the doors actually go
+  somewhere and the corridor/back-door memory can be walked:
+
+    /link-test/index.html        this page
+    /link-test/chapter-one.html  sibling
+    /link-test/chapter-two.html  sibling
+    /link-test/deep/nested.html  one level down, for ../ resolution
+    /test-elements.html          the top-level primitive test page
+-->
+<body>
+  <!-- ================================================================
+       BANNER + PRIMARY NAV
+
+       SEMANTICALLY these are all UP ▴ — root-relative, relative and
+       external alike, because what decides ascent is the <nav>, not the
+       href. IN PRACTICE they are classified not at all: the parser slices
+       the document to its main content before links are collected, so
+       <header> and <footer> contribute zero links (measured — the same is
+       true of test-elements.html's header and footer).
+
+       They stay because they are what a real site's chrome looks like and
+       because the day slicing changes they become live. The nav that DOES
+       produce `up` today is inside <main>, in section 2.
+  ================================================================= -->
+  <header>
+    <p><strong>Link Direction Test</strong> — a synthetic page exercising every kind of reference.</p>
+
+    <nav aria-label="Breadcrumb">
+      <a href="/">Site root</a>
+      <a href="/link-test/">Link test</a>
+      <a href="/link-test/index.html" aria-current="page">Hub</a>
+    </nav>
+
+    <nav aria-label="Primary">
+      <a href="/test-elements.html">Elements test page</a>
+      <a href="/link-test/chapter-one.html">Chapter one</a>
+      <a href="/link-test/chapter-two.html">Chapter two</a>
+      <a href="chapter-one.html">Chapter one (relative, still in nav)</a>
+      <a href="https://developer.mozilla.org/">MDN (external, still in nav)</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Link Direction Test Page</h1>
+
+    <!-- A table of contents: a <nav> whose links are MOSTLY same-page
+         fragments, which is the one kind of <nav> `isDocumentNavigation`
+         spares. Its fragments are `here`; its two non-fragment links are the
+         second route to `up`, since they are in a surviving navigation
+         landmark. -->
+    <nav aria-label="Contents">
+      <a href="#relative-title">Relative links</a>
+      <a href="#toplevel-title">Top-level links</a>
+      <a href="#external-title">External links</a>
+      <a href="#fragment-title">Same-page fragments</a>
+      <a href="#operational-title">Operational links</a>
+      <a href="#degenerate-title">Degenerate anchors</a>
+      <a href="#density-title">Density and overflow</a>
+      <a href="/test-elements.html">The elements test page</a>
+      <a href="https://developer.mozilla.org/">MDN</a>
+    </nav>
+
+    <p>
+      Sixty-odd anchors across seven sections. Each one names the direction it
+      is expected to take, so a wrong door is legible from the prose without
+      opening the census. Hrefs that lead somewhere real lead to a page that
+      names itself, so a door that opens on the wrong document says so.
+    </p>
+
+    <!-- ============================================================
+         1. RELATIVE  →  lateral ▸ (same-site)
+    ============================================================= -->
+    <section aria-labelledby="relative-title">
+      <h2 id="relative-title">1. Relative links → lateral ▸</h2>
+      <p>
+        A document beside this one, addressed relative to it. All four forms
+        resolve against <code>/link-test/index.html</code> and all four are
+        same-site, so all four are siblings: the reader turns their head, they
+        do not climb or descend.
+      </p>
+      <ul>
+        <li><a href="chapter-one.html">Chapter one</a> — bare relative, no prefix.</li>
+        <li><a href="./chapter-two.html">Chapter two</a> — explicit <code>./</code> prefix.</li>
+        <li><a href="deep/nested.html">A nested page</a> — one directory down.</li>
+        <li><a href="../test-elements.html">The elements test page</a> — <code>../</code> back up to the root.</li>
+      </ul>
+      <p>
+        Two edge cases in the same family: a relative href carrying a
+        <a href="chapter-one.html?highlight=doors">query string</a>, and one
+        carrying <a href="chapter-two.html#second-half">a fragment of ANOTHER
+        document</a> — the second is the case that must NOT collapse to
+        <em>here</em>, because the fragment belongs to a page that is not this
+        one.
+      </p>
+    </section>
+
+    <!-- ============================================================
+         2. TOP-LEVEL  →  lateral ▸ in prose, up ▴ in the nav
+    ============================================================= -->
+    <section aria-labelledby="toplevel-title">
+      <h2 id="toplevel-title">2. Top-level links → lateral ▸ in prose, up ▴ in a nav</h2>
+      <p>
+        These are the same destinations the primary nav carries, written the
+        same root-relative way, but sitting in prose instead. They should come
+        out <em>lateral</em>, not <em>up</em>: the site's own root is a sibling
+        document when a sentence mentions it and a parent when the site menu
+        offers it, and the classifier reads the setting, not the slash.
+      </p>
+      <ul>
+        <li><a href="/test-elements.html">/test-elements.html</a> — a top-level document.</li>
+        <li><a href="/link-test/chapter-one.html">/link-test/chapter-one.html</a> — root-relative to a sibling.</li>
+        <li><a href="/link-test/deep/nested.html">/link-test/deep/nested.html</a> — root-relative, two deep.</li>
+      </ul>
+      <!-- ── The construct that actually produces `up` ──────────────────
+           NOT a <nav>. `prunePageChrome` in ir/parser.ts deletes every
+           <nav> whose links are not mostly same-page fragments, wherever it
+           sits — inside <main> included — because the scene does not render
+           site chrome. Measured: the <header> and <footer> navs in this file
+           and an explicit <nav> here both contribute ZERO links.
+
+           What survives is the INFERRED link run: three or more consecutive
+           bare <a> elements, which the parser reads as navigation and the
+           mapper tags as a navigation landmark. That is the only route to
+           ascent on a page like this one, so that is what this is. -->
+      <a href="/">Site root</a>
+      <a href="/test-elements.html">Elements test page</a>
+      <a href="/link-test/index.html">Link test hub</a>
+      <a href="chapter-one.html">Chapter one</a>
+      <a href="https://developer.mozilla.org/">MDN</a>
+
+      <p>
+        The five links immediately above are the same destinations again, as a
+        bare link run. Every one should be <em>up</em> — including the relative
+        one and the external one, because ascent is decided by the setting and
+        not by the href. That <code>/test-elements.html</code> appears twice on
+        this page pointing two different ways is the whole test.
+      </p>
+
+      <p>
+        The absolute form of a same-origin URL belongs here too, and it is the
+        one that most often goes wrong — an origin comparison that string-matches
+        instead of parsing sends it <em>down</em> with the external links:
+        <a href="http://localhost:5173/link-test/chapter-two.html">the absolute
+        localhost form of chapter two</a>. It is same-site whenever the dev
+        server is on that port, and off-site when it is not, which is itself
+        worth seeing.
+      </p>
+    </section>
+
+    <!-- ============================================================
+         3. EXTERNAL  →  down ▾ (off-site)
+    ============================================================= -->
+    <section aria-labelledby="external-title">
+      <h2 id="external-title">3. External links → down ▾</h2>
+      <p>
+        Another origin, reached deliberately. The
+        <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebXR_Device_API">WebXR
+        Device API on MDN</a> and the
+        <a href="https://www.w3.org/TR/wai-aria-1.2/">ARIA 1.2 specification</a>
+        are the two ordinary cases: absolute, <code>https:</code>, a different
+        host.
+      </p>
+      <ul>
+        <li><a href="//example.com/protocol-relative">A protocol-relative href</a> — <code>//host/path</code>, which inherits the page's scheme and is the form that throws <code>ERR_INVALID_URL</code> when a base URL never arrives.</li>
+        <li><a href="http://example.com/insecure">A plain <code>http:</code> href</a> — off-site and downgraded.</li>
+        <li><a href="https://xn--bcher-kva.example/umlaut">A punycode host</a> — the host comparison has to survive it.</li>
+        <li><a href="https://example.com:8443/explicit-port">An explicit non-default port</a> — a different origin from the same host on 443.</li>
+        <li><a href="https://user:pass@example.com/credentials">A userinfo href</a> — the host is still <code>example.com</code>.</li>
+      </ul>
+      <p>
+        And the malformed case, which has to land somewhere rather than throw:
+        <a href="http://[not a url]/">an href that will not parse</a> is
+        absolute in shape but fails <code>new URL()</code>, so it has an
+        <em>unknown</em> locus, which the projection table sends <em>down</em>.
+        (An href malformed in its SCHEME — <code>ht!tp://…</code> — is not
+        absolute at all by the origin test's reckoning, and comes out a
+        same-site relative path. That is a real seam, not a bug to fix here.)
+      </p>
+    </section>
+
+    <!-- ============================================================
+         4. SAME-PAGE  →  here •
+    ============================================================= -->
+    <section aria-labelledby="fragment-title">
+      <h2 id="fragment-title">4. Same-page fragments → here •</h2>
+      <p>
+        A pointer at something this view already draws, so it gets no body and
+        no corridor — it lights the storey, tile or card the current view is
+        already showing.
+      </p>
+      <ul>
+        <li><a href="#relative-title">Back to section 1</a> — a bare fragment.</li>
+        <li><a href="#external-title">Back to section 3</a> — another one.</li>
+        <li><a href="/link-test/index.html#operational-title">The absolute form of this page's own URL, plus a fragment</a> — the shape a server-rendered table of contents emits. It must resolve to <em>here</em>, not to a lateral trip back to the document the reader is standing in.</li>
+        <li><a href="#no-such-anchor">A fragment that names nothing on this page</a> — still <em>here</em>, but with no target to light.</li>
+        <li><a href="#cite_note-1">[1]</a> — a citation-shaped fragment: same-document wins for placement, and the citation flag survives beside it.</li>
+      </ul>
+    </section>
+
+    <!-- ============================================================
+         5. OPERATIONAL  →  inline (no direction, no door)
+    ============================================================= -->
+    <section aria-labelledby="operational-title">
+      <h2 id="operational-title">5. Operational links → inline, no mark</h2>
+      <p>
+        Following one of these hands off to another application, so no corridor
+        could stand for it and none is drawn. They stay at their anchor.
+      </p>
+      <ul>
+        <li><a href="mailto:someone@example.com">Email someone</a></li>
+        <li><a href="tel:+441234567890">Call the number</a></li>
+        <li><a href="javascript:void(0)">A javascript: href</a></li>
+        <li><a href="#">An href of <code>#</code> alone</a> — an action on the page, not a fragment.</li>
+        <li><a href="">An empty href</a> — the same.</li>
+        <li><a href="/downloads/report.pdf">A PDF</a> — a download, which is an action even though it is same-site.</li>
+        <li><a href="https://example.com/archive.zip">An external archive</a> — a download too, and the extension wins over the origin.</li>
+      </ul>
+    </section>
+
+    <!-- ============================================================
+         6. DEGENERATE ANCHORS  —  direction is fine, the LABEL is the test
+    ============================================================= -->
+    <section aria-labelledby="degenerate-title">
+      <h2 id="degenerate-title">6. Degenerate anchor text</h2>
+      <p>
+        These take the directions their hrefs imply; what they exercise is
+        <code>identity.ts</code>, which has to synthesise a name because the
+        anchor text identifies nothing. A door reading “here” tells the reader
+        nothing about where it goes.
+      </p>
+      <ul>
+        <li>Relative, no name: <a href="chapter-one.html">click here</a></li>
+        <li>External, no name: <a href="https://developer.mozilla.org/en-US/docs/Web/HTML">read more</a></li>
+        <li>A bare URL as its own text: <a href="https://www.w3.org/TR/webxr/">https://www.w3.org/TR/webxr/</a></li>
+        <li>An image-only anchor: <a href="chapter-two.html"><img src="/favicon.svg" alt="Chapter two" width="16" height="16" /></a></li>
+        <li>An anchor whose accessible name comes from the attribute, not the text: <a href="deep/nested.html" aria-label="The nested page, one level down">↗</a></li>
+      </ul>
+      <p id="cite_note-1">
+        <a href="#fragment-title">^</a> A back-reference, standing in for the
+        bibliography entry a citation marker jumps to.
+      </p>
+    </section>
+
+    <!-- ============================================================
+         7. DENSITY  —  two anchors in one block, and a long run
+    ============================================================= -->
+    <section aria-labelledby="density-title">
+      <h2 id="density-title">7. Density and overflow</h2>
+      <p>
+        Half the anchors on the web share a block with another anchor, which is
+        why alignment alone cannot say which sentence points where. This
+        paragraph is that case: it goes both to
+        <a href="chapter-one.html">chapter one</a> and to
+        <a href="https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA">MDN's
+        ARIA guide</a>, one lateral and one down, from the same line of prose.
+      </p>
+      <p>
+        And a run long enough to exceed a side's window, so the lateral overflow
+        path is exercised rather than argued about:
+        <a href="chapter-one.html">one</a>,
+        <a href="chapter-two.html">two</a>,
+        <a href="deep/nested.html">three</a>,
+        <a href="chapter-one.html?n=4">four</a>,
+        <a href="chapter-two.html?n=5">five</a>,
+        <a href="deep/nested.html?n=6">six</a>,
+        <a href="chapter-one.html?n=7">seven</a>.
+      </p>
+    </section>
+  </main>
+
+  <!-- ================================================================
+       CONTENTINFO — a footer link run is site navigation wearing a
+       different hat, so it is UP ▴ semantically. Sliced away in practice,
+       for the same reason as the header above.
+  ================================================================= -->
+  <footer>
+    <p>Link direction test — end of content.</p>
+    <nav aria-label="Footer">
+      <a href="/">Home</a>
+      <a href="/test-elements.html">Elements</a>
+      <a href="https://example.com/privacy">Privacy</a>
+      <a href="mailto:someone@example.com">Contact</a>
+    </nav>
+  </footer>
+</body>
+</html>

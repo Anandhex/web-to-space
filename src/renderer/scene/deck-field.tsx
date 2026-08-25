@@ -1154,7 +1154,14 @@ export function DeckField({
     // Travelling moves the WORLD, not the reader: the stage and the table
     // leave together the way the door said, and the next document's table
     // completes the same motion coming in from the far side.
-    <TravelGroup mode="slide" axis={sliding} resetKey={slideResetKey}>
+    <TravelGroup
+      mode="slide"
+      axis={sliding}
+      resetKey={slideResetKey}
+      // The plan identity — the cross waits for the next document to be up,
+      // not just for its navigation to have committed.
+      contentKey={plan}
+    >
       {/* ── The stage: the page being read ── */}
       <AtPos key="deck-stage" entry={stageEntry}>
         <LivePageGhost

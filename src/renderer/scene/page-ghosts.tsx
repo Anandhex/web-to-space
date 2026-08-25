@@ -61,6 +61,7 @@ import { WallField } from "./wall-field";
 import { DeckField } from "./deck-field";
 import { usePageLinks } from "./contexts";
 import { buildSlots, drawable } from "../../links/slots";
+import type { LateralSide } from "../../links/direction";
 import { windowFor } from "../../links/memory";
 import type { SpatialLink } from "../../links/types";
 import { NavigateContext } from "../primitives/contexts";
@@ -331,10 +332,31 @@ export function PageGhostField({
       const out: SectionLink[] = [];
       for (const axis of ["left", "right", "up", "down"] as const)
         for (const s of drawable(slots[axis]))
-          out.push({ label: s.label, href: s.url, axis, isReturn: false });
+          out.push({
+            label: s.label,
+            href: s.url,
+            axis,
+            isReturn: false,
+            linkId: s.linkId,
+          });
       return out;
     });
   }, [mode, pageCount, allPageLinks]);
+
+  // Which hand each sibling's door took, published so the inline mark beside
+  // the anchor can point the same way the corridor does. Rooms builds EVERY
+  // page's corridor up front (see above), so this covers the whole document
+  // rather than just the page the reader is standing on.
+  const publishSides = allPageLinks?.publishSides;
+  React.useEffect(() => {
+    if (!publishSides || !roomPageLinks) return;
+    const sides = new Map<string, LateralSide>();
+    for (const page of roomPageLinks)
+      for (const link of page)
+        if (link.linkId && (link.axis === "left" || link.axis === "right"))
+          sides.set(link.linkId, link.axis);
+    publishSides(sides);
+  }, [roomPageLinks, publishSides]);
 
   /**
    * Which page's corridor is BUILT OUT — its arms, its stair hall and its

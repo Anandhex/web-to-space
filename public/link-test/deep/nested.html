@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Link Direction Test — Nested</title>
+</head>
+<!--
+  One directory below the hub. The point of this page is the base URL: every
+  relative href here resolves against /link-test/deep/, so `../index.html` and
+  `index.html` go to DIFFERENT places, and only one of them exists. A parser
+  that resolves relative hrefs against the origin instead of the document will
+  send both to the same 404.
+-->
+<body>
+  <header>
+    <nav aria-label="Breadcrumb">
+      <a href="/">Site root</a>
+      <a href="../index.html">Link test hub</a>
+      <a href="nested.html" aria-current="page">Nested</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>A Nested Page</h1>
+    <p>
+      This document lives at <code>/link-test/deep/nested.html</code>. Its base
+      directory is <code>/link-test/deep/</code>, one below the hub's.
+    </p>
+
+    <section aria-labelledby="nested-up-title">
+      <h2 id="nested-up-title">Climbing back out</h2>
+      <p>
+        <a href="../index.html">The hub</a> is <code>../index.html</code> from
+        here, and <a href="../chapter-one.html">chapter one</a> is
+        <code>../chapter-one.html</code>. Written root-relative they are
+        <a href="/link-test/index.html">/link-test/index.html</a> and
+        <a href="/link-test/chapter-one.html">/link-test/chapter-one.html</a> —
+        the same two documents by a different route, and all four are lateral.
+      </p>
+      <p>
+        Two levels up is <a href="../../test-elements.html">the elements test
+        page</a> at the root, which is as far as <code>../</code> can go before
+        it clamps.
+      </p>
+      <p>
+        And a deliberate miss: <a href="index.html">index.html</a> resolved from
+        HERE is <code>/link-test/deep/index.html</code>, which does not exist.
+        It should still be classified lateral — a link that leads nowhere is a
+        404, not a different kind of reference.
+      </p>
+    </section>
+
+    <section aria-labelledby="nested-out-title">
+      <h2 id="nested-out-title">Leaving</h2>
+      <p>
+        Off-site from the bottom of the tree:
+        <a href="https://immersiveweb.dev/">immersiveweb.dev</a>. Depth in the
+        path makes no difference to direction — down is down from any storey.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <nav aria-label="Footer">
+      <a href="/">Home</a>
+      <a href="../index.html">Link test hub</a>
+    </nav>
+  </footer>
+</body>
+</html>

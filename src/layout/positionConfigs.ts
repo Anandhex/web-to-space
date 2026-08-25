@@ -22,6 +22,7 @@ import {
   containerInsetX,
   estimateInlineFlowHeight,
   charsPerLineFor,
+  clampTextToLines,
   isDecorativeGlyphItem,
   estimateTextBearingHeight,
   estimateTextLineCount,
@@ -383,6 +384,50 @@ const IMAGE_REFERENCE_PX = 300;
 /** Font size (metres) used to render a figure caption under an image. */
 export const IMAGE_CAPTION_FONT_SIZE = 0.016;
 
+/** Line-height ratio the renderer passes to troika for the caption band. */
+export const IMAGE_CAPTION_LINE_HEIGHT = 1.35;
+
+/**
+ * Horizontal inset the caption is drawn at (XRImageMesh positions the text at
+ * x = this and wraps it at `w - 2 * this`). The height estimate must measure at
+ * the SAME width or it counts fewer lines than troika lays out.
+ */
+export const IMAGE_CAPTION_X_INSET = 0.004;
+
+/** Gap between the bottom of the image and the first caption line. */
+const IMAGE_CAPTION_TOP_PAD = 0.008;
+
+/** Breathing room under the last caption line, before the next stacked block. */
+const IMAGE_CAPTION_BOTTOM_PAD = 0.006;
+
+/**
+ * Wrap model for the caption band. fontSize / lineHeightRatio are exactly what
+ * XRImageMesh hands troika; charWidthRatio and avgCharsPerWord match the
+ * paragraph model, so caption lines are counted the same way prose lines are.
+ */
+const IMAGE_CAPTION_METRICS: PrimitiveFontMetrics = {
+  fontSize: IMAGE_CAPTION_FONT_SIZE,
+  lineHeightRatio: IMAGE_CAPTION_LINE_HEIGHT,
+  verticalPadding: 0,
+  charWidthRatio: 0.55,
+  avgCharsPerWord: 5.5,
+};
+
+/**
+ * Number of lines the caption wraps to at `width` — the entry's width, since
+ * that is what the renderer wraps against.
+ */
+export function imageCaptionLineCount(
+  caption: string,
+  width: number,
+): number {
+  return estimateTextLineCount(
+    caption.trim(),
+    Math.max(0.01, width - IMAGE_CAPTION_X_INSET * 2),
+    IMAGE_CAPTION_METRICS,
+  );
+}
+
 /**
  * Left inset (metres) XRBlockQuoteMesh flows its prose at (must match X_INSET in
  * block.tsx). The mesh wraps at w − 2·X_INSET, so the height estimator uses the
@@ -400,15 +445,16 @@ export function imageCaptionBandHeight(
   caption: string | null | undefined,
   width: number,
 ): number {
-  if (!caption) return 0;
-  const fs = IMAGE_CAPTION_FONT_SIZE;
-  const lineH = fs * 1.35;
-  const topPad = 0.008;
-  // Rough proportional-glyph estimate (~0.5·fontSize average advance), matching
-  // the wrapping the renderer's troika <Text> will produce at this width.
-  const charsPerLine = Math.max(1, Math.floor(width / (fs * 0.5)));
-  const lines = Math.min(3, Math.max(1, Math.ceil(caption.length / charsPerLine)));
-  return topPad + lines * lineH;
+  if (!caption || caption.trim() === "") return 0;
+  // Count the lines troika will actually lay out — per-token, via the shared
+  // wrap model — rather than dividing the character count by an average
+  // advance. The averaged model under-counts (a word that does not fit moves
+  // whole to the next line), and it used to be clamped to 3 lines on top of
+  // that, so any figcaption longer than three lines was drawn straight through
+  // whatever the engine stacked beneath the image.
+  const lines = imageCaptionLineCount(caption, width);
+  const lineH = IMAGE_CAPTION_FONT_SIZE * IMAGE_CAPTION_LINE_HEIGHT;
+  return IMAGE_CAPTION_TOP_PAD + lines * lineH + IMAGE_CAPTION_BOTTOM_PAD;
 }
 
 export function resolveImageDisplaySize(
@@ -456,16 +502,69 @@ function _estimateImageHeight(
   metrics: RenderMetrics,
 ): number {
   const img = primitive as XRImage;
-  const { height } = resolveImageDisplaySize(
+  const { width, height } = resolveImageDisplaySize(
     img.intrinsicWidth,
     img.intrinsicHeight,
     panelUsableWidth,
     metrics,
   );
   // Reserve room for a <figcaption> band beneath the image so the caption the
-  // renderer draws isn't clipped or overlapping the next element. The renderer
-  // wraps the caption at the entry's full width, so reserve at that same width.
-  return height + imageCaptionBandHeight(img.caption, panelUsableWidth);
+  // renderer draws isn't clipped or overlapping the next element. Measure at
+  // the RESOLVED display width, not the slot width: an aspect-fitted thumbnail
+  // is narrower than its column, so a caption measured at the column wraps to
+  // fewer lines than the one drawn at the entry. attachResolvedStrategies
+  // re-derives the entry height at that same resolved width, so measuring the
+  // column here left the final entry taller than the space the stack cursor
+  // had advanced by — and the next sibling landed inside the caption.
+  return height + imageCaptionBandHeight(img.caption, width);
+}
+
+// ── Image alt text (load-failure fallback) ───────────────────────────────────
+//
+// `alt` is not reserved space: whether the image loads is a runtime fact the
+// engine cannot know, and reserving for alt on every image would open a dead
+// band under every image that loads fine. So the box is sized for the image,
+// and the fallback text is fitted INTO that box by the renderer. These
+// constants are the contract between the two — XRImageMesh draws at exactly
+// these insets and this font, and fitImageAltText clamps to what fits.
+
+/** Font size (metres) the alt fallback is drawn at. */
+export const IMAGE_ALT_FONT_SIZE = 0.016;
+
+/** Left/right inset of the alt fallback inside the image box. */
+export const IMAGE_ALT_X_INSET = 0.03;
+
+/** Top/bottom inset of the alt fallback inside the image box. */
+export const IMAGE_ALT_Y_INSET = 0.02;
+
+/**
+ * Clamp alt text to the lines that fit inside an image box of `width` x
+ * `height`, ellipsising if it is cut.
+ *
+ * Without this the alt run was bottom-anchored at the image's lower edge with
+ * no line budget at all, so a long descriptive alt (Wikipedia diagrams run to
+ * several sentences) grew UPWARD out of the box and was drawn over the
+ * paragraph stacked above the figure.
+ */
+export function fitImageAltText(
+  alt: string,
+  width: number,
+  height: number,
+): string {
+  const text = alt.trim();
+  if (text === "") return "";
+  const m: PrimitiveFontMetrics = {
+    ...IMAGE_CAPTION_METRICS,
+    fontSize: IMAGE_ALT_FONT_SIZE,
+  };
+  const lineH = IMAGE_ALT_FONT_SIZE * IMAGE_CAPTION_LINE_HEIGHT;
+  const maxLines = Math.floor((height - IMAGE_ALT_Y_INSET * 2) / lineH);
+  if (maxLines < 1) return "";
+  return clampTextToLines(
+    text,
+    charsPerLineFor(Math.max(0.01, width - IMAGE_ALT_X_INSET * 2), m),
+    maxLines,
+  );
 }
 
 function _estimateFigureHeight(

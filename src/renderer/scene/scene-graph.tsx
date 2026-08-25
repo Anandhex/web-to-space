@@ -25,7 +25,9 @@ import {
   type TraversalApi,
 } from "./contexts";
 import { collectSpatialLinks } from "../../links/collect";
+import { sameDocumentFragment } from "../../links/classify";
 import { directionOf } from "../../links/direction";
+import type { LateralSide } from "../../links/direction";
 import type { SpatialLink } from "../../links/types";
 import { hasDescendant } from "./dispatch-children";
 import { PrimitiveDispatcher } from "./dispatcher";
@@ -281,6 +283,17 @@ export function XRSceneGraph({
   // Section drill-down: when set, the pager (PageRangeContext) clamps to this
   // section's page span so the reader sees only that section. Cleared whenever
   // the page/tab content changes out from under us.
+  //
+  // FLIP ONLY. `PageRangeContext` has exactly one consumer — the flip panel's
+  // pager in `panels.tsx` — because rooms, wall and deck do not page at all:
+  // every page is already drawn at its own placement and the reader walks,
+  // turns or drags to it. Clamping a pager they do not have changes nothing,
+  // so setting the range in a page view left the reset chip standing over the
+  // gallery offering to undo something that had never happened, positioned at
+  // the FLIP layout's `slots.main` — a world point that in rooms is not where
+  // the page hangs at all, which is why it floated in front of a wall.
+  const pageView =
+    plan.pageDistribution !== undefined && plan.pageDistribution !== "flip";
   const [focusedRange, setFocusedRange] = React.useState<
     [number, number] | null
   >(null);
@@ -376,8 +389,21 @@ export function XRSceneGraph({
 
   const navigate = useCallback(
     (href: string) => {
-      if (href.startsWith("#")) {
-        const fragment = decodeURIComponent(href.slice(1));
+      // Is this href a fragment of THE DOCUMENT THE READER IS STANDING IN?
+      //
+      // Not `href.startsWith("#")`, which is only the barest of the three
+      // forms a same-document reference takes. `?q=1#x` against this same
+      // path, and the fully-qualified form of this page's own URL, are both
+      // the same jump — and the second is exactly what a server-rendered
+      // table of contents emits. Testing the bare form alone sent those two
+      // down the external branch below, which opened a NEW TAB on the
+      // document already in front of the reader and started it with fresh
+      // navigation memory: the corridor they had walked, and the way back it
+      // held, both gone. The classifier had them right all along (they are
+      // `arrangement`/`same-document`), so this asks the classifier's own
+      // question rather than a weaker one of its own.
+      const fragment = sameDocumentFragment(href, sourceUrl ?? null);
+      if (fragment !== null) {
         // The fragment is an HTML `id` (e.g. "headings-title"), not a primitive
         // id. Resolve it to the primitive that carried that id (threaded through
         // as `domId`), then page the containing content panel to its page. Fall
@@ -393,8 +419,11 @@ export function XRSceneGraph({
         }
         const targetEntry = targetId ? plan.entries[targetId] : undefined;
         if (targetId && targetEntry?.pageIndex !== undefined) {
-          // Drill down: clamp paging to the target's section, jump to its start.
-          const range = sectionRangeForTarget(targetId, primitiveMap, plan);
+          // Drill down: clamp paging to the target's section, jump to its
+          // start. Only a flip panel has a pager to clamp — see `pageView`.
+          const range = pageView
+            ? null
+            : sectionRangeForTarget(targetId, primitiveMap, plan);
           setFocusedRange(range);
           for (const [, p] of primitiveMap) {
             if (p.type === "XRContentPanel" && hasDescendant(p, targetId)) {
@@ -403,7 +432,10 @@ export function XRSceneGraph({
             }
           }
         }
-        // anchor not found in plan — nothing to navigate to; do not open a URL.
+        // The anchor names nothing this document drew. Still do NOT open a
+        // URL: it is a same-document reference either way, and re-fetching the
+        // page the reader is on to land at an id that is not there costs them
+        // their corridor and gains them nothing.
         return;
       }
 
@@ -430,6 +462,7 @@ export function XRSceneGraph({
       onExternalNavigate,
       sourceUrl,
       setFocusedRange,
+      pageView,
     ],
   );
 
@@ -449,6 +482,33 @@ export function XRSceneGraph({
   const paginatedPanelPage = paginatedPanel
     ? (pageState[paginatedPanel.id] ?? 0)
     : -1;
+
+  // Which hand each sibling's door took, as published by the view that placed
+  // it. See `PageLinksApi.sideOf` — the classifier cannot answer this, because
+  // the side falls out of the door budget, not out of the href.
+  const [lateralSides, setLateralSides] = React.useState<
+    ReadonlyMap<string, LateralSide>
+  >(() => new Map());
+  const publishLateralSides = React.useCallback(
+    (next: ReadonlyMap<string, LateralSide>) => {
+      setLateralSides((prev) => {
+        if (prev.size === next.size) {
+          let same = true;
+          for (const [k, v] of next)
+            if (prev.get(k) !== v) {
+              same = false;
+              break;
+            }
+          if (same) return prev;
+        }
+        return next;
+      });
+    },
+    [],
+  );
+  // A new document's doors have not been placed yet, and last document's sides
+  // would mark this one's anchors.
+  React.useEffect(() => setLateralSides(new Map()), [scene.root.id]);
 
   // Every reference on the page, classified once. Both the inline marks and
   // the doors read this, so a mark and its door cannot disagree about which
@@ -478,8 +538,15 @@ export function XRSceneGraph({
         const l = byId.get(id);
         return l ? directionOf(l) : null;
       },
+      sideOf: (id) => lateralSides.get(id) ?? null,
+      publishSides: publishLateralSides,
     };
-  }, [scene, plan, sourceUrl]);
+    // `lateralSides` is deliberately NOT a dependency: it is written by the
+    // view AFTER this memo has been read, and re-running the collector on
+    // every publish would re-classify the whole document to learn which hand a
+    // door took. The two closures below read the ref/setter, which are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scene, plan, sourceUrl, lateralSides, publishLateralSides]);
 
   // Directional-link plumbing, provided once for whichever view is mounted.
   // A view reaches it through `useTraversal()` rather than through four

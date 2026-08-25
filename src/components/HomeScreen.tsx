@@ -200,11 +200,23 @@ function hexToRgb(hex: string): string {
 // Preset sites
 // ─────────────────────────────────────────────────────────────
 
-// Sentinel URL for the built-in renderer test page. Resolved to an absolute
-// same-origin URL at click time (see handleLoad) so it can be fetched directly
-// without the CORS proxy, and so the parser can resolve relative asset URLs.
+// Sentinel URLs for the built-in local test pages. Each is resolved to an
+// absolute same-origin URL at click time (see handleLoad) so it can be fetched
+// directly without the CORS proxy, and — the part that matters for the link
+// test page — so the parser has a real base URL to resolve every relative and
+// root-relative href against.
 const TEST_PAGE_TOKEN = "__test_elements__";
-const TEST_PAGE_PATH = "/test-elements.html";
+const LINK_TEST_TOKEN = "__link_test__";
+
+/** Sentinel → same-origin path. The only local pages the launcher offers. */
+const LOCAL_PAGES: Record<string, string> = {
+  [TEST_PAGE_TOKEN]: "/test-elements.html",
+  [LINK_TEST_TOKEN]: "/link-test/index.html",
+};
+
+function isLocalPage(url: string): boolean {
+  return Object.prototype.hasOwnProperty.call(LOCAL_PAGES, url);
+}
 
 interface PresetSite {
   id: string;
@@ -265,6 +277,23 @@ const PRESET_SITES: PresetSite[] = [
     initial: "▦",
   },
 ];
+
+/**
+ * The seventh destination, in the wide strip under the grid.
+ *
+ * It is here rather than in the grid for the reason the note above gives: a
+ * seventh cell in a three-wide grid is one card alone on a row, 1.8 m below
+ * the others. The strip is the shape the board already reserves space for
+ * (see BOARD_INNER_H) and it reads as what it is — a second local smoke test,
+ * not a seventh website.
+ */
+const UTILITY_SITE: PresetSite = {
+  id: "link-test",
+  title: "Link Direction Test",
+  subtitle: "Relative, top-level & external links · local smoke test",
+  url: LINK_TEST_TOKEN,
+  initial: "▸",
+};
 
 // ─────────────────────────────────────────────────────────────
 // Launcher geometry
@@ -353,6 +382,15 @@ function cardPose(i: number): CardPose {
   return arcPose(alongX, topRowY - row * (CARD_H + CARD_GAP_Y));
 }
 
+/**
+ * Pose of the utility strip: the full width of the grid, at the bottom of the
+ * board, on the same arc. BOARD_INNER_H already reserves UTIL_H + a gap for
+ * it, so adding it changes no other cell's position.
+ */
+function utilityPose(): CardPose {
+  return arcPose(0, BOARD_BOTTOM_Y + UTIL_H / 2);
+}
+
 // ─────────────────────────────────────────────────────────────
 // 3D Components
 // ─────────────────────────────────────────────────────────────
@@ -363,6 +401,13 @@ interface SiteCardProps {
   /** Cell size — the utility strip is wider and shorter than a grid card. */
   width: number;
   height: number;
+  /**
+   * `card` is the grid cell: chip and title on top, subtitle beneath, a rule
+   * and a footer row. `strip` is the wide short cell under the grid, which has
+   * no room for four stacked rows and does not need them — everything sits on
+   * one line, with the destination pushed to the right edge.
+   */
+  variant: "card" | "strip";
   onSelect: (url: string) => void;
   disabled: boolean;
   theme: HomeTheme;
@@ -388,6 +433,7 @@ function SiteCard({
   pose,
   width,
   height,
+  variant,
   onSelect,
   disabled,
   theme,
@@ -399,13 +445,26 @@ function SiteCard({
   const active = (hovered || focused) && !disabled;
   const halfW = width / 2;
   const halfH = height / 2;
-  const pad = height * 0.13;
-  const chip = height * 0.3;
-  // Type scale, proportional to the cell so the utility strip and the grid
-  // cards share one ratio rather than two hand-picked sets of sizes.
-  const titleSize = height * 0.133;
-  const bodySize = height * 0.088;
-  const metaSize = height * 0.072;
+  const strip = variant === "strip";
+  const pad = height * (strip ? 0.22 : 0.13);
+  const chip = height * (strip ? 0.58 : 0.3);
+
+  // Type scale.
+  //
+  // It used to be proportional to the CELL, on the reasoning that one ratio
+  // beats two hand-picked sets of sizes. That is right for a grid of cells the
+  // same shape and wrong the moment one of them is a third the height: the
+  // strip's title came out 0.037 m, which at the 3.4 m card radius is 0.62° of
+  // visual angle — under the legibility floor, and unreadable in the headset
+  // even though it looked merely small on a flat screen.
+  //
+  // What legibility depends on is ANGULAR size, so the scale is keyed to the
+  // grid card's height for every cell. The strip and the cards then share one
+  // type scale in metres, which is the thing that actually has to match.
+  const typeUnit = CARD_H;
+  const titleSize = typeUnit * 0.133;
+  const bodySize = typeUnit * 0.088;
+  const metaSize = typeUnit * 0.072;
 
   return (
     <group ref={groupRef} position={pose.position} rotation={[0, pose.yaw, 0]}>
@@ -458,7 +517,11 @@ function SiteCard({
 
       {/* Accent chip carrying the initial, top-left. */}
       <group
-        position={[-halfW + pad + chip / 2, halfH - pad - chip / 2, 0.004]}
+        position={[
+          -halfW + pad + chip / 2,
+          strip ? 0 : halfH - pad - chip / 2,
+          0.004,
+        ]}
       >
         <Surface
           width={chip}
@@ -485,7 +548,7 @@ function SiteCard({
       <Text
         position={[
           -halfW + pad + chip + pad * 0.7,
-          halfH - pad - chip * 0.34,
+          strip ? 0 : halfH - pad - chip * 0.34,
           0.006,
         ]}
         fontSize={titleSize}
@@ -498,7 +561,22 @@ function SiteCard({
         {site.title}
       </Text>
 
+      {/* A strip says the rest on the same line, right-aligned, and stops. */}
+      {strip && (
+        <Text
+          position={[halfW - pad, 0, 0.006]}
+          fontSize={metaSize}
+          color={theme.textMuted}
+          anchorX="right"
+          anchorY="middle"
+          maxWidth={width * 0.55}
+        >
+          {site.subtitle}
+        </Text>
+      )}
+
       {/* Subtitle spans the full width below the header */}
+      {!strip && (
       <Text
         position={[-halfW + pad, halfH - pad - chip - pad * 0.75, 0.006]}
         fontSize={bodySize}
@@ -510,8 +588,11 @@ function SiteCard({
       >
         {site.subtitle}
       </Text>
+      )}
 
       {/* Rule above the footer row */}
+      {!strip && (
+      <>
       <mesh position={[0, -halfH + pad * 1.5, 0.005]}>
         <planeGeometry args={[width - 2 * pad, 0.004]} />
         <meshBasicMaterial
@@ -530,7 +611,7 @@ function SiteCard({
         anchorY="middle"
         maxWidth={width - 2 * pad - 0.34}
       >
-        {site.url === TEST_PAGE_TOKEN
+        {isLocalPage(site.url)
           ? "localhost"
           : site.url.replace(/^https?:\/\//, "")}
       </Text>
@@ -544,6 +625,8 @@ function SiteCard({
         >
           Open →
         </Text>
+      )}
+      </>
       )}
     </group>
   );
@@ -1430,7 +1513,7 @@ export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
   const { theme } = settings;
 
   /** Every cell of the launcher, grid first then the utility strip. */
-  const cells = useMemo(() => [...PRESET_SITES], []);
+  const cells = useMemo(() => [...PRESET_SITES, UTILITY_SITE], []);
 
   function handleLoad(url: string) {
     const raw = url.trim();
@@ -1440,8 +1523,9 @@ export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
       `Loading ${site?.title ?? raw} in ${settings.viewMode} view. Rendering in 3D.`,
     );
     // Built-in test page: resolve the sentinel to an absolute same-origin URL.
-    if (raw === TEST_PAGE_TOKEN) {
-      onLoad(window.location.origin + TEST_PAGE_PATH, settings);
+    const localPath = LOCAL_PAGES[raw];
+    if (localPath !== undefined) {
+      onLoad(window.location.origin + localPath, settings);
       return;
     }
     const target = /^https?:\/\//i.test(raw) ? raw : "https://" + raw;
@@ -1501,13 +1585,14 @@ export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
         <Suspense fallback={null}>
           <LauncherBoard theme={theme} />
           <SceneTitle theme={theme} />
-          {PRESET_SITES.map((site, i) => (
+          {cells.map((site, i) => (
             <SiteCard
               key={site.id}
               site={site}
-              pose={cardPose(i)}
-              width={CARD_W}
-              height={CARD_H}
+              pose={i < PRESET_SITES.length ? cardPose(i) : utilityPose()}
+              width={i < PRESET_SITES.length ? CARD_W : UTIL_W}
+              height={i < PRESET_SITES.length ? CARD_H : UTIL_H}
+              variant={i < PRESET_SITES.length ? "card" : "strip"}
               onSelect={handleLoad}
               disabled={loading}
               theme={theme}
@@ -1595,10 +1680,9 @@ export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
           targets={cells.map((site) => ({
             id: site.id,
             label: site.title,
-            hint:
-              site.url === TEST_PAGE_TOKEN
-                ? site.subtitle
-                : `${site.subtitle}. ${site.url.replace(/^https?:\/\//, "")}`,
+            hint: isLocalPage(site.url)
+              ? site.subtitle
+              : `${site.subtitle}. ${site.url.replace(/^https?:\/\//, "")}`,
             onActivate: () => handleLoad(site.url),
           }))}
           focusIndex={focusIndex}

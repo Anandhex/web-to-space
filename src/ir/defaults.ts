@@ -1,5 +1,18 @@
 import type { ParserConfig } from "./types";
 
+/**
+ * Tags that are a single piece of media rather than a subtree to walk. They are
+ * in `SKIP_TAGS` so that nothing descends into them — an `<svg>`'s `<path>` and
+ * `<g>` children are drawing instructions, not content — but the ELEMENT itself
+ * is content and gets an `img` node. `getValidChildren` therefore keeps them and
+ * `buildChildrenFromSiblings` handles them before it consults the skip set.
+ *
+ * Without that exception the skip test ran first and `handleMediaLeaf`, which
+ * exists for exactly these two tags, was unreachable: every inline diagram on
+ * every page produced no IR node at all.
+ */
+export const MEDIA_LEAF_TAGS = new Set(["svg", "canvas"]);
+
 export const SKIP_TAGS = new Set([
   "script",
   "style",

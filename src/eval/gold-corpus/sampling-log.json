@@ -1,0 +1,123 @@
+{
+  "generatedAt": "2026-08-24T20:34:07.433Z",
+  "sessions": [
+    {
+      "ranAt": "2026-08-24T22:05:00Z",
+      "crawl": "CC-MAIN-2026-34",
+      "seed": 11,
+      "perStratum": 3,
+      "frame": {
+        "tlds": [
+          "*.com",
+          "*.org",
+          "*.net",
+          "*.edu",
+          "*.gov",
+          "*.io",
+          "*.co.uk",
+          "*.de",
+          "*.ca",
+          "*.au",
+          "*.info",
+          "*.dev"
+        ],
+        "mime": "text/html",
+        "status": 200,
+        "language": "eng"
+      },
+      "accepted": [
+        "S5 https://www.asplinstudio.com/photographe/dsc_2591/",
+        "S4 https://www.asportsu.com/product/george-outdoor-bench/",
+        "S3 https://forums.mangadex.org/threads/super-no-ura-de-yani-suu-futari-ch-60.2652618/",
+        "S4 https://solplanet.net/ua/successcases/rooftop-pv-solution-in-new-south-wales",
+        "S1 https://beepvip.soluntec.net/en_GB/quienes-somos-1",
+        "S5 https://mesonet.agron.iastate.edu/GIS/apps/rview/warnings.phtml?archive=&tz=CDT&cu=0&year=2026&month=07&day=12&hour=07&minute=35&tzoff=18000&sortdir=DESC&loop=0&sortcol=issue&c=yes&lon0=-99.87829589799998&lat0=46.63501358000008&warngeo=both"
+      ],
+      "draws": [],
+      "reconstructed": true,
+      "note": "RECONSTRUCTED, NOT ORIGINAL. The per-draw record for this session was lost: the log was a snapshot rather than a history, and a later run (seed 23, same crawl) that drew nothing because the Common Crawl index was unavailable overwrote it. The accepted URLs, crawl and seed are recovered from the header comment `npm run gold:sample` wrote into gold/corpus.urls; the rejection counts and their reasons are NOT recoverable and are absent here rather than estimated. The draw is still reproducible from crawl + seed. Sessions written after this one are appended and complete."
+    },
+    {
+      "ranAt": "2026-08-24T22:19:00Z",
+      "crawl": "CC-MAIN-2026-34",
+      "seed": 23,
+      "perStratum": 3,
+      "frame": {
+        "tlds": [
+          "*.com",
+          "*.org",
+          "*.net",
+          "*.edu",
+          "*.gov",
+          "*.io",
+          "*.co.uk",
+          "*.de",
+          "*.ca",
+          "*.au",
+          "*.info",
+          "*.dev"
+        ],
+        "mime": "text/html",
+        "status": 200,
+        "language": "eng"
+      },
+      "accepted": [],
+      "draws": [],
+      "note": "The Common Crawl index returned no page counts for any TLD in the frame for the whole run. Nothing was drawn and nothing was added to the corpus."
+    },
+    {
+      "ranAt": "2026-08-24T20:27:04.062Z",
+      "crawl": "CC-MAIN-2026-34",
+      "seed": 99,
+      "perStratum": 1,
+      "frame": {
+        "tlds": [
+          "*.com",
+          "*.org",
+          "*.net",
+          "*.edu",
+          "*.gov",
+          "*.io",
+          "*.co.uk",
+          "*.de",
+          "*.ca",
+          "*.au",
+          "*.info",
+          "*.dev"
+        ],
+        "mime": "text/html",
+        "status": 200,
+        "language": "eng"
+      },
+      "accepted": [],
+      "draws": []
+    },
+    {
+      "ranAt": "2026-08-24T20:34:07.426Z",
+      "crawl": "CC-MAIN-2026-34",
+      "seed": 11,
+      "perStratum": 12,
+      "frame": {
+        "tlds": [
+          "*.com",
+          "*.org",
+          "*.net",
+          "*.edu",
+          "*.gov",
+          "*.io",
+          "*.co.uk",
+          "*.de",
+          "*.ca",
+          "*.au",
+          "*.info",
+          "*.dev"
+        ],
+        "mime": "text/html",
+        "status": 200,
+        "language": "eng"
+      },
+      "accepted": [],
+      "draws": []
+    }
+  ]
+}

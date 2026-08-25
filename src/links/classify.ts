@@ -338,8 +338,16 @@ export function classifyLink(
  * The fragment this href names IN THIS DOCUMENT, or null when it leads away.
  * Handles `#x`, `?q=1#x` against the same path, and the absolute form of the
  * page's own URL. An href of `#` alone was already taken as an action.
+ *
+ * Exported because the RENDERER has to ask the same question. `navigate` in
+ * `scene/scene-graph.tsx` used to test `href.startsWith("#")`, which is only
+ * the first of the three forms above — so a table of contents that emitted
+ * `/page.html#section` (the server-rendered shape) was classified `here` by
+ * this file and then navigated as an external destination by that one, opening
+ * a NEW TAB on the document the reader was already standing in and throwing
+ * away their corridor. One definition, both callers.
  */
-function sameDocumentFragment(
+export function sameDocumentFragment(
   href: string,
   pageUrl: string | null,
 ): string | null {

@@ -38,6 +38,9 @@ import type { Locus, Region } from "./types";
  */
 export type LinkDirection = "up" | "lateral" | "down" | "here" | "inline";
 
+/** The two halves a lateral run fills. */
+export type LateralSide = "right" | "left";
+
 /** In legend order: up, lateral, here, down, inline. */
 export const DIRECTIONS: readonly LinkDirection[] = [
   "up",
@@ -62,13 +65,42 @@ export const DIRECTIONS: readonly LinkDirection[] = [
  */
 const DIRECTION_MARKS: Record<LinkDirection, string> = {
   up: "▴", // ▴ small up-pointing triangle
-  lateral: "▸", // ▸ small right-pointing triangle
+  lateral: "▸", // ▸ small right-pointing triangle — the RIGHT-hand sibling
   here: "•", // • filled dot: a pointer, not a direction
   down: "▾", // ▾ small down-pointing triangle
   inline: "", // operational links get nothing
 };
 
+/**
+ * The left-hand sibling's mark.
+ *
+ * `lateral` is one KIND but two SIDES: the spec says siblings fill right and
+ * overflow left, so on any page with more siblings than one side's window,
+ * half the doors are on the reader's left. Drawing `▸` beside every one of
+ * them told those readers to turn the wrong way — the mark and the geometry
+ * disagreed, which is the single thing the legend exists to prevent ("the
+ * mark's orientation reinforces the same legend the geometry uses").
+ *
+ * The kind is still one kind; `directionFor` still returns `lateral` and the
+ * census still counts one bucket. Only the glyph knows about hands.
+ */
+const LATERAL_LEFT_MARK = "◂"; // ◂ small left-pointing triangle
+
 export function markFor(d: LinkDirection): string {
+  return DIRECTION_MARKS[d];
+}
+
+/**
+ * The mark for a link whose door has actually been placed, so the side is
+ * known. Anything that is not a lateral ignores the side, and a lateral whose
+ * side has not been decided yet keeps the right-hand default — sides are
+ * filled right-first, so that is the likelier answer as well as the old one.
+ */
+export function markForSide(
+  d: LinkDirection,
+  side: LateralSide | null | undefined,
+): string {
+  if (d === "lateral" && side === "left") return LATERAL_LEFT_MARK;
   return DIRECTION_MARKS[d];
 }
 
@@ -137,9 +169,6 @@ export function directionOf(link: { region: Region; locus: Locus }): LinkDirecti
 }
 
 // ── Lateral overflow ─────────────────────────────────────────────────────
-
-/** The two halves a lateral run fills. */
-export type LateralSide = "right" | "left";
 
 /**
  * Which side of the reader each sibling takes.

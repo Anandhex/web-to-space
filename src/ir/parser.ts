@@ -3,6 +3,7 @@ import {
   INLINE_TAGS,
   INTERACTIVE_ROLES,
   LANDMARK_ROLES,
+  MEDIA_LEAF_TAGS,
   PRUNE_SELECTORS,
   SKIP_TAGS,
   WRAPPER_TAGS,
@@ -17,6 +18,7 @@ import type {
   IRFallbackEntry,
   IRNode,
   IRNodeAttributes,
+  IRGrouping,
   IRRole,
   LandmarkRecord,
   LandmarkTOCNode,
@@ -36,6 +38,7 @@ import {
   isAccessibilityHidden,
   createEmptyAttributes,
   isListCandidate,
+  isProseBlock,
   hydrateRelations,
   areStructurallySimilar,
   getSemanticSignature,
@@ -612,6 +615,7 @@ async function createNode(
   }
 
   ctx.nodes[id] = createBaseNode(id, resolvedRole, parentId, ctx, {
+    sourceTag: tag,
     level: roleInfo.level,
     label,
     content: (() => {
@@ -1081,9 +1085,29 @@ function handleFigureSythenticCreation(
     readingDepth: readingDepth + 1,
   });
 
+  // The caption is emitted as a NODE, not only as the figure's label. It was
+  // reaching the scene either way — `mapFigure` falls back to `node.label` — but
+  // a label is not part of the IR's text, so the caption of every captioned
+  // figure was invisible to anything reading the tree, and the evaluation scored
+  // all of it as content the parser had deleted. `mapFigure` prefers a
+  // caption-role child over the label, so the rendered result is unchanged.
+  const children = [imgId];
+  const captionText = captionEl?.textContent?.trim() || null;
+  if (captionText) {
+    const captionId = `${id}-caption-${ctx.counters.node++}`;
+    ctx.nodes[captionId] = createBaseNode(captionId, "caption", id, ctx, {
+      label: captionText,
+      content: captionText,
+      sourceTag: captionEl ? captionEl.tagName.toLowerCase() : null,
+      readingDepth: readingDepth + 1,
+    });
+    if (captionEl) ctx.elementToNodeId.set(captionEl, captionId);
+    children.push(captionId);
+  }
+
   ctx.nodes[id] = createBaseNode(id, "figure", parentId, ctx, {
     label: caption,
-    children: [imgId],
+    children,
     attributes: { ...createEmptyAttributes(), src, href },
     readingDepth,
   });
@@ -1199,6 +1223,12 @@ async function createListItem(
   landmarkParentId: string,
   ctx: BuildContext,
   readingDepth: number,
+  /**
+   * Set when this item exists because a run of siblings was grouped, rather
+   * than because the author wrote an `<li>`. Recorded on the node so a
+   * disagreement with a human annotation can be attributed to the grouping.
+   */
+  grouping: IRGrouping | null = null,
 ): Promise<string> {
   const id = `${parentId}-item-${ctx.counters.node++}`;
 
@@ -1265,6 +1295,8 @@ async function createListItem(
   }
 
   ctx.nodes[id] = createBaseNode(id, "listitem", parentId, ctx, {
+    sourceTag: contentEl.tagName.toLowerCase(),
+    grouping,
     label:
       resolveNodeLabel(contentEl, ctx.config, ctx.doc) ||
       resolveNodeLabel(element, ctx.config, ctx.doc),
@@ -1338,14 +1370,39 @@ async function handleListRun(
   const isBelowMinimumRunLength = run.length < ctx.config.minListRun;
   if (isBelowMinimumRunLength) return null;
 
+  // A list is homogeneous — that is what makes it a list rather than a sequence
+  // of different things. This handler REPLACES every member's role with
+  // `listitem`, so a run that mixes a paragraph in with other shapes costs the
+  // paragraph its role, and the signature test above is loose enough by design
+  // (one optional role's difference) to let that happen: on the div-soup fixture
+  // a heading, two paragraphs and a figure were collected as one four-item list.
+  //
+  // So if any member reads as prose, they all must. Card grids are unaffected —
+  // a card carries a heading or its own block structure inside it, and
+  // `isProseBlock` rejects anything that does.
+  const proseMembers = run.filter((el) => isProseBlock(el, ctx.config)).length;
+  const isMixedRun = proseMembers > 0 && proseMembers < run.length;
+  if (isMixedRun) return null;
+
   const listId = `${parentId}-list-${ctx.counters.section++}`;
   const listChildren = await Promise.all(
     run.map((item) =>
-      createListItem(item, listId, landmarkParentId, ctx, readingDepth + 1),
+      createListItem(
+        item,
+        listId,
+        landmarkParentId,
+        ctx,
+        readingDepth + 1,
+        "list-run",
+      ),
     ),
   );
 
+  // Synthesised: there is no `<ul>` in the markup. `sourceTag: null` plus
+  // `grouping` is what lets the evaluation separate "the parser thinks this is a
+  // list" from "the parser grouped a run of siblings so they lay out together".
   ctx.nodes[listId] = createBaseNode(listId, "list", parentId, ctx, {
+    grouping: "list-run",
     children: listChildren,
     attributes: { ...createEmptyAttributes(), listType: "unordered" },
     readingDepth,
@@ -1397,6 +1454,7 @@ async function handleLinkRun(
     parentId: landmarkParentId,
   });
   ctx.nodes[navId] = createBaseNode(navId, "navigation", parentId, ctx, {
+    grouping: "link-run",
     label: inferredLabel,
     unlabelledYet: false,
     landmark: true,
@@ -1415,12 +1473,22 @@ async function handleParagraphRun(
   ctx: BuildContext,
   readingDepth: number,
 ): Promise<{ id: string; endIndex: number } | null> {
+  // Matched to whatever opened the run. A `<p>` run stays a `<p>` run — the
+  // shape test is not applied to well-authored markup, where the tag is already
+  // the author's answer and a short paragraph is still a paragraph. A run that
+  // opened on a prose-shaped `<div>` continues through prose-shaped blocks of
+  // any tag, which is how div soup reaches this handler at all.
+  const opensOnParagraph = peelSibling(siblings[index], ctx).element.tagName.toLowerCase() === "p";
+  const belongs = opensOnParagraph
+    ? (candidate: Element) => candidate.tagName.toLowerCase() === "p"
+    : (candidate: Element) => isProseBlock(candidate, ctx.config);
+
   const { run, endIndex } = collectSiblingRun(
     siblings,
     index,
     ctx,
     peelSibling,
-    (candidate) => candidate.tagName.toLowerCase() === "p",
+    belongs,
   );
 
   const isBelowMinimumRunLength = run.length < ctx.config.minParagraphRun;
@@ -1466,7 +1534,12 @@ async function buildChildrenFromSiblings(
 
     const isHiddenAndExcluded =
       ctx.config.excludeHiddenContent && isAccessibilityHidden(child);
-    const isSkippedTag = ctx.skipTags.has(tag);
+
+    // Media leaves are tested BEFORE the skip set, which contains them so that
+    // nothing walks into their drawing instructions. Testing skip first made
+    // this branch dead code for the only two tags it handles.
+    const isMediaLeaf = MEDIA_LEAF_TAGS.has(tag);
+    const isSkippedTag = ctx.skipTags.has(tag) && !isMediaLeaf;
 
     const shouldIgnoreNode = isHiddenAndExcluded || isSkippedTag;
     if (shouldIgnoreNode) {
@@ -1474,7 +1547,6 @@ async function buildChildrenFromSiblings(
       continue;
     }
 
-    const isMediaLeaf = tag === "svg" || tag === "canvas";
     if (isMediaLeaf) {
       childIds.push(
         handleMediaLeaf(child, liftedAttrs, parentId, ctx, readingDepth),
@@ -1537,7 +1609,7 @@ async function buildChildrenFromSiblings(
           readingDepth,
           parentIsLandmark,
         );
-      else if (tag === "p")
+      else if (tag === "p" || isProseBlock(child, ctx.config))
         result = await handleParagraphRun(
           siblings,
           index,
@@ -1644,8 +1716,83 @@ function pruneUIChrome(
     } catch {}
   }
 
+  prunePageChrome(doc);
   pruneResponsiveDuplicates(doc);
   pruneEmptyContainers(doc, includeSvg, includeCanvas);
+}
+
+/** Characters of text that must survive chrome pruning for it to go ahead. */
+const MIN_SURVIVING_TEXT = 200;
+
+/** Sectioning elements that scope a `<header>`/`<footer>` to their own content. */
+const HEADER_SCOPING = "article, aside, main, nav, section";
+
+/**
+ * Remove the page's own furniture: masthead, footer, and site menus.
+ *
+ * The scene does not render page chrome, and until now the only thing enforcing
+ * that was the `<main>` slice — which starts the document at `<main>` and
+ * discards its earlier siblings. That works on a page that HAS a `<main>`. A
+ * forum thread does not, so its masthead, its footer and its site menu all
+ * survived into the IR, and the pipeline rejected 26 of 50 chrome units on the
+ * one such page in the corpus.
+ *
+ * Two limits keep this from eating documents:
+ *
+ *   • **Page-level only.** HTML's accessibility mapping makes `<header>` a
+ *     `banner` and `<footer>` a `contentinfo` only when they are not inside
+ *     `article`, `aside`, `main`, `nav` or `section`. A forum post's own
+ *     `<header class="message-attribution">` is the post's, not the site's, and
+ *     removing it would delete the author and the timestamp of every message.
+ *   • **Site menus only.** A `<nav>` whose links are mostly same-page fragments
+ *     is a table of contents — part of the document — and stays. See
+ *     `isDocumentNavigation`.
+ */
+function prunePageChrome(doc: Document): void {
+  const body = doc.body;
+  if (!body) return;
+
+  const doomed: Element[] = [];
+  for (const el of Array.from(
+    doc.querySelectorAll('header, footer, [role="banner"], [role="contentinfo"]'),
+  )) {
+    const tag = el.tagName.toLowerCase();
+    const explicit = tag !== "header" && tag !== "footer";
+    if (!explicit && el.parentElement?.closest(HEADER_SCOPING)) continue;
+    // Never remove a region that contains the document itself. Some templates
+    // wrap everything, `<main>` included, in a `<header>`-tagged shell.
+    if (el.querySelector('main, [role="main"]')) continue;
+    doomed.push(el);
+  }
+  for (const nav of Array.from(doc.querySelectorAll('nav, [role="navigation"]'))) {
+    if (isDocumentNavigation(nav)) continue;
+    if (nav.querySelector('main, [role="main"]')) continue;
+    doomed.push(nav);
+  }
+
+  // Only the outermost doomed regions carry text that is actually lost — a
+  // `<nav>` inside a `<header>` is inside a region already going. Summing them
+  // all double-counted, and on the MDN landmark-roles page produced a "doomed"
+  // total of 110% of the body, which tripped the guard below and abandoned the
+  // whole prune: the sidebar it was written to remove survived intact and the
+  // page rejected 41% of its boilerplate.
+  const outermost = doomed.filter(
+    (el) => !doomed.some((other) => other !== el && other.contains(el)),
+  );
+
+  // A page that is nothing but chrome is a page this cannot help with, and
+  // emptying it would turn a bad parse into no parse at all. The test is on what
+  // SURVIVES, against an absolute floor — a ratio is the wrong instrument, since
+  // a short reference page with a large sidebar can legitimately be mostly
+  // chrome by character count and still have an article worth reading.
+  const bodyText = (body.textContent ?? "").replace(/\s+/g, "").length;
+  let doomedText = 0;
+  for (const el of outermost) {
+    doomedText += (el.textContent ?? "").replace(/\s+/g, "").length;
+  }
+  if (bodyText - doomedText < MIN_SURVIVING_TEXT) return;
+
+  for (const el of outermost) el.parentNode?.removeChild(el);
 }
 
 /**
@@ -1734,6 +1881,65 @@ function findSkipToMainTarget(doc: Document): string | null {
   return null;
 }
 
+/**
+ * Is this navigation region about THIS DOCUMENT, or about the site?
+ *
+ * The distinction decides whether the reader loses something when it is
+ * dropped. A table of contents is part of the document — it is how a reader
+ * moves through a long specification, and in this browser same-page `#fragment`
+ * links are a first-class navigation affordance. A site menu is chrome: it is
+ * the same on every page, the scene deliberately does not render it, and
+ * `boilerplateRejection` credits dropping it.
+ *
+ * The signal that separates them cleanly is where the links point. Measured
+ * across the corpus, document navigation is entirely same-page —
+ * Wikipedia's "Contents" 100% of 4 links, the WAI-ARIA "toc" 100% of 108 — and
+ * site navigation is essentially never: "Primary navigation" 5% of 184,
+ * "Site" 0% of 12, "Page tools" 6% of 16. There is no overlap to arbitrate.
+ */
+function isDocumentNavigation(nav: Element): boolean {
+  const links = Array.from(nav.querySelectorAll("a[href]"));
+  if (links.length < 2) return false;
+  let fragments = 0;
+  for (const a of links) {
+    const href = a.getAttribute("href") ?? "";
+    if (href.startsWith("#") && href.length > 1) fragments++;
+  }
+  return fragments / links.length >= 0.5;
+}
+
+/**
+ * Recover document navigation that the `<main>` slice threw away.
+ *
+ * `parsePageToIR` starts the document at `<main>` (or at the skip-link target)
+ * and discards every earlier sibling, which is right for the page shell and
+ * wrong for anything else that happens to sit there. On Wikipedia's Vector
+ * skin the table of contents lives OUTSIDE `<main>`, so the slice deleted the
+ * one piece of navigation a reader of a long article actually needs — the whole
+ * contents rail, gone, on every Wikipedia page in the corpus.
+ *
+ * Only document navigation comes back. Site menus stay dropped, which is the
+ * documented behaviour and the thing the scene wants.
+ */
+function rescueDocumentNavigation(
+  doc: Document,
+  kept: Element[],
+): Element[] {
+  const covered = (el: Element): boolean =>
+    kept.some((k) => k === el || k.contains(el));
+
+  const found: Element[] = [];
+  for (const nav of Array.from(doc.querySelectorAll('nav, [role="navigation"]'))) {
+    if (nav.closest("header, footer")) continue;
+    if (covered(nav)) continue;
+    if (!isDocumentNavigation(nav)) continue;
+    // Outermost wins: a contents rail wrapped in another nav is one thing.
+    if (found.some((f) => f.contains(nav))) continue;
+    found.push(nav);
+  }
+  return found;
+}
+
 export const parsePageToIR = async (
   htmlString: string,
   url: string,
@@ -1783,6 +1989,11 @@ export const parsePageToIR = async (
       bodyChildren = getValidChildren(mainEl, skipTags);
     }
   }
+
+  // Document navigation that the slice discarded comes back, ahead of the body
+  // it describes — which is also where a reader expects a contents list.
+  const rescuedNav = rescueDocumentNavigation(parsedDoc, bodyChildren);
+  if (rescuedNav.length > 0) bodyChildren = [...rescuedNav, ...bodyChildren];
 
   const nodes: Record<string, IRNode> = {};
   const fallbackLog: IRFallbackEntry[] = [];

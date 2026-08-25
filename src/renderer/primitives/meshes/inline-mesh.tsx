@@ -20,7 +20,7 @@ import {
   NavigateContext,
 } from "../contexts";
 import { useLinkBinding, usePageLinks } from "../../scene/contexts";
-import { MARK_SEPARATOR, markFor } from "../../../links/direction";
+import { MARK_SEPARATOR, markForSide } from "../../../links/direction";
 import {
   ClippedText,
   buildInlineRows,
@@ -152,7 +152,12 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
   const { lit, setLit } = useLinkBinding();
   const isLit = lit !== null && lit === primitive.id;
   const direction = pageLinks?.directionOf(primitive.id) ?? null;
-  const mark = direction ? MARK_SEPARATOR + markFor(direction) : "";
+  // Side-aware: see `markForSide`. A link card for a sibling whose door went
+  // to the reader's left draws `◂`.
+  const mark = direction
+    ? MARK_SEPARATOR +
+      markForSide(direction, pageLinks?.sideOf(primitive.id) ?? null)
+    : "";
 
   // The whole label plus its mark is one link run: one range covering the
   // string troika is handed, which useLinkRects turns into per-line rects.

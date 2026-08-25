@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Link Direction Test — Chapter Two</title>
+</head>
+<!--
+  The second sibling. It carries the #second-half anchor the hub links to, so
+  the "fragment of ANOTHER document" case has something to land on: that link
+  must be lateral (a trip to this page) and not `here`.
+-->
+<body>
+  <header>
+    <nav aria-label="Breadcrumb">
+      <a href="/">Site root</a>
+      <a href="index.html">Link test hub</a>
+      <a href="chapter-two.html" aria-current="page">Chapter two</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Chapter Two</h1>
+    <p>
+      The second sibling. Every route into this page — <code>./chapter-two.html</code>
+      from the hub, <code>chapter-two.html</code> from chapter one,
+      <code>/link-test/chapter-two.html</code> from anywhere — is the same
+      document, and the door budget should fold them into one destination.
+    </p>
+
+    <section aria-labelledby="c2-first-title">
+      <h2 id="c2-first-title">First half</h2>
+      <p>
+        Back to <a href="index.html">the hub</a>, across to
+        <a href="chapter-one.html">chapter one</a>, or out to
+        <a href="https://en.wikipedia.org/wiki/Hypertext">Wikipedia on hypertext</a>.
+      </p>
+    </section>
+
+    <section aria-labelledby="second-half">
+      <h2 id="second-half">Second half</h2>
+      <p>
+        This is what <code>chapter-two.html#second-half</code> points at from the
+        hub. Arriving here means the cross-document fragment was treated as a
+        journey, not as a pointer at something already on screen.
+      </p>
+      <p>
+        Once you are here, <a href="#c2-first-title">the first half</a> IS a
+        same-document pointer, and should read that way.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <nav aria-label="Footer">
+      <a href="/">Home</a>
+      <a href="/link-test/index.html">Link test hub</a>
+    </nav>
+  </footer>
+</body>
+</html>

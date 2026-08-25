@@ -27,7 +27,13 @@ import { ClippedText } from "../inline";
 import { proxyImageSrc } from "../../../proxy";
 import {
   imageCaptionBandHeight,
+  fitImageAltText,
   IMAGE_CAPTION_FONT_SIZE,
+  IMAGE_CAPTION_LINE_HEIGHT,
+  IMAGE_CAPTION_X_INSET,
+  IMAGE_ALT_FONT_SIZE,
+  IMAGE_ALT_X_INSET,
+  IMAGE_ALT_Y_INSET,
 } from "../../../layout/positionConfigs";
 
 interface XRMediaMeshProps {
@@ -204,6 +210,13 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
   // bare filename such as "CDel_node.png" as if it were a real caption.
   const [loadFailed, setLoadFailed] = React.useState(false);
 
+  // Fitted once per box/text change rather than per frame — clamping walks the
+  // whole alt string.
+  const fittedAlt = React.useMemo(
+    () => fitImageAltText(primitive.alt ?? primitive.label ?? "", w, imgH),
+    [primitive.alt, primitive.label, w, imgH],
+  );
+
   React.useEffect(() => {
     setTexture(null);
     setLoadFailed(false);
@@ -289,17 +302,27 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
         />
       </mesh>
 
-      {loadFailed && (primitive.alt ?? primitive.label) && (
+      {/* Alt text, shown only when the image could not be drawn. Top-anchored
+          INSIDE the box and clamped to the lines that fit it: the engine sized
+          this entry for the image, not for the alt, so an unclamped run (this
+          was bottom-anchored, with no line budget) grew up out of the box and
+          over the paragraph above the figure. */}
+      {loadFailed && fittedAlt && (
         <ClippedText
           anchorX="left"
-          anchorY="bottom"
-          position={[0.03, -imgH + 0.02, Z_LAYER_OVERLAY_TEXT]}
+          anchorY="top"
+          position={[
+            IMAGE_ALT_X_INSET,
+            -IMAGE_ALT_Y_INSET,
+            Z_LAYER_OVERLAY_TEXT,
+          ]}
           renderOrder={RENDER_ORDER_TEXT}
-          fontSize={0.016}
+          fontSize={IMAGE_ALT_FONT_SIZE}
           color={theme.bodyCol}
-          maxWidth={w - 0.06}
+          maxWidth={w - IMAGE_ALT_X_INSET * 2}
+          lineHeight={IMAGE_CAPTION_LINE_HEIGHT}
         >
-          {primitive.alt ?? primitive.label ?? ""}
+          {fittedAlt}
         </ClippedText>
       )}
 
@@ -309,12 +332,16 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
         <ClippedText
           anchorX="left"
           anchorY="top"
-          position={[0.004, -imgH - 0.006, Z_LAYER_OVERLAY_TEXT]}
+          position={[
+            IMAGE_CAPTION_X_INSET,
+            -imgH - 0.006,
+            Z_LAYER_OVERLAY_TEXT,
+          ]}
           renderOrder={RENDER_ORDER_TEXT}
           fontSize={IMAGE_CAPTION_FONT_SIZE}
           color={theme.mutedTextCol}
-          maxWidth={w - 0.008}
-          lineHeight={1.35}
+          maxWidth={w - IMAGE_CAPTION_X_INSET * 2}
+          lineHeight={IMAGE_CAPTION_LINE_HEIGHT}
         >
           {primitive.caption}
         </ClippedText>

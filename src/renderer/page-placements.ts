@@ -1776,6 +1776,13 @@ export interface SectionLink {
   axis?: "up" | "down" | "left" | "right";
   /** The way back. Drawn first, nearest the reader, and never reassigned. */
   isReturn?: boolean;
+  /**
+   * The anchor primitive this door came from (`SpatialLink.id`). Carried so
+   * the view can tell the inline mark which hand the door ended up on — see
+   * `PageLinksApi.sideOf`. Absent for a door built from navigation memory,
+   * which has no anchor on this page.
+   */
+  linkId?: string;
 }
 
 /** Where the reader stands in the building, and which way they face. */

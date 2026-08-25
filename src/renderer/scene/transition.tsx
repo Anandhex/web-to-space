@@ -32,11 +32,11 @@
  */
 import React from "react";
 import { Text } from "@react-three/drei";
-import { useFrame, useThree } from "@react-three/fiber";
+import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 
 import { useTheme } from "../theme";
-import { headWorldPose } from "./xr-locomotion";
+import { useHeadAnchor } from "./head-anchor";
 import { FontContext } from "./contexts";
 import { markForAxis } from "./link-doors";
 import type { Axis } from "../../links/memory";
@@ -44,12 +44,13 @@ import type { Axis } from "../../links/memory";
 /** Panel size, metres. Smaller than the minimap: it is a status, not a map. */
 const W = 0.26;
 const H = 0.05;
-/** Distance from the eye, matching the minimap so the corner reads as one. */
-const DIST = 0.85;
-/** Directly above the minimap, which sits at (−0.33, −0.24). */
+/**
+ * Directly above the minimap, which sits at (−0.33, −0.24). The distance and
+ * the follow are the minimap's too — the two panels are one corner as far as
+ * the reader is concerned, so they obey one rule: see scene/head-anchor.ts.
+ */
 const OFF_X = -0.33;
 const OFF_Y = -0.12;
-const FOLLOW = 0.06;
 /** Seconds for the travelling mark to cross its track once. */
 const SWEEP_S = 1.1;
 
@@ -113,41 +114,13 @@ export function TransitionMark({
 }) {
   const theme = useTheme();
   const fontType = React.useContext(FontContext);
-  const camera = useThree((s) => s.camera);
   const group = React.useRef<THREE.Group>(null);
-  const target = React.useRef(new THREE.Vector3());
-  const eye = React.useRef(new THREE.Vector3());
-  const quat = React.useRef(new THREE.Quaternion());
-  const settled = React.useRef(false);
-
   const visible = Boolean(pending);
-
-  useFrame(() => {
-    const g = group.current;
-    if (!g || !visible) return;
-    try {
-      // The head in WORLD space — `camera.position` is the player-frame pose
-      // inside a session, and this mark rides beside the minimap, which was
-      // displaced by the recentre for exactly that reason. See headWorldPose.
-      headWorldPose(camera, eye.current, quat.current);
-      target.current.set(OFF_X, OFF_Y, -DIST).applyQuaternion(quat.current);
-      target.current.add(eye.current);
-      if (!settled.current) {
-        g.position.copy(target.current);
-        g.quaternion.copy(quat.current);
-        settled.current = true;
-        return;
-      }
-      g.position.lerp(target.current, FOLLOW);
-      g.quaternion.slerp(quat.current, FOLLOW);
-    } catch {
-      // See Sweep.
-    }
-  });
-
-  React.useEffect(() => {
-    if (!visible) settled.current = false;
-  }, [visible]);
+  // The same follow the minimap uses, guard included. It did NOT used to
+  // include the guard: this mark is on screen for the whole of a move, so a
+  // teleport or the one-shot recentre landing mid-fetch used to drag it
+  // through the world instead of putting it back.
+  useHeadAnchor(group, OFF_X, OFF_Y, visible);
 
   if (!pending) return null;
 

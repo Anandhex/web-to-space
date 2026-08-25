@@ -15,7 +15,12 @@
     "test:memory": "tsx src/links/__tests__/memory.ts",
     "test:slots": "tsx src/links/__tests__/slots.ts",
     "test:minimap": "tsx src/renderer/scene/__tests__/minimap-layout.ts",
-    "verify:vips": "tsx src/eval/verify-vips-visual.ts"
+    "test:travel": "tsx src/renderer/scene/__tests__/travel-motion.ts",
+    "gold:fetch": "tsx src/eval/gold/fetch-corpus.ts",
+    "gold:provisional": "tsx src/eval/gold/provisional.ts",
+    "gold:annotate": "tsx src/eval/gold/build-annotator.ts",
+    "evaluate": "node --max-old-space-size=8192 --import tsx src/eval/run-evaluation.ts",
+    "gold:lint": "tsx src/eval/gold/lint.ts"
   },
   "devDependencies": {
     "@types/jsdom": "^28.0.3",
@@ -24,6 +29,7 @@
     "@types/three": "^0.184.1",
     "@vitejs/plugin-react": "^6.0.2",
     "jsdom": "^29.1.1",
+    "playwright": "^1.62.1",
     "tsx": "^4.23.1",
     "typescript": "~6.0.2",
     "vite": "^8.0.10"

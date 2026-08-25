@@ -170,6 +170,9 @@ export function PrimitiveDispatcher({
   // XRComplementary branch to turn a nested aside's parent-relative y into the
   // world y that clip planes are evaluated in.
   const parentPanelOriginY = React.useContext(PanelOriginYContext);
+  // The scene's own navigation, for the branches whose local handling is
+  // narrower than the full question of where an href leads.
+  const navigateFromScene = React.useContext(NavigateContext);
   const cardTile = cardTileColor(theme, insideCard);
 
   const renderChild = useCallback(
@@ -307,16 +310,25 @@ export function PrimitiveDispatcher({
       );
     }
     case "XRNavigationBar": {
+      // A nav bar's own paging shortcut, kept because it can jump straight to
+      // a primitive id without a DOM id in between. It is deliberately narrow,
+      // so anything it does not recognise — a fragment carried on an absolute
+      // href, a link that leads off the page — hands over to the scene's
+      // `navigate`, which knows the source URL and can tell a same-document
+      // reference from a departure. Returning silently instead, as this did,
+      // left every nav entry that was not a bare `#id` doing nothing at all.
       const onNavigate = (href: string) => {
         const sectionId = href.startsWith("#") ? href.slice(1) : href;
         const sectionEntry = plan.entries[sectionId];
-        if (!sectionEntry || sectionEntry.pageIndex === undefined) return;
-        for (const [, p] of primitiveMap) {
-          if (p.type === "XRContentPanel" && hasDescendant(p, sectionId)) {
-            setPage(p.id, sectionEntry.pageIndex);
-            return;
+        if (sectionEntry?.pageIndex !== undefined) {
+          for (const [, p] of primitiveMap) {
+            if (p.type === "XRContentPanel" && hasDescendant(p, sectionId)) {
+              setPage(p.id, sectionEntry.pageIndex);
+              return;
+            }
           }
         }
+        navigateFromScene?.(href);
       };
       return (
         <AtPos entry={entry}>

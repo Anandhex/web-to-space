@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Link Direction Test — Chapter One</title>
+</head>
+<!--
+  A real destination for the hub's relative and root-relative links, so a door
+  opens on a document that names itself rather than on a 404. It carries its
+  own corridor: back to the hub (lateral), on to chapter two (lateral), up to
+  the site nav, and down to two external references.
+-->
+<body>
+  <header>
+    <nav aria-label="Breadcrumb">
+      <a href="/">Site root</a>
+      <a href="index.html">Link test hub</a>
+      <a href="chapter-one.html" aria-current="page">Chapter one</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Chapter One</h1>
+    <p>
+      You arrived here from the hub. If the door you took was labelled
+      <em>chapter one</em> and this heading says Chapter One, the relative href
+      resolved against the right base.
+    </p>
+
+    <section aria-labelledby="c1-onward-title">
+      <h2 id="c1-onward-title">Onward</h2>
+      <p>
+        The corridor continues to <a href="chapter-two.html">chapter two</a> and
+        down one level to <a href="deep/nested.html">the nested page</a>. Going
+        back is <a href="index.html">the hub</a> — which is also what the
+        reserved return door should offer, on the axis you arrived from, without
+        this link being needed at all.
+      </p>
+      <p>
+        Leaving the site entirely:
+        <a href="https://www.w3.org/TR/webxr/">the WebXR specification</a> and
+        <a href="https://developer.mozilla.org/en-US/docs/Web/HTML/Element/a">MDN
+        on the anchor element</a>.
+      </p>
+    </section>
+
+    <section aria-labelledby="c1-here-title">
+      <h2 id="c1-here-title">Same page</h2>
+      <p>
+        A pointer back at <a href="#c1-onward-title">the section above</a>, which
+        this view already draws.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <nav aria-label="Footer">
+      <a href="/">Home</a>
+      <a href="/test-elements.html">Elements</a>
+    </nav>
+  </footer>
+</body>
+</html>

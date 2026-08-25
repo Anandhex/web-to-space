@@ -1,0 +1,176 @@
+{
+  "generatedAt": "2026-08-24T21:16:14.543Z",
+  "entries": [
+    {
+      "page": "beepvip.soluntec.net-en-gb-quienes-somos-1",
+      "url": "https://beepvip.soluntec.net/en_GB/quienes-somos-1",
+      "stratum": "S1",
+      "fetchedAt": "2026-08-24T20:09:25.619Z",
+      "sampling": "random",
+      "archiver": "fetch+stamp",
+      "bytes": 38657
+    },
+    {
+      "page": "developer.mozilla.org-en-us-docs-web-accessibility-aria-roles-landmark-role",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Roles/landmark_role",
+      "stratum": "S5",
+      "fetchedAt": "2026-08-24T09:56:05.606Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 172392
+    },
+    {
+      "page": "developer.mozilla.org-en-us-docs-web-api-webxr-device-api",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/API/WebXR_Device_API",
+      "stratum": "S4",
+      "fetchedAt": "2026-08-24T09:56:05.827Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 168996
+    },
+    {
+      "page": "divsoup-blog",
+      "url": "file:///Users/anandpatil/Documents/Projects/web/javascript/from-space-to-web/src/eval/corpus/divsoup-blog.html",
+      "stratum": "S2",
+      "fetchedAt": "2026-08-24T09:56:18.186Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 3063
+    },
+    {
+      "page": "docs-page",
+      "url": "file:///Users/anandpatil/Documents/Projects/web/javascript/from-space-to-web/src/eval/corpus/docs-page.html",
+      "stratum": "S3",
+      "fetchedAt": "2026-08-24T09:56:18.191Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 2364
+    },
+    {
+      "page": "en.wikipedia.org-wiki-hypertext",
+      "url": "https://en.wikipedia.org/wiki/Hypertext",
+      "stratum": "S4",
+      "fetchedAt": "2026-08-24T09:56:06.417Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 409647
+    },
+    {
+      "page": "en.wikipedia.org-wiki-information-architecture",
+      "url": "https://en.wikipedia.org/wiki/Information_architecture",
+      "stratum": "S5",
+      "fetchedAt": "2026-08-24T09:56:06.706Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 227629
+    },
+    {
+      "page": "en.wikipedia.org-wiki-spatial-navigation",
+      "url": "https://en.wikipedia.org/wiki/Spatial_navigation",
+      "stratum": "S5",
+      "fetchedAt": "2026-08-24T11:56:59.283Z",
+      "sampling": "random",
+      "archiver": "chromium-render+stamp",
+      "bytes": 367576
+    },
+    {
+      "page": "en.wikipedia.org-wiki-vannevar-bush",
+      "url": "https://en.wikipedia.org/wiki/Vannevar_Bush",
+      "stratum": "S4",
+      "fetchedAt": "2026-08-24T09:56:08.137Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 923143
+    },
+    {
+      "page": "en.wikipedia.org-wiki-virtual-reality",
+      "url": "https://en.wikipedia.org/wiki/Virtual_reality",
+      "stratum": "S4",
+      "fetchedAt": "2026-08-24T09:56:09.713Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 1111337
+    },
+    {
+      "page": "forums.mangadex.org-threads-super-no-ura-de-yani-suu-futari-ch-60.2652618",
+      "url": "https://forums.mangadex.org/threads/super-no-ura-de-yani-suu-futari-ch-60.2652618/",
+      "stratum": "S3",
+      "fetchedAt": "2026-08-24T20:09:22.828Z",
+      "sampling": "random",
+      "archiver": "fetch+stamp",
+      "bytes": 101056
+    },
+    {
+      "page": "github.com-immersive-web-webxr",
+      "url": "https://github.com/immersive-web/webxr",
+      "stratum": "S4",
+      "fetchedAt": "2026-08-24T09:56:10.124Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 355289
+    },
+    {
+      "page": "html.spec.whatwg.org-multipage-links.html",
+      "url": "https://html.spec.whatwg.org/multipage/links.html",
+      "stratum": "S4",
+      "fetchedAt": "2026-08-24T09:56:11.135Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 567321
+    },
+    {
+      "page": "mesonet.agron.iastate.edu-gis-apps-rview-warnings.phtml",
+      "url": "https://mesonet.agron.iastate.edu/GIS/apps/rview/warnings.phtml?archive=&tz=CDT&cu=0&year=2026&month=07&day=12&hour=07&minute=35&tzoff=18000&sortdir=DESC&loop=0&sortcol=issue&c=yes&lon0=-99.87829589799998&lat0=46.63501358000008&warngeo=both",
+      "stratum": "S5",
+      "fetchedAt": "2026-08-24T20:09:28.270Z",
+      "sampling": "random",
+      "archiver": "fetch+stamp",
+      "bytes": 316233
+    },
+    {
+      "page": "semantic-article",
+      "url": "file:///Users/anandpatil/Documents/Projects/web/javascript/from-space-to-web/src/eval/corpus/semantic-article.html",
+      "stratum": "S3",
+      "fetchedAt": "2026-08-24T09:56:18.211Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 2939
+    },
+    {
+      "page": "solplanet.net-ua-successcases-rooftop-pv-solution-in-new-south-wales",
+      "url": "https://solplanet.net/ua/successcases/rooftop-pv-solution-in-new-south-wales",
+      "stratum": "S2",
+      "fetchedAt": "2026-08-24T20:09:24.223Z",
+      "sampling": "random",
+      "archiver": "fetch+stamp",
+      "bytes": 340991
+    },
+    {
+      "page": "www.asplinstudio.com-photographe-dsc-2591",
+      "url": "https://www.asplinstudio.com/photographe/dsc_2591/",
+      "stratum": "S5",
+      "fetchedAt": "2026-08-24T20:09:19.695Z",
+      "sampling": "random",
+      "archiver": "fetch+stamp",
+      "bytes": 91529
+    },
+    {
+      "page": "www.nngroup.com-articles-ten-usability-heuristics",
+      "url": "https://www.nngroup.com/articles/ten-usability-heuristics/",
+      "stratum": "S4",
+      "fetchedAt": "2026-08-24T09:56:11.367Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 157739
+    },
+    {
+      "page": "www.w3.org-tr-wai-aria-1.2",
+      "url": "https://www.w3.org/TR/wai-aria-1.2/",
+      "stratum": "S4",
+      "fetchedAt": "2026-08-24T09:56:18.177Z",
+      "sampling": "convenience",
+      "archiver": "fetch+stamp",
+      "bytes": 2010829
+    }
+  ]
+}

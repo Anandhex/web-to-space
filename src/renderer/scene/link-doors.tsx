@@ -39,15 +39,19 @@ import {
   type DirSlot,
   type DirSlots,
 } from "../../links/slots";
-import { markFor } from "../../links/direction";
+import { markFor, markForSide } from "../../links/direction";
+import type { LateralSide } from "../../links/direction";
 import { windowFor, type Axis } from "../../links/memory";
 
 /** The glyph a direction is drawn with — the anchor's mark, at door size. */
 const AXIS_MARK: Record<Axis, string> = {
   up: markFor("up"),
   down: markFor("down"),
-  left: markFor("lateral"),
-  right: markFor("lateral"),
+  // A door on the reader's left carries a left-pointing mark. It used to carry
+  // `▸` like its right-hand twin, which pointed the reader across the corridor
+  // at the wall opposite the door they were being told to take.
+  left: markForSide("lateral", "left"),
+  right: markForSide("lateral", "right"),
 };
 
 /** The lateral mark points right; a westward door mirrors it. */
@@ -106,6 +110,20 @@ export function useDoorSlots(
     () => buildSlots({ links, nav, budget }),
     [links, nav, budget],
   );
+
+  // Tell the inline marks which hand each sibling's door took, so a mark on
+  // the left-hand half of a lateral run draws `◂` and not `▸`. This view is
+  // the only thing that knows: the side falls out of the budget, which is the
+  // view's, not the classifier's.
+  const publishSides = pageLinks?.publishSides;
+  React.useEffect(() => {
+    if (!publishSides) return;
+    const sides = new Map<string, LateralSide>();
+    for (const axis of ["left", "right"] as const)
+      for (const slot of slots[axis])
+        if (slot.kind === "link" && slot.linkId) sides.set(slot.linkId, axis);
+    publishSides(sides);
+  }, [slots, publishSides]);
 
   const take = React.useCallback(
     (slot: DirSlot) => {

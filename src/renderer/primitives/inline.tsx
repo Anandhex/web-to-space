@@ -21,7 +21,7 @@ import { useTheme, type XRTheme } from "../theme";
 import { FontContext } from "../XRSceneRenderer";
 import { useClipPlanes, NavigateContext } from "./contexts";
 import { useLinkBinding, usePageLinks } from "../scene/contexts";
-import { MARK_SEPARATOR, markFor } from "../../links/direction";
+import { MARK_SEPARATOR, markForSide } from "../../links/direction";
 import { useConsumeScrollDrag } from "./scroll-viewport";
 import {
   usePanelCurve,
@@ -627,7 +627,11 @@ function ProseRow({
     (linkId: string | undefined): string => {
       if (!linkId || !pageLinks) return "";
       const d = pageLinks.directionOf(linkId);
-      return d ? MARK_SEPARATOR + markFor(d) : "";
+      // The SIDE, not just the kind: a sibling whose door the view put on the
+      // reader's left has to say so, or the mark sends them the wrong way.
+      return d
+        ? MARK_SEPARATOR + markForSide(d, pageLinks.sideOf(linkId))
+        : "";
     },
     [pageLinks],
   );

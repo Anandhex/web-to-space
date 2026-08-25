@@ -611,6 +611,70 @@ export function estimateTextLineCount(
 }
 
 /**
+ * Cut `text` down to the first `maxLines` lines it wraps to at `charsPerLine`,
+ * ending in an ellipsis when anything was dropped.
+ *
+ * The mirror of countWrappedLines: same greedy walk, same break-word rule, but
+ * it returns the text that survives instead of the count. Use it wherever the
+ * renderer draws into a box whose height was fixed by something OTHER than the
+ * text (an image's aspect ratio, a card's slot), where the alternative to
+ * clamping is glyphs drawn straight through the neighbouring block.
+ */
+export function clampTextToLines(
+  text: string,
+  charsPerLine: number,
+  maxLines: number,
+): string {
+  const cpl = Math.max(1, Math.floor(charsPerLine));
+  const max = Math.max(1, Math.floor(maxLines));
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+
+  const kept: string[] = [];
+  let lines = 1;
+  let col = 0; // chars already occupied on the current line
+
+  for (const w of words) {
+    const span = Math.ceil(w.length / cpl); // rows a break-word token spans
+    let nextLines: number;
+    let nextCol: number;
+    if (col === 0) {
+      nextLines = lines + span - 1;
+      nextCol = w.length - (span - 1) * cpl;
+    } else if (span === 1 && col + 1 + w.length <= cpl) {
+      nextLines = lines;
+      nextCol = col + 1 + w.length;
+    } else {
+      nextLines = lines + span;
+      nextCol = w.length - (span - 1) * cpl;
+    }
+    if (nextLines > max) return ellipsised(kept, cpl, max);
+    lines = nextLines;
+    col = nextCol;
+    kept.push(w);
+  }
+  return kept.join(" ");
+}
+
+/**
+ * Join the words that fit and mark the cut.
+ *
+ * The ellipsis is a character like any other: appended to a last word that
+ * already fills its line, it wraps to a line of its own and the clamped run is
+ * one line TALLER than the budget it was clamped to. So re-measure and drop
+ * trailing words until the marked text really fits.
+ */
+function ellipsised(kept: string[], charsPerLine: number, maxLines: number): string {
+  const words = [...kept];
+  while (words.length > 0) {
+    const marked = words.join(" ").replace(/[\s,;:.\u2013\u2014-]+$/, "") + "\u2026";
+    if (countWrappedLines(marked, charsPerLine) <= maxLines) return marked;
+    words.pop();
+  }
+  return "\u2026";
+}
+
+/**
  * Does the join between two adjacent inline runs need a space inserted?
  *
  * Segments come from adjacent ELEMENTS, and the browser almost always puts

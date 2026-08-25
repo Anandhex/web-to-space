@@ -63,7 +63,7 @@ import { runVipsVisual } from "../ir/vips-visual";
  * DOM element so every segmenter partitions the *same* set (alignment is by
  * `id`, never by re-matching text across algorithms).
  */
-interface AtomicUnit {
+export interface AtomicUnit {
   /** Stable index within the page (assignment order == document order). */
   id: number;
   /** The DOM element this unit corresponds to. */
@@ -78,7 +78,7 @@ interface AtomicUnit {
 /** How atomic-element weights were derived. Reported alongside every score. */
 export type WeightingMode = "pixel-area" | "text-length";
 
-interface AtomicUnitOptions {
+export interface AtomicUnitOptions {
   /**
    * Force a weighting mode. Omit to auto-detect: pixel area if the document
    * reports non-zero geometry, text length otherwise.
@@ -87,7 +87,7 @@ interface AtomicUnitOptions {
 }
 
 /** Units plus the provenance a report needs to describe them honestly. */
-interface AtomicUnitSet {
+export interface AtomicUnitSet {
   units: AtomicUnit[];
   weighting: WeightingMode;
 }
@@ -181,7 +181,7 @@ function renderedArea(el: Element): number {
  * Returns the weighting mode alongside the units — the two are only meaningful
  * together, since scores computed under different weightings are not comparable.
  */
-function extractAtomicUnitSet(
+export function extractAtomicUnitSet(
   root: Element,
   options: AtomicUnitOptions = {},
 ): AtomicUnitSet {
@@ -655,8 +655,54 @@ function segTextDensity(units: AtomicUnit[], root: Element): Segmentation {
  * element matches a selector (closest ancestor wins) take that label. This is
  * the preferred reference when available (Kiesel uses crowd annotations).
  */
-interface SegmentationAnnotation {
+export interface SegmentationAnnotation {
   [selector: string]: string;
+}
+
+/**
+ * A gold annotation keyed on `data-eval-id` (see `eval/gold/stamp.ts`) rather
+ * than on CSS selectors. This is the form the 60-page gold corpus uses: a
+ * hand-written selector silently re-matches when markup shifts, and at corpus
+ * scale nobody notices. Units whose element has no annotated ancestor are
+ * EXCLUDED from the reference rather than pooled into an "unlabelled" segment —
+ * annotators partition the content they were asked to partition, and inventing
+ * a giant residual cluster for everything else would reward a segmenter for
+ * lumping the page's leftovers together.
+ */
+export interface EvalIdAnnotation {
+  byEvalId: Record<string, string>;
+}
+
+export type SegmentationReference = SegmentationAnnotation | EvalIdAnnotation;
+
+function isEvalIdAnnotation(r: SegmentationReference): r is EvalIdAnnotation {
+  return typeof (r as EvalIdAnnotation).byEvalId === "object";
+}
+
+/**
+ * Reference from an id-keyed gold annotation. Nearest annotated ancestor wins,
+ * so an annotator can label a container once instead of every descendant.
+ */
+function evalIdGroundTruth(
+  units: AtomicUnit[],
+  annotation: EvalIdAnnotation,
+): Segmentation {
+  const seg: Segmentation = new Map();
+  for (const u of units) {
+    let el: Element | null = u.el;
+    while (el) {
+      const id = el.getAttribute?.("data-eval-id");
+      if (id) {
+        const label = annotation.byEvalId[id];
+        if (label) {
+          seg.set(u.id, label);
+          break;
+        }
+      }
+      el = el.parentElement;
+    }
+  }
+  return seg;
 }
 
 /**
@@ -669,9 +715,10 @@ interface SegmentationAnnotation {
 function proxyGroundTruth(
   units: AtomicUnit[],
   root: Element,
-  annotation?: SegmentationAnnotation,
+  annotation?: SegmentationReference,
 ): Segmentation {
   if (!annotation) return segDomSectioning(units, root);
+  if (isEvalIdAnnotation(annotation)) return evalIdGroundTruth(units, annotation);
   const seg: Segmentation = new Map();
   const selectors = Object.keys(annotation);
   for (const u of units) {
@@ -748,7 +795,7 @@ interface SegmentationRun {
  */
 export function scoreSegmentationRun(
   root: Element,
-  annotation?: SegmentationAnnotation,
+  annotation?: SegmentationReference,
 ): SegmentationRun {
   const { units, weighting } = extractAtomicUnitSet(root);
   const ref = proxyGroundTruth(units, root, annotation);
@@ -793,7 +840,7 @@ function norm(s: string): string {
 export function scoreSceneSegmentation(
   sceneRoot: XRPrimitive,
   refRoot: Element,
-  annotation?: SegmentationAnnotation,
+  annotation?: SegmentationReference,
 ): SegmentationScore {
   const refUnits = extractAtomicUnits(refRoot);
   const ref = proxyGroundTruth(refUnits, refRoot, annotation);
