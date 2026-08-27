@@ -6,12 +6,11 @@
  */
 import React, { useMemo } from "react";
 import * as THREE from "three";
-import { RoundedBox, Text } from "@react-three/drei";
+import { Text } from "@react-three/drei";
 
 import type { XRPrimitive } from "../../mapper/types";
 import type { LayoutEntry } from "../../layout/types";
 import { useTheme } from "../theme";
-import { PanelGradientOverlay } from "../PanelGradient";
 import {
   Surface,
   ClipPlanesContext,
@@ -204,8 +203,6 @@ export function PanelBacking({
   const theme = useTheme();
   const w = Math.max(entry.size.width, 0.025);
   const h = Math.max(entry.size.height, 0.032);
-  const DEPTH = 0.01;
-  const RADIUS = Math.min(0.004, Math.min(w, h, DEPTH) / 2 - 0.001);
   const isGhost = ghostOpacity !== undefined;
 
   const ctxCurve = usePanelCurve();
@@ -247,13 +244,13 @@ export function PanelBacking({
   if (activeCurve) {
     return (
       <>
+        {/* Unlit, for the same reason the flat branch below is — an interface
+            surface must not take a tint from the room's lights. */}
         <mesh geometry={bentFill!} position={[w / 2, -h / 2, -0.0006]}>
-          <meshStandardMaterial
+          <meshBasicMaterial
             color={theme.panelBg}
             transparent={isGhost}
             opacity={isGhost ? ghostOpacity : 1}
-            roughness={0.85}
-            metalness={0}
           />
         </mesh>
         <mesh geometry={bentGradient!} position={[w / 2, -h / 2, 0.0005]}>
@@ -277,33 +274,32 @@ export function PanelBacking({
   // in XRSectionMesh, primitives.tsx). The box front face sits at local z = 0;
   // child primitives don't collide with it because each nesting level is
   // staggered forward on the Z axis by StackDepthContext (see AtPos).
+  // ONE layer: a <Surface> whose vertical gradient is baked into its vertex
+  // colours, plus a hairline rim.
+  //
+  // This used to be a drei <RoundedBox> with a separate gradient quad in front
+  // of it. Both parts were wrong. RoundedBox's radius is a 3-D bevel capped at
+  // depth / 2, so with DEPTH = 0.01 the largest corner a metre-wide reading
+  // panel could have was 5 mm — it read as a square slab while every chip beside
+  // it was properly rounded (the whole reason <Surface> exists; see the
+  // PANEL_RADIUS note in primitives/constants.ts). And its fill was lit, so the
+  // panel took a tint from whatever the surrounding space was lit with while the
+  // unlit gradient quad in front of it did not, which is what made the seam
+  // between them visible in the rooms view.
+  //
+  // Surface rounds to the Horizon fraction of the shorter edge, bakes the
+  // gradient into the same draw call, and is unlit — so the panel is exactly
+  // the theme colour, in every view, with one mesh instead of two.
   return (
-    <>
-      <RoundedBox
-        args={[w, h, DEPTH]}
-        radius={RADIUS}
-        position={[w / 2, -h / 2, -DEPTH / 2]}
-      >
-        <meshStandardMaterial
-          color={theme.panelBg}
-          transparent={isGhost}
-          opacity={isGhost ? ghostOpacity : 1}
-          roughness={0.85}
-          metalness={0}
-        />
-      </RoundedBox>
-
-      {/* Subtle vertical gradient wash — panelGradientBottom matches panelBg
-          exactly so the seam against the flat fill above is invisible; only
-          the top portion reads lighter, matching Meta's panel material. */}
-      <PanelGradientOverlay
-        width={w}
-        height={h}
-        position={[w / 2, -h / 2, 0.0005]}
-        topColor={theme.panelGradientTop}
-        bottomColor={theme.panelGradientBottom}
-      />
-    </>
+    <Surface
+      width={w}
+      height={h}
+      color={theme.panelGradientBottom}
+      topColor={theme.panelGradientTop}
+      opacity={isGhost ? ghostOpacity! : 1}
+      rimColor={isGhost ? undefined : theme.panelRim}
+      rimOpacity={0.35}
+    />
   );
 }
 
@@ -322,11 +318,7 @@ export function GenericPanelMesh({
     <>
       <mesh position={[w / 2, -h / 2, 0]}>
         <planeGeometry args={[w, h]} />
-        <meshStandardMaterial
-          color={theme.panelBg}
-          roughness={0.85}
-          metalness={0}
-        />
+        <meshBasicMaterial color={theme.panelBg} />
       </mesh>
       <Text
         font={fontType}

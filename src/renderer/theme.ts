@@ -23,8 +23,29 @@ export interface XRTheme {
   panelEmissive: string;
   /** Fill for individual list-item tiles — a shade distinct from panelBg so tiles read against their container. */
   listItemBg: string;
-  /** Text/search input field fill. */
+  /**
+   * Fill for a section's own card — one quiet step off panelBg.
+   *
+   * Deliberately a small step: a section sits ON the content panel, so the two
+   * surfaces are near-coplanar and a strong contrast between them reads as two
+   * competing cards rather than as one card holding a group. The grouping is
+   * carried by the rhythm gaps and the card's padding; this only has to make
+   * the card's edge findable.
+   */
+  sectionBg: string;
+  /** Text/search input field fill — also the code block's ground. */
   inputBg: string;
+  /**
+   * Ink for code-block text, on `inputBg`.
+   *
+   * A light mint, NOT the GitHub light-theme green (#116329) this replaces:
+   * that green on the #444444 code ground measured 1.32:1, which is not a low
+   * contrast ratio so much as invisible text. Every code block on the test page
+   * rendered as a dark bar with nothing readable in it. This value clears
+   * 6.6:1, well past AA, which is the floor worth holding in a headset where
+   * the glyphs are already near the resolution limit.
+   */
+  codeCol: string;
   /** Fill for disabled buttons/chips. */
   disabledBg: string;
   /** Tertiary text — placeholders, disabled labels, muted captions. */
@@ -55,7 +76,9 @@ export const DARK_THEME: XRTheme = {
   rimHighlight: "#5B9BFF",
   panelEmissive: "#000000",
   listItemBg: "#525256",
+  sectionBg: "#3A3A3D",
   inputBg: "#444444",
+  codeCol: "#9BE6B0",
   disabledBg: "#6A6A6A",
   mutedTextCol: "#AFAFAF",
   panelGradientTop: "#373737",

@@ -133,11 +133,36 @@ interface SurfaceProps {
   metalness?: number;
   /**
    * Render the fill unlit (meshBasicMaterial) so it shows exactly its colour
-   * regardless of scene lighting — a truly flat UI-canvas look. Used for
-   * buttons/controls that should read as flat solid chips rather than
-   * light-shaded cards. roughness/metalness are ignored when set.
+   * regardless of scene lighting — a true UI-canvas look. DEFAULTS TO TRUE.
+   *
+   * These are interface surfaces, not objects in the room, and the two must not
+   * be lit by the same lights: with meshStandardMaterial a card picked up
+   * whatever the surrounding space happened to be lit with, so the same
+   * #323232 section read warm and blotchy under the rooms view's practicals and
+   * neutral everywhere else — a light smear across the panel that no theme
+   * value could account for. The panel's own gradient wash was already unlit,
+   * so the two disagreed on every card. Unlit means a colour picked in the
+   * theme is the colour the reader sees, in every view.
+   *
+   * Depth still reads: it comes from the Z ladder, the rim, and the top-lighter
+   * `gradient`, none of which depend on scene lights. Pass `flat={false}` only
+   * for a surface that is meant to be part of the room rather than part of the
+   * interface; roughness/metalness apply only then.
    */
   flat?: boolean;
+  /**
+   * Grow the backing outward by this many metres on all four sides, around the
+   * content box given by `width`/`height`.
+   *
+   * A container knows the box its children occupy, not the box its card should
+   * be — those differ by exactly the card's interior padding. Without this the
+   * card was drawn flush to its own text on every edge: a section's heading
+   * started at the same x as the section fill's left edge, so the fill read as
+   * a stray band behind the words rather than as a card holding them. Padding
+   * the geometry outward keeps every child position untouched (the layout
+   * engine still owns those) while giving the surface its own margin.
+   */
+  pad?: number;
   /** Thin outline drawn just behind the fill. */
   rimColor?: string;
   rimOpacity?: number;
@@ -180,7 +205,8 @@ export function Surface({
   opacity = 1,
   roughness = 0.9,
   metalness = 0,
-  flat = false,
+  flat = true,
+  pad = 0,
   rimColor,
   rimOpacity = 0.9,
   z = Z_SURFACE,
@@ -188,11 +214,15 @@ export function Surface({
   clips,
   curve,
 }: SurfaceProps) {
-  const w = safeDim(width);
-  const h = safeDim(height);
+  // `pad` grows the geometry symmetrically, so the default origin — which puts
+  // the content box's top-left at the group origin — is unchanged: the extra
+  // half-pad on each side cancels against the shift. The card simply bleeds
+  // `pad` beyond its content in every direction.
+  const w = safeDim(width + pad * 2);
+  const h = safeDim(height + pad * 2);
   const r = radius ?? cornerRadius(w, h);
-  const ox = origin ? origin[0] : w / 2;
-  const oy = origin ? origin[1] : -h / 2;
+  const ox = origin ? origin[0] : w / 2 - pad;
+  const oy = origin ? origin[1] : -h / 2 + pad;
   const resolvedTop = topColor ?? (gradient ? liftColor(color) : undefined);
 
   // Curve resolution: an explicit `curve` prop (a panel's own centred backing)

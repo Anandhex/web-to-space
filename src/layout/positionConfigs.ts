@@ -18,6 +18,7 @@ import type {
   RenderMetrics,
 } from "./types";
 import {
+  blockGap,
   computeWordsPerLine,
   containerInsetX,
   estimateInlineFlowHeight,
@@ -34,6 +35,7 @@ import {
   listItemLabelBlockHeight,
   mergeAdjacentTextRuns,
   resolveListColumns,
+  tableColumnGeometry,
 } from "./utils";
 
 // ── Custom height handlers (extracted from estimateHeight branches) ────────────
@@ -84,11 +86,16 @@ function _estimateBlockQuoteHeight(
   const lineH = m.fontSize * m.lineHeightRatio;
   const minH = lineH + m.verticalPadding;
   if (primitive.children.length > 0) {
-    // XRBlockQuoteMesh flows its prose at panelWidth − X_INSET with an extra
-    // X_INSET left inset (see block.tsx), i.e. a usable width of w − 2·X_INSET.
+    // XRBlockQuoteMesh flows its prose at panelWidth − inset with an extra
+    // inset left margin (see block.tsx), i.e. a usable width of w − 2·inset.
     // Estimate at that SAME narrower width or the engine under-counts lines and
-    // the last line/footer overflows behind the following block.
-    const flowW = Math.max(0.05, panelUsableWidth - 2 * BLOCKQUOTE_X_INSET);
+    // the last line/footer overflows behind the following block. Both sides now
+    // read metrics.spacing.comfortable rather than each keeping their own copy
+    // of the number.
+    const flowW = Math.max(
+      0.05,
+      panelUsableWidth - 2 * metrics.spacing.comfortable,
+    );
     return Math.max(
       minH,
       estimateMixedContentHeight(
@@ -316,12 +323,17 @@ function _estimateCodeBlockHeight(
   const m = metrics.codeBlock;
   const lineH = m.fontSize * m.lineHeightRatio;
   const minH = Math.max(metrics.fallbackElementHeight, lineH + m.verticalPadding);
+  // XRCodeBlockMesh flows at w − inset with an inset left margin, i.e. a usable
+  // width of w − 2·inset (see block.tsx, which reads the same scale value).
+  // Measuring at the full panel width here counted fewer lines than the mesh
+  // drew, and the overflow ran out of the bottom of the block's own card.
+  const flowW = Math.max(0.05, panelUsableWidth - 2 * metrics.spacing.snug);
   if (primitive.children.length > 0) {
     return Math.max(
       minH,
       estimateMixedContentHeight(
         flattenAndMerge(primitive.children),
-        panelUsableWidth,
+        flowW,
         panelUsableWidth,
         metrics,
         config,
@@ -394,8 +406,13 @@ export const IMAGE_CAPTION_LINE_HEIGHT = 1.35;
  */
 export const IMAGE_CAPTION_X_INSET = 0.004;
 
-/** Gap between the bottom of the image and the first caption line. */
-const IMAGE_CAPTION_TOP_PAD = 0.008;
+/**
+ * Gap between the bottom of the image and the first caption line. Exported
+ * because XRImageMesh draws the caption at this offset — it used to hard-code
+ * 0.006 while the estimate reserved 0.008, so the band the engine set aside and
+ * the band the renderer drew into were two millimetres out of register.
+ */
+export const IMAGE_CAPTION_TOP_PAD = 0.008;
 
 /** Breathing room under the last caption line, before the next stacked block. */
 const IMAGE_CAPTION_BOTTOM_PAD = 0.006;
@@ -427,13 +444,6 @@ export function imageCaptionLineCount(
     IMAGE_CAPTION_METRICS,
   );
 }
-
-/**
- * Left inset (metres) XRBlockQuoteMesh flows its prose at (must match X_INSET in
- * block.tsx). The mesh wraps at w − 2·X_INSET, so the height estimator uses the
- * same width to avoid under-counting lines (which overflowed behind the code).
- */
-const BLOCKQUOTE_X_INSET = 0.026;
 
 /**
  * Height (metres) of the caption band drawn beneath a captioned image. Shared by
@@ -916,8 +926,10 @@ function sumChildrenHeights(
         ? childHeight
         : metrics.fallbackElementHeight;
     totalHeight += validHeight;
-    if (i < merged.length - 1) {
-      totalHeight += config.childGapY;
+    if (i > 0) {
+      // Pair-aware, and it MUST match stackChildrenSimple's blockGap call or
+      // the height reserved here stops matching the height drawn there.
+      totalHeight += blockGap(merged[i - 1], child, metrics);
     }
   }
   return totalHeight;
@@ -1064,7 +1076,8 @@ function _estimateTableHeight(
     paddingContrib +
     metrics.tableHeaderRowHeight +
     Math.max(0, rowCount - 1) * metrics.tableRowHeight +
-    Math.max(0, rowCount - 1) * config.childGapY;
+    // Same inter-row gap blockGap() hands the placer for two XRTableRows.
+    Math.max(0, rowCount - 1) * metrics.spacing.tight;
   const contentHeight =
     primitive.children.length > 0
       ? paddingContrib +
@@ -1078,6 +1091,45 @@ function _estimateTableHeight(
         )
       : 0;
   return Math.max(fixedRowsHeight, contentHeight);
+}
+
+/**
+ * Height of one XRTableRow: the TALLEST cell measured at its column width.
+ *
+ * Mirrors stackChildrenSimple's XRTableRow branch exactly — same column
+ * geometry, same max. The row used to use heightStrategy "children", which
+ * SUMS its cells, so a four-column row reserved four rows' worth of vertical
+ * space; a table then budgeted roughly `columns ×` its real height during
+ * pagination and left most of every page it landed on empty.
+ */
+function _estimateTableRowHeight(
+  primitive: XRPrimitive,
+  panelUsableWidth: number,
+  metrics: RenderMetrics,
+  config: LayoutConfig,
+  ancestors: Set<string>,
+  scene?: SemanticScene,
+): number {
+  const cells = primitive.children;
+  if (cells.length === 0) return metrics.tableRowHeight;
+  const { columnWidth } = tableColumnGeometry(
+    panelUsableWidth,
+    cells.length,
+    metrics,
+  );
+  let tallest = 0;
+  for (const cell of cells) {
+    const h = estimateHeight(
+      cell,
+      columnWidth,
+      metrics,
+      config,
+      new Set(ancestors),
+      scene,
+    );
+    if (h && h > 0 && isFinite(h)) tallest = Math.max(tallest, h);
+  }
+  return Math.max(metrics.tableRowHeight, tallest);
 }
 
 export const PRIMITIVE_CONFIG: Partial<
@@ -1162,7 +1214,8 @@ export const PRIMITIVE_CONFIG: Partial<
     slot: "main",
   },
   XRTableRow: {
-    heightStrategy: "children",
+    heightStrategy: "custom",
+    customHandler: _estimateTableRowHeight,
     paginate: "recursive",
     ownsXPadding: false,
     ownsTopPadding: false,

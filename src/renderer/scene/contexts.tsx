@@ -8,7 +8,7 @@
  */
 import React from "react";
 import type { LayoutEntry } from "../../layout/types";
-import { Z_STACK_STEP, MAX_STACK_DEPTH } from "./config";
+import { Z_STACK_STEP, Z_STACK_FALLOFF } from "./config";
 import type { Axis, NavState } from "../../links/memory";
 import type { LateralSide, LinkDirection } from "../../links/direction";
 import type { SpatialLink } from "../../links/types";
@@ -78,9 +78,40 @@ export function zeroedEntry(entry: LayoutEntry): LayoutEntry {
   };
 }
 
-/** Forward Z offset for a given nesting depth. */
+/**
+ * Forward Z offset for a given nesting depth — a bounded, STRICTLY INCREASING
+ * geometric series:
+ *
+ *   stackZ(d) = step · (1 − falloff^d) / (1 − falloff)
+ *
+ * so the steps shrink (3.0 mm, 2.6 mm, 2.2 mm, …) and the total converges to
+ * step / (1 − falloff) ≈ 20 mm however deep the markup goes.
+ *
+ * This replaces `min(depth, 8) · step`. That clamp meant every level past the
+ * eighth shared ONE Z — and deeply nested markup routinely goes past eight:
+ * a Wikipedia references list is panel → section → section → list → item →
+ * cite → span before it reaches any text. Each of those levels that draws a
+ * surface then landed exactly coplanar with its siblings and ancestors, which
+ * is precisely the z-fighting this stagger exists to prevent. The References
+ * page showed it as grey blocks flickering across the citation tiles.
+ *
+ * A cap was the wrong tool: the requirement is "never coplanar", and a bounded
+ * series satisfies it without ever needing a cut-off. The whole stack still
+ * sits within 20 mm of the backing, so nothing floats off the panel.
+ *
+ * Headroom against the depth buffer (near 0.05, far 250, 24-bit — see the
+ * Canvas camera in XRSceneRenderer): resolution is ~1.7 µm at the 1.2 m reading
+ * distance and ~7.4 µm at 2.5 m. Level 20 separates from 19 by 137 µm and level
+ * 30 by 27 µm, so realistic markup clears it by one to two orders of magnitude.
+ * Past level ~35 the steps do approach the buffer's resolution on a distant
+ * panel; that is a depth no real document reaches, and it degrades to the old
+ * behaviour rather than to something worse.
+ */
 export function stackZ(depth: number): number {
-  return Math.min(depth, MAX_STACK_DEPTH) * Z_STACK_STEP;
+  const d = Math.max(0, depth);
+  return (
+    (Z_STACK_STEP * (1 - Math.pow(Z_STACK_FALLOFF, d))) / (1 - Z_STACK_FALLOFF)
+  );
 }
 
 // ─────────────────────────────────────────────────────────────

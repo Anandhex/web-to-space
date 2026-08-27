@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Spacing &amp; padding test</title>
+</head>
+<body>
+<main>
+  <h1>Spacing and padding</h1>
+  <p>One section holding one of each block primitive, so the vertical rhythm
+  between them and the interior padding of each surface can be judged side by
+  side rather than a page apart.</p>
+
+  <h2>A heading that opens a group</h2>
+  <p>The gap above this heading should be visibly larger than the gap below it.
+  That asymmetry is what tells the reader the heading names the paragraph under
+  it and not the one above.</p>
+  <p>A second paragraph, to show the gap between two ordinary blocks. It should
+  sit between the two heading gaps in size.</p>
+
+  <blockquote>A block quote carries its own surface, so the space around it has
+  to separate two objects rather than two paragraphs.</blockquote>
+
+  <pre><code>const gap = blockGap(prev, next, metrics);
+cursorY -= gap + height;</code></pre>
+
+  <hr>
+
+  <h3>A list</h3>
+  <ul>
+    <li>Each tile is a distinct surface and needs interior padding of its own.</li>
+    <li>A short item.</li>
+    <li>An item long enough to wrap onto a second line so the bottom padding of
+    a multi-line tile can be checked against the top.</li>
+  </ul>
+
+  <h3>A table</h3>
+  <table>
+    <tr><th>Token</th><th>Metres</th></tr>
+    <tr><td>hairline</td><td>0.0042</td></tr>
+    <tr><td>tight</td><td>0.0105</td></tr>
+    <tr><td>snug</td><td>0.0157</td></tr>
+  </table>
+
+  <h3>Controls</h3>
+  <p>A <a href="https://example.com/">link inside prose</a> and a button:</p>
+  <button type="button">Primary action</button>
+  <label>Search <input type="search" placeholder="Type here"></label>
+</main>
+</body>
+</html>

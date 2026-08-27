@@ -62,16 +62,41 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
   // destructive actions respectively, not general primary controls.
   const btnColor = isDisabled ? theme.disabledBg : theme.emphasisCol;
 
+  // A pill's side padding has to clear its own corner: the radius is h/2, so
+  // text set closer than that to the edge sits over the curve. h * 0.6 gives
+  // that clearance on a tall pill; the floor keeps a short one from crowding.
+  const pillInset = Math.max(metrics.spacing.generous, h * 0.6);
+
+  // A button is sized by its LABEL, not by the column it was stacked in.
+  //
+  // The engine hands every stacked child the full container width, which is
+  // right for prose and wrong for a control: "Primary action" rendered as a
+  // 1.3 m pill spanning the whole reading panel, which reads as a banner rather
+  // than as something you press. Only the drawn pill shrinks — the layout box
+  // this mesh sits in is untouched, so nothing downstream moves.
+  //
+  // The width estimate uses metrics.button.font's charWidthRatio, the SAME
+  // proportional-width model the engine wraps text with, so a label that the
+  // engine measured as fitting on one line fits inside this pill too.
+  const labelFont = metrics.button.font;
+  const pillW = Math.min(
+    w,
+    Math.max(
+      h * 2,
+      labelText.length * labelFont.fontSize * labelFont.charWidthRatio +
+        pillInset * 2,
+    ),
+  );
+
   return (
     <group ref={ref} position={pos} rotation={rot} {...handlers}>
       {/* Pill body — flat, unlit, fully-rounded Horizon primary button */}
       <Surface
-        width={w}
+        width={pillW}
         height={h}
-        radius={cornerRadius(w, h, h / 2)}
+        radius={cornerRadius(pillW, h, h / 2)}
         color={btnColor}
         opacity={isDisabled ? 0.6 : 1}
-        flat
         clips={clips}
       />
 
@@ -83,11 +108,11 @@ export function XRButtonMesh({ primitive, entry }: XRButtonMeshProps) {
       <ClippedText
         anchorX="left"
         anchorY="middle"
-        position={[Math.max(0.03, h * 0.6), -h / 2, Z_LAYER_BODY_TEXT]}
+        position={[pillInset, -h / 2, Z_LAYER_BODY_TEXT]}
         fontSize={metrics.button.font.fontSize}
         color={isDisabled ? theme.mutedTextCol : theme.panelBg}
         fontWeight="600"
-        maxWidth={w - Math.max(0.03, h * 0.6) * 2}
+        maxWidth={pillW - pillInset * 2}
       >
         {labelText}
       </ClippedText>
@@ -131,7 +156,8 @@ export function XRAlertMesh({
     ? buildInlineRows(mergeAdjacentTextRuns(flatChildren))
     : [];
   const m = metrics.paragraph;
-  const X_INSET = 0.02;
+  const X_INSET = metrics.spacing.comfortable;
+  const TOP_INSET = metrics.spacing.tight;
 
   return (
     <group position={pos} rotation={rot}>
@@ -145,10 +171,10 @@ export function XRAlertMesh({
 
       {/* Left accent bar */}
       <mesh
-        position={[0.004, -h / 2, Z_LAYER_ACCENT]}
+        position={[metrics.spacing.hairline, -h / 2, Z_LAYER_ACCENT]}
         renderOrder={RENDER_ORDER_ACCENT}
       >
-        <planeGeometry args={[0.007, h * 0.8]} />
+        <planeGeometry args={[metrics.spacing.hairline * 1.6, h * 0.8]} />
         <meshBasicMaterial
           color={alertColor}
           transparent
@@ -162,7 +188,7 @@ export function XRAlertMesh({
         // single prose run with correct accent colouring for the link segment.
         <InlineProseRows
           rows={rows}
-          startY={-0.014}
+          startY={-TOP_INSET}
           panelWidth={w - X_INSET}
           fontSize={m.fontSize}
           lineHeightRatio={m.lineHeightRatio}
@@ -182,12 +208,12 @@ export function XRAlertMesh({
         <ClippedText
           anchorX="left"
           anchorY="top"
-          position={[X_INSET, -0.014, Z_LAYER_BODY_TEXT]}
+          position={[X_INSET, -TOP_INSET, Z_LAYER_BODY_TEXT]}
           renderOrder={RENDER_ORDER_TEXT}
-          fontSize={0.022}
+          fontSize={metrics.alert.font.fontSize}
           color={isAssertive ? "#B3261E" : theme.infoTextCol}
-          maxWidth={w - 0.032}
-          lineHeight={1.4}
+          maxWidth={w - X_INSET * 2}
+          lineHeight={metrics.alert.font.lineHeightRatio}
           clearCurvedBacking
         >
           {primitive.content ?? primitive.label ?? ""}
@@ -215,6 +241,7 @@ export function XRTableMesh({
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const HEADER_H = 0.04;
@@ -244,7 +271,7 @@ export function XRTableMesh({
         <ClippedText
           anchorX="left"
           anchorY="middle"
-          position={[0.014, -HEADER_H / 2, Z_LAYER_BODY_TEXT]}
+          position={[metrics.spacing.tight, -HEADER_H / 2, Z_LAYER_BODY_TEXT]}
           fontSize={0.018}
           color={theme.headingCol}
           fontWeight="600"
@@ -272,6 +299,7 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const disabled = primitive.state?.disabled === true;
@@ -293,7 +321,11 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
         <ClippedText
           anchorX="left"
           anchorY="bottom"
-          position={[0.004, -(h - INPUT_H) + 0.006, Z_LAYER_BODY_TEXT]}
+          position={[
+            metrics.spacing.hairline,
+            -(h - INPUT_H) + metrics.spacing.hairline * 1.4,
+            Z_LAYER_BODY_TEXT,
+          ]}
           fontSize={0.015}
           color={theme.mutedTextCol}
           maxWidth={w}
@@ -317,10 +349,10 @@ export function XRFormFieldMesh({ primitive, entry }: XRFormFieldMeshProps) {
       <ClippedText
         anchorX="left"
         anchorY="middle"
-        position={[0.014, cy, Z_LAYER_BODY_TEXT]}
+        position={[metrics.spacing.tight, cy, Z_LAYER_BODY_TEXT]}
         fontSize={0.016}
         color={value ? theme.bodyCol : theme.mutedTextCol}
-        maxWidth={fieldW - 0.028}
+        maxWidth={fieldW - metrics.spacing.tight * 2}
       >
         {value || primitive.placeholder || ""}
       </ClippedText>
@@ -387,6 +419,7 @@ export function XRToggleMesh({
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const midY = -h / 2;
@@ -432,7 +465,7 @@ export function XRToggleMesh({
         />
       </group>
     );
-    labelX = trackW + 0.016;
+    labelX = trackW + metrics.spacing.snug;
   } else {
     const r = kind === "radio" ? S / 2 : Math.max(0.004, S * 0.28);
     control = (
@@ -475,7 +508,7 @@ export function XRToggleMesh({
         )}
       </group>
     );
-    labelX = S + 0.016;
+    labelX = S + metrics.spacing.snug;
   }
 
   return (
@@ -507,6 +540,7 @@ export function XRSliderMesh({
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const disabled = primitive.state?.disabled === true;
@@ -528,7 +562,7 @@ export function XRSliderMesh({
         <ClippedText
           anchorX="left"
           anchorY="top"
-          position={[0.004, -0.002, Z_LAYER_BODY_TEXT]}
+          position={[metrics.spacing.hairline, -0.002, Z_LAYER_BODY_TEXT]}
           fontSize={0.015}
           color={theme.mutedTextCol}
           maxWidth={w - 0.08}
@@ -598,6 +632,7 @@ export function XRComboBoxMesh({
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const disabled = primitive.state?.disabled === true;
@@ -642,7 +677,7 @@ export function XRComboBoxMesh({
       <ClippedText
         anchorX="left"
         anchorY="middle"
-        position={[0.014, cy, Z_LAYER_BODY_TEXT]}
+        position={[metrics.spacing.tight, cy, Z_LAYER_BODY_TEXT]}
         fontSize={0.016}
         color={disabled ? theme.mutedTextCol : theme.bodyCol}
         maxWidth={w - 0.05}
@@ -652,7 +687,7 @@ export function XRComboBoxMesh({
       <ClippedText
         anchorX="right"
         anchorY="middle"
-        position={[w - 0.014, cy, Z_LAYER_OVERLAY_TEXT]}
+        position={[w - metrics.spacing.tight, cy, Z_LAYER_OVERLAY_TEXT]}
         fontSize={0.018}
         color={theme.bodyCol}
       >
@@ -672,6 +707,7 @@ export function XRSearchBoxMesh({
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const disabled = primitive.state?.disabled === true;
@@ -697,7 +733,7 @@ export function XRSearchBoxMesh({
       <ClippedText
         anchorX="left"
         anchorY="middle"
-        position={[0.014, cy, Z_LAYER_OVERLAY_TEXT]}
+        position={[metrics.spacing.tight, cy, Z_LAYER_OVERLAY_TEXT]}
         fontSize={0.018}
         color={theme.mutedTextCol}
       >

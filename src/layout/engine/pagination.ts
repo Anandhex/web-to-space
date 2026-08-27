@@ -34,6 +34,7 @@ import {
   isEmptyContainerNode,
 } from "../positionConfigs";
 import {
+  blockGap,
   computeWordsPerLine,
   cardGridGap,
   countWords,
@@ -138,10 +139,29 @@ export function paginateContentPanel(
   // Absent from a call site, this check is what lets an atomic block (image,
   // figure, table, ...) get placed straddling a page boundary and clipped by
   // the viewport instead of starting clean on the next page.
-  function breakIfDoesNotFit(h: number): boolean {
+  /**
+   * The gap that belongs above `node` in the current page's flow.
+   *
+   * Zero at the top of a page; otherwise the pair-aware rhythm gap measured
+   * against whatever was placed last (see blockGap in layout/utils). Every
+   * flow site in this file goes through here so the paginator reserves exactly
+   * the space stackChildrenSimple and sumChildrenHeights agree on — the flat
+   * config.childGapY it replaces could not tell a section boundary from a
+   * paragraph break.
+   */
+  function flowGap(node: { type: string } | string | null | undefined): number {
+    if (itemsOnPage === 0 || !lastPlacedType || !node) return 0;
+    const type = typeof node === "string" ? node : node.type;
+    return blockGap({ type: lastPlacedType }, { type }, metrics);
+  }
+
+  function breakIfDoesNotFit(
+    h: number,
+    node?: { type: string } | string | null,
+  ): boolean {
     const wouldStrandHeading =
       lastPlacedType === "XRHeading" && itemsOnPage === 1;
-    const gap = itemsOnPage === 0 ? 0 : config.childGapY;
+    const gap = node ? flowGap(node) : itemsOnPage === 0 ? 0 : config.childGapY;
     if (
       pageHeight + gap + h > VIEWPORT &&
       itemsOnPage > 0 &&
@@ -1004,11 +1024,11 @@ export function paginateContentPanel(
       const h =
         precomputedH ??
         estimateHeight(node, childWidth, metrics, config, new Set(), scene);
-      breakIfDoesNotFit(h);
+      breakIfDoesNotFit(h, node);
     }
 
     const wrapperPage = pageIdx;
-    const wrapperY = cursorY - (itemsOnPage > 0 ? config.childGapY : 0);
+    const wrapperY = cursorY - flowGap(node);
     pageIndexMap[node.id] = wrapperPage;
     positionMap.set(node.id, { x: config.panelPaddingX, y: wrapperY, z: 0 });
     if (node.type === "XRList") {
@@ -1076,7 +1096,7 @@ export function paginateContentPanel(
         // their clean-start behaviour in the main loop below.
         const nestedFits =
           pageHeight +
-            (itemsOnPage > 0 ? config.childGapY : 0) +
+            flowGap(sc) +
             estimateHeight(sc, childWidth, metrics, config, new Set(), scene) <=
           VIEWPORT;
 
@@ -1095,10 +1115,7 @@ export function paginateContentPanel(
           lastPlacedType = null;
         }
 
-        placeSectionNode(
-          sc,
-          cursorY - (itemsOnPage > 0 ? config.childGapY : 0),
-        );
+        placeSectionNode(sc, cursorY - flowGap(sc));
         continue;
       }
 
@@ -1137,9 +1154,9 @@ export function paginateContentPanel(
       // non-text leaves (XRImage, XRTable, ...) have no continuation logic,
       // so one that didn't fit would start on the current page and simply get
       // clipped by the viewport instead of moving to the next page.
-      breakIfDoesNotFit(sch);
+      breakIfDoesNotFit(sch, sc);
 
-      const g = itemsOnPage > 0 ? config.childGapY : 0;
+      const g = flowGap(sc);
       const pageHeightBeforePlacement = pageHeight;
       stampSubtree(sc, pageIdx);
       positionMap.set(sc.id, {
@@ -1254,7 +1271,7 @@ export function paginateContentPanel(
       absoluteY = config.panelPaddingTop + pageHeight;
     } else {
       // Atomic leaf child
-      const gap = itemsOnPage === 0 ? 0 : config.childGapY;
+      const gap = flowGap(child);
 
       // Keep-with-next: same as splitSection — don't strand a heading alone.
       const wouldStrandHeading =
@@ -1270,7 +1287,9 @@ export function paginateContentPanel(
         absoluteY = config.panelPaddingTop;
       }
 
-      const g = itemsOnPage === 0 ? 0 : config.childGapY;
+      // Recomputed AFTER the page break above: nextPage() resets itemsOnPage,
+      // so the first item on a fresh page must take no leading gap.
+      const g = flowGap(child);
       const pageHeightBeforePlacement = pageHeight;
       stampSubtree(child, pageIdx);
       positionMap.set(child.id, {

@@ -249,16 +249,121 @@ export function resolveListColumns(
 }
 
 /**
+ * Primitive types that read as a self-contained block object rather than as
+ * running prose: they carry their own surface, so the space around them has to
+ * separate two objects, not two paragraphs.
+ */
+const BLOCK_OBJECT_TYPES = new Set<string>([
+  "XRFigure",
+  "XRImage",
+  "XRTable",
+  "XRBlockQuote",
+  "XRCodeBlock",
+  "XRMediaPlayer",
+  "XRList",
+  "XRCardGrid",
+]);
+
+/**
+ * The vertical gap that belongs between two stacked blocks.
+ *
+ * Replaces the single flat `config.childGapY` that used to sit between every
+ * pair regardless of what they were. A uniform gap cannot express grouping, and
+ * proximity is read as grouping whether or not it was intended — with one
+ * constant, a heading floated equidistant between the section it closed and the
+ * section it opened, so the reader had no way to tell which content it named.
+ *
+ * Precedence, strongest boundary first:
+ *   1. nothing above       → no gap
+ *   2. next is a heading   → beforeHeading   (a new group starts here)
+ *   3. prev is a heading   → afterHeading    (the heading binds to what follows)
+ *   4. either is a rule    → aroundRule
+ *   5. both are table rows → spacing.tight   (one grid, not two blocks)
+ *   6. either is an object → aroundBlock
+ *   7. otherwise           → betweenBlocks
+ *
+ * Rule 2 outranks rule 5 deliberately: a heading following a figure still opens
+ * a group, and that boundary must read as the stronger of the two.
+ *
+ * EVERY site that stacks children must call this — the placer
+ * (stackChildrenSimple), the height estimate (sumChildrenHeights) and the
+ * paginator's flow loops. If one of them keeps using a flat constant, the space
+ * it reserves stops matching the space the others draw and content drifts off
+ * the bottom of its parent.
+ */
+export function blockGap(
+  prev: { type: string } | null | undefined,
+  next: { type: string } | null | undefined,
+  metrics: RenderMetrics,
+): number {
+  if (!prev || !next) return 0;
+  const r = metrics.rhythm;
+  if (next.type === "XRHeading") return r.beforeHeading;
+  if (prev.type === "XRHeading") return r.afterHeading;
+  if (prev.type === "XRSeparator" || next.type === "XRSeparator") {
+    return r.aroundRule;
+  }
+  // Two rows of the same table are one grid, not two stacked blocks. They take
+  // the same gutter their columns do, so the grid reads as a unit — a prose gap
+  // here would space the rows further apart than the cells within a row.
+  if (prev.type === "XRTableRow" && next.type === "XRTableRow") {
+    return metrics.spacing.tight;
+  }
+  if (BLOCK_OBJECT_TYPES.has(prev.type) || BLOCK_OBJECT_TYPES.has(next.type)) {
+    return r.aroundBlock;
+  }
+  return r.betweenBlocks;
+}
+
+/**
  * Gutter between cards in an XRList grid, horizontally and between rows.
  *
- * Deliberately larger than config.childGapY (10 mm), which is the gap between
- * stacked blocks INSIDE one container: at that size, two cards side by side
- * read as one continuous slab with a hairline seam, and their text columns
- * appear to run into each other. Cards are separate objects and need a gutter
- * that says so. Scaled off minCardWidth so it tracks the device profile.
+ * One step above a tile's own interior padding (metrics.spacing.snug), which is
+ * the classic grid relationship: the space BETWEEN two tiles has to beat the
+ * space INSIDE one, or the eye groups a tile's right-hand text with its
+ * neighbour's left-hand text instead of with its own. At the flat 10 mm this
+ * originally used, two cards side by side read as one continuous slab with a
+ * hairline seam down it.
+ *
+ * On the shared ladder rather than scaled off minCardWidth, so a gutter and a
+ * padding are always comparable quantities.
  */
 export function cardGridGap(metrics: RenderMetrics): number {
-  return metrics.minCardWidth * 0.08;
+  return metrics.spacing.comfortable;
+}
+
+/**
+ * Column geometry for one XRTableRow: `cellCount` equal columns across
+ * `rowWidth`, separated by a gutter.
+ *
+ * A row is the one container in the pipeline whose children run ACROSS rather
+ * than down. Without this it fell through to the default vertical stack in
+ * stackChildrenSimple and every table rendered as one tall column — "Token",
+ * "Metres", "hairline", "0.0042" one under the other, with the table's whole
+ * grid structure lost.
+ *
+ * Equal columns rather than content-proportional ones: proportional widths need
+ * a measuring pass over every cell in every row before any of them can be
+ * placed, and the engine has no such pass. Equal columns are predictable, and a
+ * cell that needs more room wraps into more lines, which the row absorbs by
+ * taking the tallest cell's height.
+ *
+ * Both the placer (stackChildrenSimple) and the height estimate
+ * (_estimateTableRowHeight) MUST size cells through here — a row whose cells
+ * were measured at one width and drawn at another wraps to a different number
+ * of lines than the height reserved for it.
+ */
+export function tableColumnGeometry(
+  rowWidth: number,
+  cellCount: number,
+  metrics: RenderMetrics,
+): { columnWidth: number; gutter: number } {
+  const n = Math.max(1, cellCount);
+  const gutter = metrics.spacing.tight;
+  return {
+    columnWidth: Math.max(0.02, (rowWidth - gutter * (n - 1)) / n),
+    gutter,
+  };
 }
 
 /**

@@ -21,7 +21,11 @@ import {
   PANEL_DEPTH,
 } from "../constants";
 import { Surface, safeDim, cornerRadius, entryTransform } from "../surface";
-import { ClipPlanesContext, useClipPlanes } from "../contexts";
+import {
+  ClipPlanesContext,
+  useClipPlanes,
+  useRenderMetrics,
+} from "../contexts";
 import {
   PanelCurveContext,
   resolveCurveRadius,
@@ -114,6 +118,7 @@ function TOCPanel({
   onNavigate,
 }: TOCPanelProps) {
   const theme = useTheme();
+  const metrics = useRenderMetrics();
 
   // Bend the panel onto the shared cylinder (centred on its own width). The
   // scroll clip planes are horizontal (normal along Y) and the bend is around
@@ -135,10 +140,12 @@ function TOCPanel({
         })()
       : { position: [x, y, z], rotation: [0, 0, 0] };
 
+  // Off the shared spacing ladder (metrics.spacing) rather than five unrelated
+  // literals, so a nav rail's rhythm matches every other surface's.
   const ITEM_H = 0.052;
-  const ITEM_GAP = 0.006;
-  const INDENT_STEP = 0.018; // metres per depth level
-  const PADDING = 0.014;
+  const ITEM_GAP = metrics.spacing.hairline * 1.5;
+  const INDENT_STEP = metrics.spacing.snug; // metres per depth level
+  const PADDING = metrics.spacing.tight;
   const HEADER_H = PADDING * 3; // label band above the scroll viewport
   const BOTTOM_PAD = PADDING;
 
@@ -448,6 +455,7 @@ export function XRNavigationMesh({
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const metrics = useRenderMetrics();
   const items: XRLink[] = primitive.items ?? [];
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
@@ -473,7 +481,7 @@ export function XRNavigationMesh({
 
   // ── Horizontal arc chip layout (site nav) ────────────────────────────────
   const CHIP_H = 0.048;
-  const CHIP_GAP = 0.012;
+  const CHIP_GAP = metrics.spacing.tight;
   const chipW = Math.max(
     0.025,
     items.length > 0
@@ -553,7 +561,7 @@ export function XRNavigationMesh({
               position={[0, 0, Z_LAYER_BODY_TEXT]}
               fontSize={0.018}
               color={isCurrent ? theme.panelBg : theme.bodyCol}
-              maxWidth={chipW - 0.016}
+              maxWidth={chipW - metrics.spacing.snug}
               fontWeight={isCurrent ? "600" : "400"}
             >
               {item.label ?? item.href ?? ""}

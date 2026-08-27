@@ -180,6 +180,14 @@ export function XRListItemMesh({
             fontSize={m.fontSize}
             lineHeightRatio={m.lineHeightRatio}
             xInset={proseInset}
+            // On a CURVED panel the tile bends around this group's origin while
+            // each prose run bends around its own left anchor (proseInset in
+            // from it). Past the panel's tangent the two arcs diverge and the
+            // run sinks behind its own opaque tile — a wide citation was cut
+            // off dead straight at the tangent, with the rest of the sentence
+            // hidden behind the card it belongs to. Same clearance the curved
+            // blockquote and alert already ask for. No effect on flat panels.
+            clearCurvedBacking
             renderChild={renderChild}
           />
         )}

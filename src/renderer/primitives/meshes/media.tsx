@@ -22,7 +22,7 @@ import {
   entryTransform,
   CurvedTexturePlane,
 } from "../surface";
-import { useClipPlanes } from "../contexts";
+import { useClipPlanes, useRenderMetrics } from "../contexts";
 import { ClippedText } from "../inline";
 import { proxyImageSrc } from "../../../proxy";
 import {
@@ -30,6 +30,7 @@ import {
   fitImageAltText,
   IMAGE_CAPTION_FONT_SIZE,
   IMAGE_CAPTION_LINE_HEIGHT,
+  IMAGE_CAPTION_TOP_PAD,
   IMAGE_CAPTION_X_INSET,
   IMAGE_ALT_FONT_SIZE,
   IMAGE_ALT_X_INSET,
@@ -57,6 +58,7 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const isAudio = primitive.mediaType === "audio";
@@ -120,11 +122,15 @@ export function XRMediaMesh({ primitive, entry }: XRMediaMeshProps) {
         <ClippedText
           anchorX="left"
           anchorY="top"
-          position={[0.03, -h + 0.03, Z_LAYER_OVERLAY_TEXT]}
+          position={[
+            metrics.spacing.generous,
+            -h + metrics.spacing.generous,
+            Z_LAYER_OVERLAY_TEXT,
+          ]}
           renderOrder={RENDER_ORDER_TEXT}
           fontSize={0.02}
           color={theme.bodyCol}
-          maxWidth={w - 0.06}
+          maxWidth={w - metrics.spacing.generous * 2}
         >
           {primitive.label}
         </ClippedText>
@@ -334,7 +340,7 @@ export function XRImageMesh({ primitive, entry }: XRImageMeshProps) {
           anchorY="top"
           position={[
             IMAGE_CAPTION_X_INSET,
-            -imgH - 0.006,
+            -imgH - IMAGE_CAPTION_TOP_PAD,
             Z_LAYER_OVERLAY_TEXT,
           ]}
           renderOrder={RENDER_ORDER_TEXT}

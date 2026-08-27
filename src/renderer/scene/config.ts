@@ -11,10 +11,16 @@ import type { LayoutConfig } from "../../layout/types";
 export const EMPTY_CONFIG: Partial<LayoutConfig> = {};
 
 // ── Nesting-depth Z stagger ──────────────────────────────────────────────────
-/** Per-nesting-level forward Z step (metres). */
+/** Forward Z step (metres) between the first two nesting levels. */
 export const Z_STACK_STEP = 0.003;
-/** Cap so pathologically deep DOM can't push content metres toward the viewer. */
-export const MAX_STACK_DEPTH = 8;
+/**
+ * How much each successive level's step shrinks (see stackZ).
+ *
+ * The steps form a geometric series, so the total forward travel converges to
+ * Z_STACK_STEP / (1 − Z_STACK_FALLOFF) ≈ 20 mm no matter how deep the markup
+ * goes, while every level still gets its own distinct Z.
+ */
+export const Z_STACK_FALLOFF = 0.85;
 
 // ── View-transition morph ────────────────────────────────────────────────────
 /**

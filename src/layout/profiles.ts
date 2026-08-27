@@ -1,9 +1,11 @@
 // ── Quest 3 ──────────────────────────────────────────────────
 
 import type {
+  BlockRhythm,
   DeviceProfile,
   FixedHeightMetrics,
   PrimitiveFontMetrics,
+  SpacingScale,
   TextBearingMetrics,
 } from "./types";
 // ── Shared metric helpers ────────────────────────────────────
@@ -55,6 +57,56 @@ function textBearing(
     },
   };
 }
+// ── Spacing derivations ──────────────────────────────────────
+//
+// Both ladders below are derived, not tuned by eye, so they can be restated
+// for a different viewing distance or body size without guesswork. See
+// SpacingScale / BlockRhythm in types.ts for the reasoning.
+
+/** Metres subtended by one degree of visual angle at distance `d`. */
+function degreeAt(d: number): number {
+  return 2 * d * Math.tan((0.5 * Math.PI) / 180);
+}
+
+/** Interior padding ladder: quarter-degree steps at the reading distance. */
+function spacingScale(viewingDistance: number): SpacingScale {
+  const deg = degreeAt(viewingDistance); // ≈ 0.0209 m at 1.2 m
+  const round = (v: number) => Math.round(v * 10000) / 10000;
+  return {
+    hairline: round(deg * 0.2),     // ≈ 0.0042
+    tight: round(deg * 0.5),        // ≈ 0.0105
+    snug: round(deg * 0.75),        // ≈ 0.0157
+    comfortable: round(deg * 1.0),  // ≈ 0.0209
+    generous: round(deg * 1.5),     // ≈ 0.0314
+  };
+}
+
+/**
+ * Vertical rhythm quantised to the body line box L = fontSize × lineHeight.
+ * The heading gaps are asymmetric on purpose — that asymmetry is what makes a
+ * heading read as belonging to the content below it rather than floating
+ * between two groups.
+ */
+function blockRhythm(bodyLineHeight: number): BlockRhythm {
+  const L = bodyLineHeight;
+  const round = (v: number) => Math.round(v * 10000) / 10000;
+  return {
+    afterHeading: round(L * 0.25),  // ≈ 0.0085
+    betweenBlocks: round(L * 0.5),  // ≈ 0.0169
+    aroundRule: round(L * 0.75),    // ≈ 0.0254
+    aroundBlock: round(L * 0.75),   // ≈ 0.0254
+    beforeHeading: round(L * 1.0),  // ≈ 0.0338
+  };
+}
+
+// The three numbers the profile and both spacing ladders are derived from.
+// Declared once so the scales can never drift from the distance and body size
+// they were derived for.
+const QUEST_3_VIEWING_DISTANCE = 1.2;
+const QUEST_3_BODY_FONT_SIZE = 0.026;
+const QUEST_3_BODY_LINE_RATIO = 1.3;
+const QUEST_3_SPACING = spacingScale(QUEST_3_VIEWING_DISTANCE);
+
 /**
  * Meta Quest 3 profile.
  *
@@ -62,12 +114,13 @@ function textBearing(
  * Font sizes chosen so text subtends ~0.5° per line-cap-height at 1.2 m
  * (comfortable mixed-reality reading per XR UX guidelines).
  *
- * Renderer reference: XRParagraphMesh uses fontSize=0.026, lineHeight=1.55.
+ * Renderer reference: XRParagraphMesh uses metrics.paragraph — fontSize 0.026,
+ * lineHeight 1.3 — and every interior inset comes from metrics.spacing.
  */
 export const QUEST_3_PROFILE: DeviceProfile = {
   name: "Meta Quest 3",
   layoutConfig: {
-    viewingDistance: 1.2,
+    viewingDistance: QUEST_3_VIEWING_DISTANCE,
     comfortHalfAngleDeg: 30,
     eyeLevel: 1.5,
     eyeLevelOffset: -0.1,
@@ -79,7 +132,11 @@ export const QUEST_3_PROFILE: DeviceProfile = {
     pageZStep: 0.05,
   },
   renderMetrics: {
-    paragraph: paragraphMetrics(0.026, 1.3, 0.0001),
+    paragraph: paragraphMetrics(
+      QUEST_3_BODY_FONT_SIZE,
+      QUEST_3_BODY_LINE_RATIO,
+      0.0001,
+    ),
     heading: {
       1: paragraphMetrics(0.048, 1.3, 0.015),
       2: paragraphMetrics(0.038, 1.35, 0.015),
@@ -105,8 +162,12 @@ export const QUEST_3_PROFILE: DeviceProfile = {
     alert: textBearing(0.08, 0.024),
     tooltip: textBearing(0.06, 0.022),
     listItem: textBearing(0.055, 0.024),
-    listItemContentPad: 0.01,
-    listItemProseInset: 0.01,
+    // A card's interior padding comes off the shared ladder, like every other
+    // surface's. Both were 10 mm — half a degree at the reading distance —
+    // which put a tile's first line almost on its own top edge and made a
+    // column of tiles read as one striped slab.
+    listItemContentPad: QUEST_3_SPACING.snug,
+    listItemProseInset: QUEST_3_SPACING.snug,
     listItemMinPad: 0.005,
     listItemWrapCushion: 0.008,
     figureCaption: paragraphMetrics(0.02, 1.4, 0.012),
@@ -119,6 +180,8 @@ export const QUEST_3_PROFILE: DeviceProfile = {
     tableHeaderRowHeight: 0.065,
     tableMaxFlatColumns: 4,
     tableMaxFlatRows: 8,
+    spacing: QUEST_3_SPACING,
+    rhythm: blockRhythm(QUEST_3_BODY_FONT_SIZE * QUEST_3_BODY_LINE_RATIO),
     banner: fixed(0.16),
     footer: fixed(0.12),
     navigationBar: fixed(0.85),

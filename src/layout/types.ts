@@ -250,6 +250,68 @@ export interface TextBearingMetrics {
 }
 
 /**
+ * Interior padding scale for primitive surfaces — the distance between a
+ * surface's own edge and the content drawn on it.
+ *
+ * Derivation. Padding is only legible if it survives at the reading distance,
+ * so each step is a visual angle rather than a raw metre value. At the Quest 3
+ * profile's viewing distance d = 1.2 m, one degree subtends
+ *   2 · d · tan(0.5°) ≈ 0.0209 m,
+ * so ~21 mm is "one degree of padding". The scale is that unit stepped down in
+ * quarters, which keeps every inset in the codebase on one ladder instead of
+ * the per-mesh 4/14/18/20/26 mm literals this replaces.
+ *
+ * A view that changes reading distance must rescale these together with the
+ * font sizes, for the same reason (see the legibility note in profiles.ts).
+ */
+export interface SpacingScale {
+  /** ~0.2° — element to its own hairline accent bar or rule. */
+  hairline: number;
+  /** ~0.5° — interior of a compact chip, tag or inline pill. */
+  tight: number;
+  /** ~0.75° — interior of a control: button, input, combo box, tab. */
+  snug: number;
+  /** ~1° — interior of a card: list tile, blockquote, code block, figure. */
+  comfortable: number;
+  /** ~1.5° — interior of a section or landmark surface. */
+  generous: number;
+}
+
+/**
+ * Vertical rhythm — the gap between two stacked blocks, chosen by what the
+ * pair is rather than by one flat constant.
+ *
+ * Derivation. Proximity is read as grouping whether or not it was intended, so
+ * the gaps have to encode the document's grouping: a heading binds to the
+ * content beneath it, and the space that opens a new group must be visibly
+ * larger than the space inside one. Every step is a fraction of the body line
+ * box L = paragraph.fontSize × paragraph.lineHeightRatio (≈ 34 mm on the Quest
+ * 3 profile), the same way a CSS baseline grid quantises to the line height:
+ *
+ *   afterHeading   0.25·L   heading → its own content, deliberately tight
+ *   betweenBlocks  0.50·L   paragraph → paragraph, the default
+ *   aroundRule     0.75·L   either side of a separator
+ *   aroundBlock    0.75·L   either side of a figure, table, quote or code block
+ *   beforeHeading  1.00·L   a heading opens a new group, deliberately loose
+ *
+ * The 4:1 ratio between beforeHeading and afterHeading is the whole point: it
+ * is what makes a section boundary readable at the far end of the working band,
+ * where a 10 mm difference would not survive.
+ */
+export interface BlockRhythm {
+  /** Gap after a heading, before the content it introduces. */
+  afterHeading: number;
+  /** Gap before a heading that opens a new group. */
+  beforeHeading: number;
+  /** Gap between two ordinary stacked blocks (the default). */
+  betweenBlocks: number;
+  /** Gap either side of a separator rule. */
+  aroundRule: number;
+  /** Gap either side of a block object — figure, image, table, quote, code. */
+  aroundBlock: number;
+}
+
+/**
  * The complete set of render metrics the engine needs.
  *
  * Provided externally — typically one `RenderMetrics` object per DeviceProfile
@@ -378,6 +440,12 @@ export interface RenderMetrics {
   footer: FixedHeightMetrics;
   navigationBar: FixedHeightMetrics;
 
+  // ── Spacing ───────────────────────────────────────────────
+  /** Interior padding ladder shared by every primitive surface. */
+  spacing: SpacingScale;
+  /** Pair-aware vertical gaps between stacked blocks. */
+  rhythm: BlockRhythm;
+
   // ── Fallback ──────────────────────────────────────────────
   /**
    * Height floor used for any primitive type not covered above.
@@ -424,7 +492,13 @@ export interface LayoutConfig {
   eyeLevelOffset: number;
   /** Default curve radius for primary content panels (m). */
   panelCurveRadius: number;
-  /** Vertical gap between stacked child primitives (m). */
+  /**
+   * Residual gap used only INSIDE one prose node — between an inline run and a
+   * block child of the same paragraph, where there is no meaningful pair of
+   * blocks to measure. Stacking between siblings goes through `blockGap()`
+   * (layout/utils) and `metrics.rhythm` instead; a single flat gap cannot
+   * express grouping. Do not reach for this in new stacking code.
+   */
   childGapY: number;
   /** Top padding inside a panel before the first child (m). */
   panelPaddingTop: number;

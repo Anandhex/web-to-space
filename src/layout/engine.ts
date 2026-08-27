@@ -29,8 +29,10 @@ import type {
   SimpleStackResult,
 } from "./types";
 import {
+  blockGap,
   cardGridGap,
   containerInsetX,
+  tableColumnGeometry,
   isDecorativeGlyphItem,
   resolveListColumns,
   resolveTableStrategy,
@@ -179,6 +181,48 @@ export function stackChildrenSimple(
     return { childEntries, totalHeight };
   }
 
+  // ── Table row: cells run ACROSS ───────────────────────────────────────────
+  // The one container whose children are columns, not a stack. Falling through
+  // to the default branch below gave every cell the row's full width and put
+  // each on its own line, so a table rendered as one tall column of values with
+  // its entire grid structure — the thing a table IS — thrown away.
+  //
+  // Column geometry comes from tableColumnGeometry so the height estimate
+  // (_estimateTableRowHeight) measures each cell at exactly the width it will
+  // be drawn at; a cell measured wide and drawn narrow wraps to more lines than
+  // the row reserved and spills into the row beneath.
+  if (parentType === "XRTableRow" && children.length > 0) {
+    const { columnWidth, gutter } = tableColumnGeometry(
+      childWidth,
+      children.length,
+      metrics,
+    );
+    const childX = ownsXPadding ? insetX : 0;
+    const startY = ownsTopPadding ? -topOffset : 0;
+    let rowH = 0;
+    const childEntries: LayoutEntry[] = [];
+
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      let h = estimateHeight(child, columnWidth, metrics, config, new Set());
+      if (!h || h <= 0 || !isFinite(h)) h = metrics.fallbackElementHeight;
+      // The row is as tall as its tallest cell — every cell then shares one
+      // baseline instead of each floating at its own height.
+      rowH = Math.max(rowH, h);
+      childEntries.push({
+        id: child.id,
+        position: { x: childX + i * (columnWidth + gutter), y: startY, z: 0 },
+        rotation: zeroRotation(),
+        size: { width: columnWidth, height: h },
+        curveRadius: 0,
+        worldLocked: true,
+      });
+    }
+
+    const paddingContrib = ownsTopPadding ? topOffset * 2 : 0;
+    return { childEntries, totalHeight: paddingContrib + rowH };
+  }
+
   // ── Inline icon-image strip ────────────────────────────────────────────────
   // A wrapper whose children are ALL icon-sized images (e.g. every glyph in a
   // Wikipedia Coxeter-Dynkin diagram: node-edge-node-edge-...) represents one
@@ -236,6 +280,11 @@ export function stackChildrenSimple(
   // first such child gets no leading gap, and skipped empty wrappers must not
   // count as "the first child" or the real first row inherits a stray gap.
   let placedAny = false;
+  // The last child that actually occupied space — the gap to the next one is
+  // chosen from the PAIR (see blockGap), so skipped wrappers must not become
+  // the "previous" block or a heading's tight following gap lands in the wrong
+  // place.
+  let prevPlaced: XRPrimitive | null = null;
   const childEntries: LayoutEntry[] = [];
 
   for (const child of children) {
@@ -265,7 +314,7 @@ export function stackChildrenSimple(
       console.warn(`Child ${child.id} had zero height, using fallback`, child);
     }
 
-    const gap = placedAny ? config.childGapY : 0;
+    const gap = placedAny ? blockGap(prevPlaced, child, metrics) : 0;
 
     const entry: LayoutEntry = {
       id: child.id,
@@ -283,6 +332,7 @@ export function stackChildrenSimple(
     childEntries.push(entry);
     cursorY -= gap + h;
     placedAny = true;
+    prevPlaced = child;
   }
 
   // paddingContrib mirrors startY's reservation plus a matching bottom gap.

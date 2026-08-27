@@ -117,9 +117,19 @@ export function XRHeadingMesh({
         {primitive.content ?? primitive.label ?? ""}
       </ClippedText>
 
-      {/* Accent underline for H3+ */}
+      {/* Accent underline for H3+, sat one line box below the text's top edge
+          (the heading is anchored top) plus a hairline of clearance, so it
+          tracks the metric instead of a hard-coded 1.35 that only matched one
+          heading level's line height. */}
       {showAccent && (
-        <mesh position={[entry.size.width * 0.5, -fontSize * 1.35, 0]}>
+        <mesh
+          position={[
+            entry.size.width * 0.5,
+            -(fontSize * headingMetric.lineHeightRatio +
+              metrics.spacing.hairline),
+            0,
+          ]}
+        >
           <planeGeometry args={[entry.size.width, 0.002]} />
           <meshBasicMaterial
             color={theme.accentCol}
@@ -165,10 +175,8 @@ export function XRParagraphMesh({
   renderChild,
 }: XRParagraphMeshProps) {
   const { pos, rot } = entryTransform(entry);
-  const clips = useClipPlanes();
   const theme = useTheme();
   const w = safeDim(entry.size.width);
-  const h = safeDim(entry.size.height);
   const metrics = useRenderMetrics();
 
   // FIX: flatten transparent XRGenericPanel wrappers (e.g. a <span title="…">
@@ -213,31 +221,33 @@ export function XRParagraphMesh({
     );
   }
 
-  const skipPanel = primitive.wordCount <= 10;
+  const m = metrics.paragraph;
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Backing panel — flat Horizon card with a subtle top-lighter gradient */}
-      {!skipPanel && (
-        <Surface
-          width={w}
-          height={h}
-          color={theme.panelBg}
-          gradient
-          clips={clips}
-        />
-      )}
+      {/* No backing surface. A paragraph is running prose, not an object: it
+          sits on whatever card already holds it (the section, the list tile,
+          the content panel), and painting a second near-coplanar fill of its
+          own just banded that card with a lighter rectangle that started and
+          stopped mid-flow. Grouping is carried by the rhythm gaps around it
+          (metrics.rhythm) and by the padding of the card it sits on.
 
-      {/* Body text - only render content directly if no text children */}
+          Geometry matches the engine's estimate exactly — full content width,
+          no inset, metrics.paragraph for both size and line height. It used to
+          draw at x = 0.02 with maxWidth w − 0.04 and lineHeight 1.55 while the
+          engine measured the box at full width and lineHeightRatio 1.3, so the
+          drawn text wrapped sooner AND ran ~19% taller than the space reserved
+          for it — the last lines of a long paragraph slid under the block
+          below. Both sides read metrics.paragraph now; change them together. */}
       <ClippedText
         anchorX="left"
         anchorY="top"
-        position={[0.02, -0.018, Z_LAYER_BODY_TEXT]}
+        position={[0, -m.verticalPadding / 2, Z_LAYER_BODY_TEXT]}
         renderOrder={RENDER_ORDER_TEXT}
-        fontSize={0.026}
+        fontSize={m.fontSize}
         color={theme.bodyCol}
-        maxWidth={w - 0.04}
-        lineHeight={1.55}
+        maxWidth={w}
+        lineHeight={m.lineHeightRatio}
         letterSpacing={0.005}
       >
         {primitive.content ?? primitive.label ?? ""}
@@ -310,6 +320,7 @@ export function XRSectionMesh({
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
 
   // Panel height = span from the top of the first visible child to the
@@ -332,16 +343,30 @@ export function XRSectionMesh({
 
   return (
     <group position={pos} rotation={rot}>
-      {/* Section backing — a single flat fill. Sections nest inside the main
-          content panel (which already carries the border/gradient "hero"
-          treatment — see PanelBacking), so every section does NOT repeat
-          that same border+gradient+highlight stack: a document with a dozen
-          short sections on one page previously stacked a dozen near-
-          identical 4-layer glass slabs at nearly the same Z depth, reading
-          as a solid "brick" when viewed edge-on. One flat layer per section
-          keeps nested containers visually quiet and avoids that compounding. */}
+      {/* Section backing — ONE quiet layer, padded out around its content.
+          Sections nest inside the main content panel (which already carries
+          the gradient + rim "hero" treatment — see PanelBacking), so a section
+          does NOT repeat that stack: a document with a dozen short sections on
+          one page previously stacked a dozen near-identical 4-layer glass slabs
+          at nearly the same Z depth, reading as a solid "brick" when viewed
+          edge-on. One layer per section keeps nested containers quiet.
+
+          `pad` is what makes it a card rather than a band. w/h describe the box
+          the CHILDREN occupy — the engine owns those positions and this mesh
+          must not move them — so the fill was previously drawn flush to its own
+          heading on every edge. Growing the geometry outward by one interior
+          padding step gives the card its margin without touching a single child
+          position. */}
       {!insideCard && (
-        <Surface width={w} height={h} color={theme.panelBg} clips={clips} />
+        <Surface
+          width={w}
+          height={h}
+          pad={metrics.spacing.comfortable}
+          color={theme.sectionBg}
+          rimColor={theme.panelRim}
+          rimOpacity={0.28}
+          clips={clips}
+        />
       )}
 
       {/* "Continued from previous page" top edge indicator */}
@@ -383,10 +408,19 @@ export function XRCodeBlockMesh({
   const { pos, rot } = entryTransform(entry);
   const clips = useClipPlanes();
   const theme = useTheme();
+  const metrics = useRenderMetrics();
   const w = safeDim(entry.size.width);
   const h = safeDim(entry.size.height);
   const CODE_BG = theme.inputBg;
-  const CODE_COL = "#116329";
+  const CODE_COL = theme.codeCol;
+  // One inset, read from the shared scale, used for BOTH the left margin and
+  // the wrap width — and mirrored by _estimateCodeBlockHeight, which subtracts
+  // the same 2 × inset. The mesh used to flow at w − 0.018 while the estimate
+  // measured at the full panel width, so a wrapped line the estimate never
+  // counted ran off the bottom of the block's own card.
+  const m = metrics.codeBlock;
+  const inset = metrics.spacing.snug;
+  const topInset = m.verticalPadding / 2;
 
   // Mirrors XRBlockQuoteMesh: children extracted by the parser (e.g. a
   // synthetic text run, or block-level content) were previously discarded
@@ -413,10 +447,10 @@ export function XRCodeBlockMesh({
 
       {/* Left accent stripe */}
       <mesh
-        position={[0.005, -h / 2, Z_LAYER_ACCENT]}
+        position={[metrics.spacing.hairline, -h / 2, Z_LAYER_ACCENT]}
         renderOrder={RENDER_ORDER_ACCENT}
       >
-        <planeGeometry args={[0.007, h * 0.85]} />
+        <planeGeometry args={[metrics.spacing.hairline * 1.6, h * 0.85]} />
         <meshBasicMaterial
           color={CODE_COL}
           transparent
@@ -428,23 +462,23 @@ export function XRCodeBlockMesh({
       {hasAnyInlineChild ? (
         <InlineProseRows
           rows={rows}
-          startY={-0.014}
-          panelWidth={w - 0.018}
-          fontSize={0.02}
-          lineHeightRatio={1.6}
-          xInset={0.018}
+          startY={-topInset}
+          panelWidth={w - inset}
+          fontSize={m.fontSize}
+          lineHeightRatio={m.lineHeightRatio}
+          xInset={inset}
           renderChild={renderChild}
         />
       ) : hasAnyChildren ? null : ( // the caller — render nothing here to avoid duplicating content. // Block-only children are dispatched as true positioned siblings by
         <ClippedText
           anchorX="left"
           anchorY="top"
-          position={[0.018, -0.014, Z_LAYER_BODY_TEXT]}
+          position={[inset, -topInset, Z_LAYER_BODY_TEXT]}
           renderOrder={RENDER_ORDER_TEXT}
-          fontSize={0.02}
+          fontSize={m.fontSize}
           color={CODE_COL}
-          maxWidth={w - 0.03}
-          lineHeight={1.6}
+          maxWidth={w - inset * 2}
+          lineHeight={m.lineHeightRatio}
           letterSpacing={0.02}
         >
           {primitive.content ?? primitive.label ?? ""}
@@ -491,7 +525,11 @@ export function XRBlockQuoteMesh({
     ? buildInlineRows(mergeAdjacentTextRuns(flatChildren))
     : [];
   const m = metrics.blockQuote ?? metrics.paragraph;
-  const X_INSET = 0.026;
+  // Shared with the height estimate via metrics.spacing — the two used to be
+  // two hand-copied 0.026 literals in two files with a comment asking whoever
+  // touched one to remember the other.
+  const X_INSET = metrics.spacing.comfortable;
+  const topInset = m.verticalPadding / 2;
 
   return (
     <group position={pos} rotation={rot}>
@@ -506,10 +544,10 @@ export function XRBlockQuoteMesh({
 
       {/* Left quote accent bar */}
       <mesh
-        position={[0.006, -h / 2, Z_LAYER_ACCENT]}
+        position={[metrics.spacing.hairline * 1.5, -h / 2, Z_LAYER_ACCENT]}
         renderOrder={RENDER_ORDER_ACCENT}
       >
-        <planeGeometry args={[0.01, h * 0.8]} />
+        <planeGeometry args={[metrics.spacing.hairline * 2.4, h * 0.8]} />
         <meshBasicMaterial
           color={QUOTE_ACCENT}
           transparent
@@ -523,7 +561,7 @@ export function XRBlockQuoteMesh({
         // rendered as a single prose run, matching what the engine measured.
         <InlineProseRows
           rows={rows}
-          startY={-0.018}
+          startY={-topInset}
           panelWidth={w - X_INSET}
           fontSize={m.fontSize}
           lineHeightRatio={m.lineHeightRatio}
@@ -538,12 +576,12 @@ export function XRBlockQuoteMesh({
         <ClippedText
           anchorX="left"
           anchorY="top"
-          position={[X_INSET, -0.018, Z_LAYER_BODY_TEXT]}
+          position={[X_INSET, -topInset, Z_LAYER_BODY_TEXT]}
           renderOrder={RENDER_ORDER_TEXT}
-          fontSize={0.024}
-          color="#8B6D3F"
-          maxWidth={w - 0.04}
-          lineHeight={1.5}
+          fontSize={m.fontSize}
+          color={theme.bodyCol}
+          maxWidth={w - X_INSET * 2}
+          lineHeight={m.lineHeightRatio}
           letterSpacing={0.003}
           clearCurvedBacking
         >
