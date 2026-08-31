@@ -1,5 +1,5 @@
 /**
- * eval/xr-quality.ts — literature-grounded spatial-quality metrics for the XR
+ * compare/xr-quality.ts — literature-grounded spatial-quality metrics for the XR
  * output. Unlike compare/metrics.ts (which stops at the IR), these judge the
  * *placed* LayoutPlan: can the user actually read and reach the content?
  *
@@ -21,9 +21,9 @@
  * (0, eyeLevel, 0) looking down −Z, matching the renderer's camera rig.
  */
 
-import type { LayoutPlan, LayoutEntry } from "../layout/types";
-import type { DeviceProfile } from "../layout/types";
-import type { SemanticScene, XRPrimitive, XRPrimitiveType } from "../mapper/types";
+import type { LayoutPlan, LayoutEntry } from "../../layout/types";
+import type { DeviceProfile } from "../../layout/types";
+import type { SemanticScene, XRPrimitive, XRPrimitiveType } from "../../mapper/types";
 
 // Legibility thresholds in degrees of visual angle (cap-height).
 const LEGIBILITY_FLOOR_DEG = 0.29;

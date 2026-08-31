@@ -67,16 +67,20 @@ import {
   type DirSlot,
   type DirSlots,
 } from "./link-doors";
-import { useTraversal } from "./contexts";
+import { useTraversal, usePageLinks } from "./contexts";
+import { useNeighbourhood, type Neighbourhood, type WingDoc } from "./use-neighbourhood";
+import { WingCard } from "./neighbour-walls";
 import { TravelGroup, TRAVEL_LEAD_MS } from "./travel";
-import type { Axis } from "../../links/memory";
+import { AXES, type Axis } from "../../links/memory";
 import { Surface } from "../primitives/surface";
 import {
   Z_LAYER_ACCENT,
   Z_LAYER_OVERLAY_TEXT,
   Z_SURFACE,
+  HIT_TARGET_MATERIAL,
 } from "../primitives/constants";
 import { AtPos } from "./AtPos";
+import { stackRun } from "../run-layout";
 import { FontContext, type PageState } from "./contexts";
 import {
   CellShadow,
@@ -719,7 +723,11 @@ function CloseChip({ width, onClose }: { width: number; onClose: () => void }) {
         onPointerOut={() => setHover(false)}
       >
         <circleGeometry args={[d / 2, 24]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <primitive
+          object={HIT_TARGET_MATERIAL}
+          attach="material"
+          dispose={null}
+        />
       </mesh>
       <Text
         font={fontType}
@@ -983,6 +991,59 @@ export function WallField({
     if (arrived) setTurning(null);
   }, [arrived, resetKey]);
 
+  // ── The neighbourhood ──
+  //
+  // Wings are scoped to the DOCUMENT, or to a section once one is open — never
+  // to a rendered page, which is what separates them from the strips above.
+  // The census puts outbound links at a median of 0 per rendered page, so a
+  // per-page neighbourhood would be empty most of the time; and a wing is a
+  // whole document, so re-aiming one every time the reader turns a page would
+  // make the corridor flicker (docs/neighbour-walls.md, Part I).
+  const pageLinks = usePageLinks();
+  const scopeRange = openSection === null ? null : (ranges[openSection] ?? null);
+  const scopedLinks = React.useMemo(() => {
+    const all = pageLinks?.links ?? [];
+    if (!scopeRange) return all;
+    return all.filter(
+      (l) => l.pageIndex >= scopeRange.start && l.pageIndex <= scopeRange.end,
+    );
+  }, [pageLinks, scopeRange]);
+
+  const currentUrl = traversalNav
+    ? (traversalNav.history[traversalNav.at]?.url ?? null)
+    : null;
+  const panelSize = entry?.size ?? null;
+  // Two expanded neighbours per direction, which is what the design asks for:
+  // "at most two such views" a direction, everything else a plate.
+  const lanesFor = React.useCallback(() => (board && panelSize ? 2 : 0), [board, panelSize]);
+  const hood = useNeighbourhood({
+    url: currentUrl,
+    links: scopedLinks,
+    scopeKey: openSection === null ? "doc" : `s${openSection}`,
+    nav: traversalNav,
+    viewMode: viewMode ?? "wall",
+    lanesFor,
+    enabled: board !== null && panelSize !== null,
+  });
+
+  // A wing is taken exactly as a strip is: the board starts turning, and only
+  // then is the document asked for. The direction is the channel — a fetch
+  // that resolved instantly would otherwise swap the scene before the reader
+  // saw which way they had gone.
+  const takeWing = React.useCallback(
+    (wing: WingDoc) => {
+      if (!traversal) return;
+      if (turnTimer.current) clearTimeout(turnTimer.current);
+      setTurning(wing.axis);
+      turnTimer.current = setTimeout(() => {
+        turnTimer.current = null;
+        if (wing.historyIndex !== undefined) traversal.jump(wing.historyIndex);
+        else traversal.traverse(wing.url, wing.axis, wing.label);
+      }, TRAVEL_LEAD_MS);
+    },
+    [traversal],
+  );
+
   if (!entry) return null;
 
   // The backing wall's silhouette, in the board group's own frame — the spine
@@ -990,14 +1051,41 @@ export function WallField({
   // already clear the header plate and the hint line. `board` is recomputed
   // for the current disclosure, so the strips follow the reflow for free and
   // sit on the same four edges whichever page inside it is open.
-  const stripFrame: StripFrame | null = board
+  // ── What the strips ring ──
+  //
+  // The OPENED PAGE, not the board. Strips only appear once a page is open
+  // (see `showStrips`), and that page is the thing they belong to: they are
+  // its links, and the reader is looking at it, not at the board behind it.
+  //
+  // The first build hung them on the board's outer edge, on the argument that
+  // nothing is ever drawn there so nothing could occlude them. That is true in
+  // the board's own plane and false from where the reader sits: the page is
+  // lifted `WALL_OPEN_LIFT` toward them, so it subtends nearly as much of
+  // their field as the whole board does, and it covered its own doors.
+  //
+  // Ringing the page in the PAGE's plane settles it by construction — a plate
+  // outside the page's silhouette, at the page's own depth, cannot be behind
+  // it, whatever the reader's distance. (This is the same fix the earlier
+  // attempt reached for and missed: it moved the RECTANGLE to the page and
+  // left the PLANE on the board, which is why the plates came out half hidden.)
+  const openCell = cells.find((c) => c.kind === "page" && c.open) ?? null;
+  const stripFrame: StripFrame | null = openCell
     ? {
-        left: board.spine[0].x,
-        right: board.spine[board.spine.length - 1].x,
-        top: board.top,
-        bottom: board.bottom,
+        left: openCell.centre.x - entry.size.width / 2,
+        right: openCell.centre.x + entry.size.width / 2,
+        top: openCell.centre.y + entry.size.height / 2,
+        bottom: openCell.centre.y - entry.size.height / 2,
+        z: openCell.centre.z + STRIP_LIFT,
+        yaw: openCell.rotation.y,
       }
-    : null;
+    : board
+      ? {
+          left: board.spine[0].x,
+          right: board.spine[board.spine.length - 1].x,
+          top: board.top,
+          bottom: board.bottom,
+        }
+      : null;
 
   const maxPages = ranges.reduce((m, r) => Math.max(m, r.end - r.start + 1), 1);
   const openRange = openSection === null ? null : (ranges[openSection] ?? null);
@@ -1049,12 +1137,20 @@ export function WallField({
               WALL's own edges, where nothing can occlude them and where they
               stay put as the board reflows. They are still the open page's
               links: only while a page is open; see the note at `showStrips`. */}
-          {showStrips && stripFrame && (
+          {stripFrame && (
             <WallLinkStrips
               frame={stripFrame}
               panelWidth={entry.size.width}
               slots={slots}
+              showSlots={showStrips}
+              hood={hood}
+              eye={{
+                x: -entry.position.x,
+                y: -entry.size.height / 2,
+                z: -entry.position.z,
+              }}
               onTake={takeStrip}
+              onTakeWing={takeWing}
             />
           )}
           <WallHeader
@@ -1281,24 +1377,78 @@ const STRIP_W_LATERAL = 0.42;
  */
 const STRIP_LIFT = 0.02;
 
-/** The rectangle the strips hang off: the backing wall's own silhouette. */
+/**
+ * The rectangle the strips hang off, and the plane they hang in.
+ *
+ * `z` is what makes the difference between a ring and a rumour. Without it the
+ * strips are drawn on the BOARD's plane whatever rectangle they are given, and
+ * the board is half a metre further away than the page being read — so from a
+ * headset's viewing distance the opened page, 1.386 m wide at 1.2 m, subtends
+ * about 60° while the whole board subtends 64°, and the strips at its edge
+ * disappear behind the very page whose links they are.
+ */
 interface StripFrame {
   left: number;
   right: number;
   top: number;
   bottom: number;
+  /** Plane to draw in. Omit to sit on the board's own arc. */
+  z?: number;
+  /** Yaw to draw at when `z` is set — the plane's own, not the arc's. */
+  yaw?: number;
 }
+
+/** How many plate-heights an expanded neighbour is worth. */
+const WING_ROWS = 3.4;
+/**
+ * How wide each column of the run is, as a fraction of the first.
+ *
+ * One column per corridor DEPTH. The first holds this page's own doors, and
+ * the neighbours among them are drawn as cards, because a depth-1 neighbour
+ * IS one of this page's links. Depth 2 and 3 are not — they are links on
+ * somebody else's page, reached through the card in front of them — so they
+ * get their own columns beyond it rather than being mixed into a list they do
+ * not belong to. Each column narrows, which is the corridor's recession
+ * expressed in the only channel a column has.
+ */
+const COLUMN_SCALE = [1, 0.82, 0.68];
 
 function WallLinkStrips({
   frame,
   panelWidth,
   slots,
+  showSlots,
+  hood,
+  eye,
   onTake,
+  onTakeWing,
 }: {
   frame: StripFrame;
   panelWidth: number;
   slots: DirSlots;
+  /**
+   * Draw the page's own doors as well as its neighbours.
+   *
+   * False on the closed board, where `slots` holds the doors of whichever page
+   * a section happens to start at — a page nobody chose. The NEIGHBOURHOOD is
+   * a property of the document, not of a page, so it shows there anyway: the
+   * closed board carries its neighbours' cards and nothing else.
+   */
+  showSlots: boolean;
+  /** The neighbours whose documents have arrived — drawn in place of a plate. */
+  hood: Neighbourhood;
+  /**
+   * The reader, in this group's frame. Each column is turned to face them.
+   *
+   * A column two metres out to the side, drawn in the page's own plane, is
+   * read almost edge-on: its plates foreshorten to slivers and its cards to
+   * nothing. Turning each column about its own axis costs nothing — a column
+   * is already one plane — and is the difference between a door you can read
+   * and a door you can only tell is there.
+   */
+  eye: { x: number; y: number; z: number };
   onTake: (slot: DirSlot) => void;
+  onTakeWing: (wing: WingDoc) => void;
 }) {
   // ── The strips hang off the BOARD's edge, not off the open page ──
   //
@@ -1317,104 +1467,191 @@ function WallLinkStrips({
   // side columns out toward the wings — and that is the channel working as
   // designed rather than a fault: up is up, and the way out is at the edge of
   // the room. (Anand, 2026-08-18.)
-  const centreX = (frame.left + frame.right) / 2;
-  const centreY = (frame.top + frame.bottom) / 2;
   const frameW = Math.max(0.2, frame.right - frame.left);
 
-  /**
-   * Rows and columns both fill from the MIDDLE OUT (Anand, 2026-08-16).
-   *
-   * Filling from an edge put the nearest door — the way back, the first
-   * sibling — at whichever end of the board the packing happened to start,
-   * which changes as the board reflows. Fanning from the centre puts slot 0
-   * where the reader is already looking and grows the run outward, so the
-   * order is stable and reads as a rank rather than a queue.
-   *
-   * Offsets go 0, +1, −1, +2, −2 …, which is the sequence the reader's eye
-   * follows anyway.
-   */
-  const centreOut = (n: number): number[] =>
-    Array.from({ length: n }, (_, i) =>
-      i === 0 ? 0 : (i % 2 === 1 ? 1 : -1) * Math.ceil(i / 2),
-    );
+  // ── One run per side, plates and cards together ──
+  //
+  // A neighbour is not a separate object floating outside the composition; it
+  // is one of THIS page's links, drawn bigger because the document leans on it.
+  // So the run is a single list — the page's doors in rank order — and a door
+  // whose document has arrived takes a card's worth of room in that list
+  // instead of a plate's. (An earlier build put the cards in a ring outside the
+  // strips, which read as two unrelated systems and put the same destination in
+  // two places at once.)
+  type RunItem =
+    | { kind: "slot"; slot: DirSlot | null; rows: number }
+    | { kind: "wing"; wing: WingDoc; rows: number };
 
-  /** The drawable slots plus the overflow mark, as one list to lay out. */
-  const runOf = (axis: Axis): (DirSlot | null)[] => {
-    const drawn = drawable(slots[axis]);
-    const extra = overflowCount(slots[axis]);
-    return extra > 0 ? [...drawn, null] : drawn;
+  /**
+   * Which plate each depth-1 card stands in for, across ALL four directions.
+   *
+   * A card must appear in the direction its own link points, and the ranker
+   * cannot decide that. `links/neighbours.ts` splits its laterals right-first
+   * by SCORE; `links/slots.ts` splits the page's laterals right-first by
+   * READING ORDER. Two different orderings of the same two sides, so a link
+   * whose inline mark says `▸` could have its card open on the left — the one
+   * failure the directional legend exists to prevent, and the reason the plate
+   * has the final say here.
+   *
+   * Computed once for the whole run rather than per direction, because that is
+   * the only way to notice that a card ranked `left` belongs to a plate on the
+   * `right` — and the only way to be sure a card is drawn exactly once.
+   */
+  const claim = React.useMemo(() => {
+    const byUrl = new Map<string, WingDoc>();
+    for (const a of AXES)
+      for (const w of hood[a]) if (w.state === "ready" && w.depth === 1) byUrl.set(w.url, w);
+    /** wing key → the plate it replaces. */
+    const at = new Map<string, { axis: Axis; slotKey: string }>();
+    for (const a of AXES)
+      for (const slot of drawable(slots[a])) {
+        const w = byUrl.get(slot.url);
+        if (w && !at.has(w.key)) at.set(w.key, { axis: a, slotKey: slot.key });
+      }
+    return { byUrl, at };
+  }, [hood, slots]);
+
+  const runOf = (axis: Axis, depth: number): RunItem[] => {
+    const ready = hood[axis].filter((w) => w.state === "ready" && w.depth === depth);
+
+    // Beyond the first column there are no plates to merge with: those are
+    // another page's links, and this page has nothing to say about them.
+    if (depth > 1) return ready.map((w) => ({ kind: "wing", wing: w, rows: WING_ROWS }));
+
+    const out: RunItem[] = [];
+    for (const slot of showSlots ? drawable(slots[axis]) : []) {
+      const wing = claim.byUrl.get(slot.url);
+      // The card takes the plate's place — in the plate's direction, whatever
+      // the ranker thought. A plate is never drawn beside its own card.
+      if (wing && claim.at.get(wing.key)?.slotKey === slot.key)
+        out.push({ kind: "wing", wing, rows: WING_ROWS });
+      else out.push({ kind: "slot", slot, rows: 1 });
+    }
+    // A neighbour with no plate on this page — one the reader travelled to, or
+    // one ranked from the document while no page is open — keeps the direction
+    // the ranker gave it, since nothing else has an opinion.
+    for (const w of ready)
+      if (!claim.at.has(w.key)) out.push({ kind: "wing", wing: w, rows: WING_ROWS });
+
+    if (showSlots && overflowCount(slots[axis]) > 0)
+      out.push({ kind: "slot", slot: null, rows: 1 });
+
+    // ── Cards to the middle, plates around them ──
+    //
+    // `stackRun` places item 0 at the centre and works outward, so the order
+    // of this list IS the order of the column from the middle out. Leading
+    // with the cards puts the neighbourhood where the reader is already
+    // looking and rings it with the rest of the page's doors.
+    //
+    // One exception, and it is the older rule: the way back keeps the centre
+    // if there is one. It is the single door a reader must be able to find
+    // without reading anything, and a card is a thing you read.
+    const back = out.filter((it) => it.kind === "slot" && it.slot?.kind === "return");
+    const cards = out.filter((it) => it.kind === "wing");
+    const rest = out.filter(
+      (it) => it.kind === "slot" && it.slot?.kind !== "return",
+    );
+    return [...back, ...cards, ...rest];
   };
 
-  const plate = (
-    s: DirSlot | null,
+  /** Turn a group at `p` to face the reader. YXZ: yaw, then pitch. */
+  const facing = (p: { x: number; y: number; z: number }): [number, number, number] => {
+    const dx = eye.x - p.x;
+    const dy = eye.y - p.y;
+    const dz = eye.z - p.z;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    return [-Math.asin(dy / len), Math.atan2(dx, dz), 0];
+  };
+
+  const draw = (
+    item: RunItem,
     axis: Axis,
     w: number,
+    h: number,
     x: number,
     y: number,
+    key: string,
   ): React.ReactNode => {
-    const arc = wallArcAt(x, panelWidth);
     return (
-      <group
-        key={s ? s.key : `${axis}-overflow`}
-        position={[x, y, arc.z - WALL_BOARD_STANDOFF + STRIP_LIFT]}
-        rotation={[0, arc.yaw, 0]}
-      >
-        {s ? (
+      <group key={key} position={[x, y, 0]}>
+        {item.kind === "wing" ? (
+          <WingCard wing={item.wing} width={w} height={h} onTake={onTakeWing} />
+        ) : item.slot ? (
           <DoorPlate
-            slot={s}
+            slot={item.slot}
             width={w}
-            height={STRIP_H}
-            recession={s.distance - 1}
-            onSelect={() => onTake(s)}
+            height={h}
+            recession={item.slot.distance - 1}
+            onSelect={() => onTake(item.slot as DirSlot)}
           />
         ) : (
-          <OverflowMark count={overflowCount(slots[axis])} width={w} height={STRIP_H} />
+          <OverflowMark count={overflowCount(slots[axis])} width={w} height={h} />
         )}
       </group>
     );
   };
 
-  // Parent and external rows run ALONG the edge, fanning from the centre. The
-  // plate width is fixed rather than divided into the span: dividing made a
-  // two-door row into two half-metre banners and a six-door row into slivers,
-  // so the same link was a different size on every page.
-  const horizontal = (axis: "up" | "down", y: number): React.ReactNode => {
-    const run = runOf(axis);
-    if (run.length === 0) return null;
-    const w = Math.min(
-      STRIP_W_LATERAL,
-      (frameW - STRIP_GAP * 2) / Math.max(1, Math.min(run.length, 5)),
-    );
-    const pitch = w + STRIP_GAP;
-    return centreOut(run.length).map((k, i) =>
-      plate(run[i], axis, w, centreX + k * pitch, y),
-    );
+  const keyOf = (it: RunItem, axis: Axis, depth: number) =>
+    it.kind === "wing" ? it.wing.key : (it.slot?.key ?? `${axis}-${depth}-overflow`);
+
+  /** Parent above and external below: rows across the panel's top or bottom. */
+  const horizontal = (axis: "up" | "down", edge: number): React.ReactNode => {
+    const dir = axis === "up" ? 1 : -1;
+    let offset = STRIP_GAP;
+    return COLUMN_SCALE.map((k, col) => {
+      const items = runOf(axis, col + 1);
+      if (items.length === 0) return null;
+      const unit = Math.min(STRIP_W_LATERAL, frameW / 4) * k;
+      const rowH = STRIP_H * (items.some((it) => it.kind === "wing") ? WING_ROWS * 0.75 : 1) * k;
+      const y = edge + dir * (offset + rowH / 2);
+      offset += rowH + STRIP_GAP;
+      const { centres, size } = stackRun(items, frameW, unit, STRIP_GAP);
+      const cx = (frame.left + frame.right) / 2;
+      const arc = wallArcAt(cx, panelWidth);
+      const z = frame.z !== undefined ? frame.z : arc.z - WALL_BOARD_STANDOFF + STRIP_LIFT;
+      const at = { x: cx, y, z };
+      return (
+        <group key={`${axis}-col${col}`} position={[cx, y, z]} rotation={[...facing(at), "YXZ"]}>
+          {items.map((it, i) =>
+            draw(it, axis, size[i], rowH, centres[i], 0, keyOf(it, axis, col + 1)),
+          )}
+        </group>
+      );
+    });
   };
 
-  // Lateral strips stack DOWN the side edges, fanning from the board's own
-  // vertical centre for the same reason the rows fan from its horizontal one:
-  // slot 0 lands at eye level, where the reader is already looking.
+  /** Siblings: columns down the panel's side, each the full height. */
   const vertical = (axis: "left" | "right"): React.ReactNode => {
-    const run = runOf(axis);
-    if (run.length === 0) return null;
-    const x =
-      axis === "left"
-        ? frame.left - STRIP_GAP - STRIP_W_LATERAL / 2
-        : frame.right + STRIP_GAP + STRIP_W_LATERAL / 2;
-    const pitch = STRIP_H + STRIP_GAP;
-    return centreOut(run.length).map((k, i) =>
-      plate(run[i], axis, STRIP_W_LATERAL, x, centreY - k * pitch),
-    );
+    const dir = axis === "left" ? -1 : 1;
+    const edge = axis === "left" ? frame.left : frame.right;
+    const span = Math.max(STRIP_H, frame.top - frame.bottom);
+    const cy = (frame.top + frame.bottom) / 2;
+    let offset = STRIP_GAP;
+    return COLUMN_SCALE.map((k, col) => {
+      const items = runOf(axis, col + 1);
+      if (items.length === 0) return null;
+      const w = STRIP_W_LATERAL * k;
+      const x = edge + dir * (offset + w / 2);
+      offset += w + STRIP_GAP;
+      const { centres, size } = stackRun(items, span, STRIP_H * k, STRIP_GAP);
+      const arc = wallArcAt(x, panelWidth);
+      const z = frame.z !== undefined ? frame.z : arc.z - WALL_BOARD_STANDOFF + STRIP_LIFT;
+      const at = { x, y: cy, z };
+      return (
+        <group key={`${axis}-col${col}`} position={[x, cy, z]} rotation={[...facing(at), "YXZ"]}>
+          {items.map((it, i) =>
+            draw(it, axis, w, size[i], 0, centres[i], keyOf(it, axis, col + 1)),
+          )}
+        </group>
+      );
+    });
   };
 
   // Above the board's top edge and below its bottom one — up is up.
-  const upY = frame.top + STRIP_GAP + STRIP_H / 2;
-  const downY = frame.bottom - STRIP_GAP - STRIP_H / 2;
-
   return (
     <>
-      {horizontal("up", upY)}
-      {horizontal("down", downY)}
+      {horizontal("up", frame.top)}
+      {horizontal("down", frame.bottom)}
       {vertical("left")}
       {vertical("right")}
     </>

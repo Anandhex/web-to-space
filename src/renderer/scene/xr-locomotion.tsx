@@ -10,75 +10,39 @@
  * frozen in a headset: you could look around whatever the view had put in
  * front of you and never move through it.
  *
- * This module is the other end of those same actions, and nothing more. It does
- * not invent a second navigation model; it hands the existing ones the two
- * gestures a headset can make:
+ * What lives here is the STICK half of the answer — the thumbsticks, read raw,
+ * fed into the same walk the keys drive. Continuous for walking, detented for
+ * anything that steps (a floor, a page) so one push is one step and a held
+ * stick repeats at a readable rate rather than sweeping the whole document in
+ * half a second.
  *
- *  - **The thumbstick**, when the reader is holding controllers. Continuous for
- *    walking, detented for anything that steps (a floor, a page) so one push is
- *    one step and a held stick repeats at a readable rate rather than sweeping
- *    the whole document in half a second.
+ * ── The half that is no longer here ──
  *
- *  - **Look, and double-tap**, which is all that is left when the reader has no
- *    controllers at all. A pinch is a `select`, exactly as a trigger pull is, so
- *    one listener covers hand tracking and controllers together — and the aim
- *    comes from the HEAD, which every input mode has. That is why the gesture is
- *    "look at the floor and tap twice" rather than "point at the floor": there
- *    is no ray to point with when the reader's hands are their input.
+ * Going somewhere without walking to it is {@link RoomTeleport}, over in
+ * `room-walk.tsx`, and it is no longer built out of anything in this file. It
+ * used to be: aim with the HEAD by looking more than fifteen degrees below the
+ * horizon, then `select` TWICE inside 450 ms. Both halves were wrong, and they
+ * were wrong in the same way — each existed to keep the gesture from colliding
+ * with something else, and the reader paid for both.
  *
- * Why double, not single: a single `select` is already the app's click. Links,
- * pager buttons, reading spots, the tab bar and every page hit-plane are wired
- * to it through R3F's pointer events, which @react-three/xr drives from these
- * same input sources. A single-tap teleport would fire on every one of them.
- * Two taps inside {@link DOUBLE_TAP_MS}, aimed below the horizon at a piece of
- * floor the reader could walk to, is a gesture nothing else in the scene makes.
+ *  - **Aiming with the head** meant aiming with the thing you read with. To
+ *    put the reticle on a doorway eight metres off you had to point your face
+ *    at the floor, which is the one direction from which you cannot see where
+ *    you are going; and the pitch gate that stopped a glance at a page from
+ *    arming it also meant every short hop needed a deliberate stoop. Aiming
+ *    and looking were the same channel, so you could not do both at once.
+ *  - **Double-tapping** existed because a single `select` is the app's click.
+ *    But the ambiguity was never in the tap count — it was in WHERE the tap
+ *    was aimed, and the head has no ray to answer that with.
+ *
+ * The pointer does. Both hands already carry one, drawn and visible (see
+ * `RAY_POINTER` in `useXRSession.tsx`), and a ray that lands on the floor is
+ * not landing on a link. So the aim moved to the hand, the tap count went back
+ * to one, and the pitch gate and the 450 ms window both went with them.
  */
 import React from "react";
-import { useXR, useXRInputSourceState } from "@react-three/xr";
+import { useXRInputSourceState } from "@react-three/xr";
 import * as THREE from "three";
-
-/**
- * How far apart two `select`s may be and still read as one double tap.
- *
- * Generous, because a pinch is a slower gesture than a trigger pull and hand
- * tracking's own recognition latency is inside this budget — but short enough
- * that two deliberate, separate clicks on two different links never collide.
- */
-const DOUBLE_TAP_MS = 450;
-
-/**
- * Fires `onTap` when one input source selects twice in quick succession.
- *
- * Per input source, not global: the reader's two hands are two devices, and a
- * tap from each inside the window is two people's worth of one gesture, not one
- * double tap. The handler is held in a ref so a caller can pass a fresh closure
- * every render without tearing down the session listener each time.
- */
-export function useXRDoubleTap(enabled: boolean, onTap: () => void) {
-  const session = useXR((s) => s.session);
-  const handler = React.useRef(onTap);
-  handler.current = onTap;
-
-  React.useEffect(() => {
-    if (!enabled || !session) return;
-    const last = new Map<XRInputSource, number>();
-    const onSelect = (ev: XRInputSourceEvent) => {
-      const now = performance.now();
-      const prev = last.get(ev.inputSource) ?? -Infinity;
-      if (now - prev <= DOUBLE_TAP_MS) {
-        // Consume both taps: a triple tap is one double tap and a stray, not
-        // two overlapping doubles.
-        last.delete(ev.inputSource);
-        handler.current();
-        return;
-      }
-      last.set(ev.inputSource, now);
-    };
-    session.addEventListener("select", onSelect as EventListener);
-    return () =>
-      session.removeEventListener("select", onSelect as EventListener);
-  }, [enabled, session]);
-}
 
 /** A thumbstick's position: +x right, +y forward (the stick pushed away). */
 interface StickAxes {
@@ -120,61 +84,6 @@ export function useXRThumbsticks(): () => { left: StickAxes; right: StickAxes } 
   );
 }
 
-// ── Gaze ─────────────────────────────────────────────────────
-
-/**
- * How far down the reader must be looking for a gaze to count as aimed at the
- * floor rather than at the page in front of them.
- *
- * Pages hang to a gallery centre line at eye height, so a glance at one is
- * within a few degrees of level. Fifteen degrees below the horizon is a
- * deliberate look down and, at a standing eye height, is already six metres out
- * — comfortably past anything hanging on a wall.
- */
-const GAZE_MIN_PITCH = Math.sin(THREE.MathUtils.degToRad(15));
-/**
- * …and how far out a gaze may reach. Past this the floor is a sliver a degree
- * of head movement swings tens of metres across, which is not aiming.
- */
-const GAZE_MAX_RANGE = 14;
-
-/** Scratch, module-level: this runs every frame and must not allocate. */
-const gazeDir = new THREE.Vector3();
-const gazeEye = new THREE.Vector3();
-
-/**
- * Where the reader is looking, on the floor plane — in WORLD space, or null if
- * they are not looking at the floor at all (level or up, or so far out that the
- * aim is meaningless).
- *
- * The head, not a controller ray, on purpose: a headset always has one, hands
- * and controllers alike, and it is the aim the reader is already using to read
- * with. Taking it from `state.camera` is exact in both worlds — provided the
- * eye is read off the WORLD matrix and not off `camera.position`, which inside
- * a session is the head in the player's frame. See {@link headWorldPose}: the
- * aim came from `getWorldDirection` and the eye from the local position, so the
- * ray was cast from a point displaced by the whole recentre and the reticle
- * solved against floor the reader was not looking at.
- */
-export function gazeFloorPoint(
-  camera: THREE.Camera,
-  floorWorldY: number,
-  out: THREE.Vector3,
-): THREE.Vector3 | null {
-  camera.getWorldDirection(gazeDir);
-  if (-gazeDir.y < GAZE_MIN_PITCH) return null;
-  headWorldPose(camera, gazeEye);
-  const drop = gazeEye.y - floorWorldY;
-  if (drop <= 0.05) return null;
-  const t = drop / -gazeDir.y;
-  if (t > GAZE_MAX_RANGE) return null;
-  return out.set(
-    gazeEye.x + gazeDir.x * t,
-    floorWorldY,
-    gazeEye.z + gazeDir.z * t,
-  );
-}
-
 // ── Where the head actually is ───────────────────────────────
 
 /**
@@ -191,9 +100,8 @@ export function gazeFloorPoint(
  * Read the local pose as if it were world and everything anchored to the head
  * is displaced by exactly the recentre `XRViewerAnchor` applied — which is
  * metres in `rooms`, where the reader is stood at a point in the building. The
- * minimap drifted out of its corner, the teleport reticle was solved against a
- * piece of floor nowhere near the one the reader was looking at, and both went
- * wrong only AFTER the recentre landed, a frame into the session.
+ * minimap drifted out of its corner, and it went wrong only AFTER the recentre
+ * landed, a frame into the session.
  *
  * The world matrix is REFRESHED first, and that is not belt and braces. three
  * writes `cameraXR.matrix` (and decomposes it into position/quaternion) inside

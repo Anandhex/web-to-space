@@ -173,7 +173,7 @@ export const METRIC_DESCRIPTIONS: Record<string, string> = {
   "Semantic richness score":
     "Weighted composite (0–100) combining five dimensions equally: heading recall (structural capture), landmark recall (spatial frame), labeling rate (content accessibility), semantic node ratio (classification coverage), and accessibility preservation (ARIA fidelity). A single number summarising how semantically complete the XR representation is relative to the source HTML.",
 
-  // XR Spatial Quality (literature-grounded — see src/eval/xr-quality.ts)
+  // XR Spatial Quality (literature-grounded — see src/components/compare/xr-quality.ts)
   "Mean text angular size":
     "Char-weighted mean cap-height visual angle (degrees) of all text primitives at the profile's viewing distance (1.2 m), θ = 2·atan(h/2d). Legibility floor ≈ 0.29°; comfortable-reading target ≈ 1.375° per VR text-legibility studies (IEEE VR 2020, ACM VRST 2025).",
   "Legible text fraction":
@@ -191,7 +191,7 @@ export const METRIC_DESCRIPTIONS: Record<string, string> = {
   "Reading distance error":
     "Area-weighted mean |panel distance − profile viewing distance| in metres. Panels placed nearer than 0.5 m or farther than 20 m are outside the legible window.",
 
-  // Segmentation (per backend — see src/eval/segmentation.ts)
+  // Segmentation (per backend — see src/components/compare/segmentation.ts)
   "Segmentation F-measure":
     "Harmonic mean of segmentation precision and recall (0–1). Measures how well THIS backend's produced scene groups the page into blocks, vs the page's semantic sectioning. Size-weighted BCubed per Kiesel et al., CIKM 2020. Higher is better.",
   "Segmentation precision":

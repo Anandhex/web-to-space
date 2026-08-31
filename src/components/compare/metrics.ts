@@ -4,7 +4,7 @@
  */
 import type { IRNode, IRAnalytics } from "../../ir/types";
 import type { XRPrimitive, SemanticScene } from "../../mapper/types";
-import { extractAtomicUnits } from "../../eval/segmentation";
+import { extractAtomicUnits } from "./segmentation";
 import { CONFIDENCE_THRESHOLD, TOTAL_PRIMITIVE_TYPES } from "./config";
 import type {
   IRQuality,

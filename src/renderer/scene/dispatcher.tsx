@@ -92,6 +92,7 @@ import {
 import { NavigateContext } from "../primitives/contexts";
 import { safeDim, useHoverScale } from "../primitives/surface";
 import { ScrollViewport } from "../primitives/scroll-viewport";
+import { HIT_TARGET_MATERIAL } from "../primitives/constants";
 
 export interface DispatcherProps {
   primitive: XRPrimitive;
@@ -940,7 +941,11 @@ function CardClickBacking({
         }
       >
         <planeGeometry args={[w, h]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <primitive
+          object={HIT_TARGET_MATERIAL}
+          attach="material"
+          dispose={null}
+        />
       </mesh>
     </group>
   );

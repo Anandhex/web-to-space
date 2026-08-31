@@ -21,6 +21,7 @@ import {
 } from "../contexts";
 import { useLinkBinding, usePageLinks } from "../../scene/contexts";
 import { MARK_SEPARATOR, markForSide } from "../../../links/direction";
+import { HIT_TARGET_MATERIAL } from "../constants";
 import {
   ClippedText,
   buildInlineRows,
@@ -247,7 +248,11 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
               onPointerOut={() => setLit(null)}
             >
               <planeGeometry args={[r.w, r.h]} />
-              <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+              <primitive
+                object={HIT_TARGET_MATERIAL}
+                attach="material"
+                dispose={null}
+              />
             </mesh>
           ))}
         </>

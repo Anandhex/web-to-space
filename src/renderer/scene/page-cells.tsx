@@ -33,6 +33,7 @@ import {
 } from "./panels";
 import { ClipPlanesContext, PanelOriginYContext } from "../primitives";
 import { isExtractedComplementary } from "./dispatch-children";
+import { HIT_TARGET_MATERIAL } from "../primitives/constants";
 
 const _noop = () => {};
 
@@ -89,7 +90,11 @@ export function PageHitPlane({
       onPointerOut={onOut && (() => onOut())}
     >
       <planeGeometry args={[width, height]} />
-      <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      <primitive
+        object={HIT_TARGET_MATERIAL}
+        attach="material"
+        dispose={null}
+      />
     </mesh>
   );
 }

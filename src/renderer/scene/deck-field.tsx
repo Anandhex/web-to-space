@@ -49,7 +49,9 @@ import {
   type DirSlot,
   type DirSlots,
 } from "./link-doors";
-import { useTraversal } from "./contexts";
+import { useTraversal, usePageLinks } from "./contexts";
+import { useNeighbourhood, type Neighbourhood, type WingDoc } from "./use-neighbourhood";
+import { WingCard } from "./neighbour-walls";
 import { TravelGroup, TRAVEL_LEAD_MS } from "./travel";
 import type { Axis } from "../../links/memory";
 import {
@@ -78,6 +80,7 @@ import {
   Z_LAYER_ACCENT,
   Z_LAYER_OVERLAY_TEXT,
   Z_SURFACE,
+  HIT_TARGET_MATERIAL,
 } from "../primitives/constants";
 import { AtPos } from "./AtPos";
 import { FontContext, type PageState } from "./contexts";
@@ -229,7 +232,11 @@ function DeckRail({
             onPointerOut={() => setHover(false)}
           >
             <planeGeometry args={[chipW, chipH]} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+            <primitive
+              object={HIT_TARGET_MATERIAL}
+              attach="material"
+              dispose={null}
+            />
           </mesh>
         </group>
       )}
@@ -298,7 +305,11 @@ function Chip({
         onPointerOut={() => setHover(false)}
       >
         <planeGeometry args={[width * 1.2, height * 1.2]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <primitive
+          object={HIT_TARGET_MATERIAL}
+          attach="material"
+          dispose={null}
+        />
       </mesh>
     </group>
   );
@@ -686,7 +697,11 @@ function CardTarget({
       onPointerOut={() => onOut()}
     >
       <planeGeometry args={[width, height]} />
-      <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      <primitive
+        object={HIT_TARGET_MATERIAL}
+        attach="material"
+        dispose={null}
+      />
     </mesh>
   );
 }
@@ -759,6 +774,48 @@ export function DeckField({
     },
     [],
   );
+  // ── The neighbourhood ──
+  //
+  // The deck has no "open a section" gesture the way the wall does; what it
+  // has is a card on the stage, and that card belongs to a section. So the
+  // scope is THAT section — stable while the reader reads it, and re-aimed
+  // when they move to another part of the document, which is the same rule
+  // the wall follows from the other end.
+  const pageLinks = usePageLinks();
+  const focusSection = React.useMemo(() => {
+    const i = sectionRanges.findIndex((r) => focus >= r.start && focus <= r.end);
+    return i === -1 ? null : i;
+  }, [sectionRanges, focus]);
+  const scopedLinks = React.useMemo(() => {
+    const all = pageLinks?.links ?? [];
+    const r = focusSection === null ? null : sectionRanges[focusSection];
+    if (!r) return all;
+    return all.filter((l) => l.pageIndex >= r.start && l.pageIndex <= r.end);
+  }, [pageLinks, focusSection, sectionRanges]);
+  const hood = useNeighbourhood({
+    url: traversalNav ? (traversalNav.history[traversalNav.at]?.url ?? null) : null,
+    links: scopedLinks,
+    scopeKey: focusSection === null ? "doc" : `s${focusSection}`,
+    nav: traversalNav,
+    viewMode: viewMode ?? "deck",
+    lanesFor: () => 2,
+    enabled: true,
+  });
+
+  const takeWing = React.useCallback(
+    (wing: WingDoc) => {
+      if (!traversal) return;
+      if (slideTimer.current) clearTimeout(slideTimer.current);
+      setSliding(wing.axis);
+      slideTimer.current = setTimeout(() => {
+        slideTimer.current = null;
+        if (wing.historyIndex !== undefined) traversal.jump(wing.historyIndex);
+        else traversal.traverse(wing.url, wing.axis, wing.label);
+      }, TRAVEL_LEAD_MS);
+    },
+    [traversal],
+  );
+
   const takePath = React.useCallback(
     (slot: DirSlot) => {
       if (slideTimer.current) clearTimeout(slideTimer.current);
@@ -1222,7 +1279,13 @@ export function DeckField({
         <DeckSurface layout={layout} tones={tones} />
         {/* Paths off the table: north to the level above, south off-site,
             east and west to this site's other documents. */}
-        <DeckLinkPaths layout={layout} slots={linkSlots} onTake={takePath} />
+        <DeckLinkPaths
+          layout={layout}
+          slots={linkSlots}
+          hood={hood}
+          onTake={takePath}
+          onTakeWing={takeWing}
+        />
         <DeckRail
           layout={layout}
           rearranged={rearranged}
@@ -1304,7 +1367,11 @@ export function DeckField({
               <planeGeometry
                 args={[layout.frame.width * 3, layout.frame.depth * 4]}
               />
-              <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+              <primitive
+                object={HIT_TARGET_MATERIAL}
+                attach="material"
+                dispose={null}
+              />
             </mesh>
           </>
         )}
@@ -1364,51 +1431,124 @@ function FlyingCard({
  */
 /** How far past the table's edge a path runs before its first plate. */
 const PATH_LEAD = 0.06;
+/**
+ * Where a neighbour table starts: past the longest run of path plates, so a
+ * wing never lands on top of the strips that name the same direction.
+ * `PATH_LEAD` plus five plates is the deck's window (links/memory.ts WINDOWS).
+ */
+export const DECK_WING_LEAD = 0.06 + 5 * (0.056 + 0.014) + 0.05;
 /** Plate size for a path marker, metres. Wider than the wall's: a path is read
  *  from above and a little off-axis, so it gets the room a strip does not. */
 const PATH_W = 0.24;
 const PATH_H = 0.056;
 const PATH_GAP = 0.014;
 
+/** The four directions a path can lead, in a fixed order. */
+const PATH_AXES: Axis[] = ["up", "down", "left", "right"];
+
 function DeckLinkPaths({
   layout,
   slots,
+  hood,
   onTake,
+  onTakeWing,
 }: {
   layout: DeckLayout;
   slots: DirSlots;
+  /** Neighbours whose documents have arrived — a card on the path, not a plate. */
+  hood: Neighbourhood;
   onTake: (slot: DirSlot) => void;
+  onTakeWing: (wing: WingDoc) => void;
 }) {
   const theme = useTheme();
   const { frame } = layout;
 
-  /** One direction's plates, laid along a path with a line back to the table. */
+  /**
+   * One direction's run, laid along its path.
+   *
+   * Plates and CARDS together, the same as the wall's columns: a neighbour is
+   * one of this page's links drawn bigger, not a separate table parked at the
+   * end of the path. (An earlier build put whole neighbouring tables out past
+   * the paths, which read as two unrelated systems.)
+   */
+  type PathItem =
+    | { kind: "slot"; slot: DirSlot | null }
+    | { kind: "wing"; wing: WingDoc };
+
+  /**
+   * Which plate each card stands in for, across all four directions.
+   *
+   * Same rule as the wall's columns, and for the same reason: the ranker
+   * splits its laterals by score and `links/slots.ts` splits the page's by
+   * reading order, so a card can be ranked west while its own link points
+   * east. The PATH the link takes decides, and a plate is never drawn beside
+   * its own card.
+   */
+  const claim = React.useMemo(() => {
+    const byUrl = new Map<string, WingDoc>();
+    for (const a of PATH_AXES)
+      for (const w of hood[a]) if (w.state === "ready") byUrl.set(w.url, w);
+    const at = new Map<string, string>();
+    for (const a of PATH_AXES)
+      for (const slot of drawable(slots[a])) {
+        const w = byUrl.get(slot.url);
+        if (w && !at.has(w.key)) at.set(w.key, slot.key);
+      }
+    return { byUrl, at };
+  }, [hood, slots]);
+
+  const itemsOf = (axis: Axis): PathItem[] => {
+    const out: PathItem[] = [];
+    for (const slot of drawable(slots[axis])) {
+      const wing = claim.byUrl.get(slot.url);
+      if (wing && claim.at.get(wing.key) === slot.key) out.push({ kind: "wing", wing });
+      else out.push({ kind: "slot", slot });
+    }
+    for (const w of hood[axis])
+      if (w.state === "ready" && !claim.at.has(w.key)) out.push({ kind: "wing", wing: w });
+    if (overflowCount(slots[axis]) > 0) out.push({ kind: "slot", slot: null });
+    // Cards nearest the table, plates beyond them — the same order the wall's
+    // columns use, so a reader who learns it on one view keeps it on the other.
+    const back = out.filter((it) => it.kind === "slot" && it.slot?.kind === "return");
+    const cards = out.filter((it) => it.kind === "wing");
+    const rest = out.filter((it) => it.kind === "slot" && it.slot?.kind !== "return");
+    return [...back, ...cards, ...rest];
+  };
+
+  /** A card is worth this many plate-heights on the table. */
+  const rowsOf = (it: PathItem) =>
+    it.kind === "wing" ? (it.wing.depth === 1 ? 3 : it.wing.depth === 2 ? 2.4 : 1.7) : 1;
+
   const run = (
     axis: Axis,
-    /** Table-space position of the nth plate, n from 0. */
-    at: (n: number) => [number, number],
+    /** Table-space position of a run offset `d`, measured in plate-heights. */
+    at: (d: number) => [number, number],
   ): React.ReactNode => {
-    const drawn = drawable(slots[axis]);
-    const extra = overflowCount(slots[axis]);
-    const items: (DirSlot | null)[] = drawn.slice();
-    if (extra > 0) items.push(null);
+    const items = itemsOf(axis);
     if (items.length === 0) return null;
+    let cursor = 0;
     return (
       <group key={`path-${axis}`}>
-        {items.map((s, i) => {
-          const [u, v] = at(i);
+        {items.map((it) => {
+          const rows = rowsOf(it);
+          const [u, v] = at(cursor + rows / 2);
+          cursor += rows;
+          const h = PATH_H * rows;
+          const key = it.kind === "wing" ? it.wing.key : (it.slot?.key ?? `${axis}-overflow`);
           return (
-            <group key={s ? s.key : `${axis}-overflow`} position={[u, v, 0.004]}>
-              {s ? (
+            <group key={key} position={[u, v, 0.004]}>
+              {it.kind === "wing" ? (
+                <WingCard wing={it.wing} width={PATH_W} height={h} onTake={onTakeWing} />
+              ) : it.slot ? (
                 <DoorPlate
-                  slot={s}
+                  slot={it.slot}
                   width={PATH_W}
-                  height={PATH_H}
-                  recession={s.distance - 1}
-                  onSelect={() => onTake(s)}
+                  height={h}
+                  recession={it.slot.distance - 1}
+                  onSelect={() => onTake(it.slot as DirSlot)}
                 />
               ) : (
-                <OverflowMark count={extra} width={PATH_W} height={PATH_H} />
+                <OverflowMark count={overflowCount(slots[axis])} width={PATH_W} height={h} />
               )}
             </group>
           );
@@ -1451,19 +1591,19 @@ function DeckLinkPaths({
         );
       })}
 
-      {run("up", (n) => [0, frame.depth + PATH_LEAD + PATH_H / 2 + n * (PATH_H + PATH_GAP)])}
-      {run("down", (n) => [0, -PATH_LEAD - PATH_H / 2 - n * (PATH_H + PATH_GAP)])}
+      {run("up", (d) => [0, frame.depth + PATH_LEAD + d * (PATH_H + PATH_GAP)])}
+      {run("down", (d) => [0, -PATH_LEAD - d * (PATH_H + PATH_GAP)])}
       {/* Lateral plates sit off the side edge and stack DOWN-SLOPE rather than
           further out: a run of five siblings pushed out sideways would be
           three metres from the table by the last one, and the reader has to
           be able to read them all from where they sit. */}
-      {run("right", (n) => [
+      {run("right", (d) => [
         halfW + PATH_LEAD + PATH_W / 2,
-        frame.depth / 2 - n * (PATH_H + PATH_GAP),
+        frame.depth / 2 - d * (PATH_H + PATH_GAP),
       ])}
-      {run("left", (n) => [
+      {run("left", (d) => [
         -halfW - PATH_LEAD - PATH_W / 2,
-        frame.depth / 2 - n * (PATH_H + PATH_GAP),
+        frame.depth / 2 - d * (PATH_H + PATH_GAP),
       ])}
     </>
   );

@@ -218,6 +218,15 @@ export interface WallCell {
   open: boolean;
   /** Top-left anchor, relative to the main panel's top-left anchor. */
   offset: { x: number; y: number; z: number };
+  /**
+   * The cell's CENTRE, in the same frame as `offset`.
+   *
+   * `offset` is the anchor the renderer hangs the cell from, which is the
+   * corner once pitch and yaw have been applied — no use at all for asking
+   * where the cell actually IS. The strips need that: they ring the opened
+   * page, and a ring drawn around a corner is not a ring.
+   */
+  centre: { x: number; y: number; z: number };
   rotation: { x: number; y: number; z: number };
   scale: number;
   recession: number;
@@ -503,7 +512,12 @@ export function computeWallCells(
   return items.map((it, i) => {
     const c = centres[i];
     const arc = wallArcAt(c.x, panel.width);
-    let yaw = arc.yaw;
+    // The opened page is placed on the reader's axis (below), so it takes the
+    // arc's yaw THERE — which is zero — not the yaw of the cell it came from.
+    // Left as the cell's, the page was moved to the centre and kept the turn
+    // that belonged to a position it no longer occupied.
+    const isFull = it.kind === "page" && it.open;
+    let yaw = isFull ? wallArcAt(panel.width / 2, panel.width).yaw : arc.yaw;
     let pitch = 0;
     // Lean toward the pointer. A cell's face is +z, and (φ, θ) turns it to
     // (sin θ, −sin φ cos θ, cos φ cos θ) — so +θ looks right and −φ looks up.
@@ -512,18 +526,28 @@ export function computeWallCells(
       yaw += WALL_TILT_MAX * Math.tanh((hovered.x - c.x) / WALL_TILT_FALLOFF);
       pitch = -WALL_TILT_MAX * Math.tanh((hovered.y - c.y) / WALL_TILT_FALLOFF);
     }
-    // The opened page is drawn at full size, centred in its block.
-    const full = it.kind === "page" && it.open;
+    // The opened page is drawn at full size, and ON THE READER'S OWN AXIS.
+    //
+    // Not in its grid block. The block is still reserved and the board still
+    // reflows around it — that is what keeps the unopened sections where the
+    // reader left them — but the page itself is the thing being READ, and a
+    // reading surface belongs in front of the reader, not wherever the packing
+    // happened to put its cell. The board's grid is centred on the panel, so
+    // the panel's own centre is both the board's centre and the reader's
+    // forward axis: putting the page there makes it the middle of the
+    // composition, which is what the strips ring and what the wings spread out
+    // from.
+    const full = isFull;
     const scale = full ? 1 : WALL_TILE_SCALE;
     const centre = {
-      x: c.x,
-      y: c.y,
+      x: full ? panel.width / 2 : c.x,
+      y: full ? -panel.height / 2 : c.y,
       // Only the PAGE being read steps off the wall toward the reader. An
       // expanded section's tile stays flush with the rest of the board —
       // lifting it too put a thumbnail at reading distance, right in the
       // reader's face, for no reason: its accent bar and chevron already say
       // it is open.
-      z: arc.z + (full ? WALL_OPEN_LIFT : 0),
+      z: (full ? wallArcAt(panel.width / 2, panel.width).z : arc.z) + (full ? WALL_OPEN_LIFT : 0),
     };
     return {
       key: it.key,
@@ -540,6 +564,7 @@ export function computeWallCells(
         pitch,
         yaw,
       ),
+      centre,
       rotation: { x: pitch, y: yaw, z: 0 },
       scale,
       recession: it.open ? 0 : it.kind === "section" ? 0.2 : 0.3,
@@ -1548,19 +1573,27 @@ const ROOM_Z0 = -1.4;
 /** Wall length beyond the outermost page on it. */
 const ROOM_WALL_MARGIN = 0.7;
 /**
- * How far a wall carries on above the top edge of the pages hung on it —
- * which, with the floor at world y = 0 and the pages' tops on the panel-anchor
- * line, is what sets the ceiling height.
+ * How far a wall carries on above the panel-anchor line — which, with the
+ * floor at world y = 0, is what sets the ceiling height.
  *
  * This used to be 0.55, putting the head at about 2 m — the ceiling of a
  * service corridor, and inside the reader's peripheral vision the whole time.
- * It was then tried at 1.15 (a 2.65 m head), which overshot: with the pages
- * hanging at the main panel's height and topping out at 1.5 m, a 2.65 m
- * ceiling leaves over a metre of blank wall above every exhibit and the room
- * reads as a hall the pages are lost in. This lands at about 2.35 m — over a
- * head of clear wall above the pages, and no more.
+ * It was then tried at 1.15 (a 2.65 m head) and pulled back to 0.95 (2.35 m),
+ * because at the time the pages still hung at the main panel's slot and topped
+ * out at 1.5 m: a 2.65 m ceiling left over a metre of blank wall above every
+ * exhibit, and the room read as a hall the pages were lost in.
+ *
+ * That objection died with `ROOM_HANG_CENTRE`. Pages now hang to the gallery
+ * line and top out at 1.9 m, so the blank wall the 2.65 m ceiling was rejected
+ * for is 0.8 m — the ordinary relationship between a hang and a ceiling.
+ *
+ * 2.35 m was in any case a room measured for someone SITTING in it: a domestic
+ * ceiling, only 0.7 m of it above a standing adult's eye, and the soffit band
+ * dropping into the top of their view wherever they stood. At 1.3 the ceiling
+ * clears 2.7 m — a room a person stands up in, with the head of every door and
+ * every doorway a comfortable margin below it.
  */
-const ROOM_WALL_HEADROOM = 0.95;
+const ROOM_WALL_HEADROOM = 1.3;
 
 /**
  * WHERE THE ART HANGS: the height of a page's CENTRE above the floor.
@@ -1584,10 +1617,19 @@ const ROOM_WALL_HEADROOM = 0.95;
  */
 const ROOM_HANG_CENTRE = 1.45;
 /**
- * …and where the reader's eye is. A shade above the hang line, which is how
- * a standing adult meets a picture hung to centre.
+ * …and where the reader's eye is: a standing adult's, not a seated one's.
+ *
+ * 1.65 m is about the 50th-percentile standing eye height, and it is the
+ * figure `scene/camera.tsx` already names as the real height an XR reader
+ * meets the scene at. It sits 0.2 m above the hang line, which is how a
+ * standing adult meets a picture hung to centre — the museum line is below
+ * eye level on purpose.
+ *
+ * Read by `roomsAxis` (the flat preview's pivot and the XR standing recentre)
+ * and by the reading pose in `room-walk.tsx`, so it is the ONE place the
+ * reader's height is written down.
  */
-export const ROOM_EYE_HEIGHT = 1.55;
+export const ROOM_EYE_HEIGHT = 1.65;
 /** Clear floor under the lowest edge of a page — art is not skirting board. */
 const ROOM_HANG_FLOOR_CLEAR = 0.25;
 /**
@@ -1607,7 +1649,20 @@ export const ROOM_SOFFIT_BAND = 0.26;
  * help. Width here plus `roomWalkFunnel` is what keeps doors passable.
  */
 const DOOR_WIDTH = 2.3;
-const DOOR_HEIGHT = 2.0;
+/**
+ * …and its head. 2.0 m was a house door, which is what the 2.35 m ceiling had
+ * room for; the standing-height room (see ROOM_WALL_HEADROOM) left 0.7 m of
+ * blank lintel above it and the opening read squat against the space behind
+ * it. 2.3 m is the gallery opening that ceiling can carry.
+ *
+ * The ceiling is not the binding constraint — the SIGN is. `computeFieldLabels`
+ * hangs the section name in the clear band between this head and the underside
+ * of the soffit (2.61 m), so every centimetre added here comes off that band:
+ * at 2.3 the band is 0.26 m, which is more than the 0.21 m it used to have and
+ * still work in. Take the head much past this and the name starts shrinking to
+ * fit rather than the plate having room to sit in.
+ */
+const DOOR_HEIGHT = 2.3;
 /** How wide the reader is, for walking into things. */
 const WALK_RADIUS = 0.24;
 /**
@@ -2102,7 +2157,14 @@ export const ROOM_STOREY_H = (ROOM_WALL_HEADROOM + 2.2) * 1.0 + 0.45;
  * ascending one four metres past it, when what the legend claims is that up
  * and down are the same choice made at the same place.
  */
-const STAIR_STEPS = 14;
+/**
+ * 15, not 14, since the standing-height room took the storey from 3.6 m to
+ * 3.95 m (see ROOM_WALL_HEADROOM): at 14 the riser went from 0.257 m to
+ * 0.282 m and the flight pitched up with it. One more step holds the riser at
+ * 0.263 m, and the extra going lengthens `STAIR_RUN`, which every corridor
+ * that reserves a flight measures itself off.
+ */
+const STAIR_STEPS = 15;
 const STAIR_GOING = 0.29;
 const STAIR_RUN = STAIR_STEPS * STAIR_GOING;
 /** Floor kept solid at the end a flight ARRIVES at — a stride, not a lip. */

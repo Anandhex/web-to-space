@@ -22,6 +22,7 @@ import { FontContext } from "../XRSceneRenderer";
 import { useClipPlanes, NavigateContext } from "./contexts";
 import { useLinkBinding, usePageLinks } from "../scene/contexts";
 import { MARK_SEPARATOR, markForSide } from "../../links/direction";
+
 import { useConsumeScrollDrag } from "./scroll-viewport";
 import {
   usePanelCurve,
@@ -33,6 +34,7 @@ import {
   Z_LAYER_INLINE_TEXT,
   RENDER_ORDER_TEXT,
   Z_CURVE_CONTENT_BASE_LIFT,
+  HIT_TARGET_MATERIAL,
 } from "./constants";
 
 // ─────────────────────────────────────────────────────────────
@@ -700,11 +702,7 @@ function ProseRow({
       >
         {text}
       </ClippedText>
-      {/* No underline. The web's "don't signal with hue alone" rule is met by
-          the MARK, which is a shape and not a colour, and an underline under
-          every anchor on top of that would be a third decoration doing the
-          same job — on a page where half the anchors share a block it reads as
-          ruled paper. Marks and gaze-lighting are the whole scheme. */}
+
       {navigate &&
         hitQuads.map((r) => (
           <mesh
@@ -726,7 +724,11 @@ function ProseRow({
             }}
           >
             <planeGeometry args={[r.w, r.h]} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+            <primitive
+              object={HIT_TARGET_MATERIAL}
+              attach="material"
+              dispose={null}
+            />
           </mesh>
         ))}
     </group>

@@ -97,6 +97,21 @@ export interface SpatialLink {
   /** Reading order among all the references on the page — the tie-break. */
   order: number;
   /**
+   * How many times the DOCUMENT points at this destination, and over how many
+   * distinct rendered pages it does so.
+   *
+   * Both are computed over the undeduplicated walk and stamped onto every
+   * occurrence, so they read the same whether the caller deduped or not — the
+   * weight is a property of the destination, not of the anchor that survived.
+   * `links/neighbours.ts` ranks on them; nothing else needs them.
+   *
+   * Fragment-only differences do not split a destination: `page#a` and
+   * `page#b` are one place to go, and counting them apart would rank a page
+   * with many sub-anchors above one the document actually leans on.
+   */
+  occurrences: number;
+  pageSpread: number;
+  /**
    * Another reference shares this anchor's block. Alignment alone cannot then
    * say which sentence points where, which is what highlighting is for (§7).
    */

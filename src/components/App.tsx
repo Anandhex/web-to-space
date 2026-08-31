@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from "react";
-import { XRSceneRenderer, type XRSceneRendererProps } from "../renderer";
+import { XRSceneRenderer } from "../renderer";
 import {
   HomeScreen,
   type HomeSettings,
@@ -243,12 +243,14 @@ export default function App() {
     [tabs, activeTabId],
   );
 
-  const onPlanReady: XRSceneRendererProps["onPlanReady"] = useCallback(
-    (plan) => {
-      console.log(plan);
+  /** A link the reader followed out of the document: opens in a new tab. */
+  const handleExternalNavigate = useCallback(
+    (href: string) => {
+      void openInNewTab(href);
     },
-    [],
+    [openInNewTab],
   );
+
 
   // ── Render ────────────────────────────────────────────────────
 
@@ -354,8 +356,7 @@ export default function App() {
             parserBackend={activeTab.settings.parserBackend}
             aiSettings={activeTab.settings.ai}
             viewMode={activeTab.settings.viewMode}
-            onPlanReady={onPlanReady}
-            onExternalNavigate={openInNewTab}
+            onExternalNavigate={handleExternalNavigate}
             onTraverse={traverse}
             onTraverseBack={traverseBack}
             onTraverseJump={traverseJump}
@@ -424,6 +425,7 @@ export default function App() {
           onClose={() => setShowCompare(false)}
         />
       )}
+
 
       {/* Captured console, pinned to the bottom of every screen.
           Global on purpose: the capture is global (see renderer/xr-diagnostics.ts),

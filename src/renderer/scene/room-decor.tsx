@@ -1018,24 +1018,73 @@ export function RoomLights({
   /** Where the reader is standing, panel-anchor-relative. */
   reader: { x: number; z: number };
 }) {
+  /**
+   * How many slots of each kind this room can EVER light at once.
+   *
+   * The constants above are a ceiling, not a quota, and the difference is
+   * worth real frames. Three compiles the scene's light count into every lit
+   * material, so the count must not change while somebody walks — which is why
+   * `nearest` parks unused slots dark rather than unmounting them. But a
+   * parked light is not free: it still occupies a uniform slot and is still
+   * evaluated per fragment by every lit material, dark or not. Measured on the
+   * rooms view, three parked spotlights that changed ZERO pixels cost 44% of
+   * the frame's GPU time (0.223 ms → 0.125 ms with them gone, same draw calls,
+   * byte-identical output) — and that ratio only grows on a fill-rate-bound
+   * mobile GPU rendering two eyes.
+   *
+   * So keep the count fixed, but fix it to what this room can actually use.
+   * `nearest` only ever returns fixtures within `range` of the reader, so for
+   * any reader position p within range of some fixture f, every fixture it can
+   * return lies within 2·range of f. Taking the largest such neighbourhood
+   * over all fixtures is therefore a guaranteed upper bound on the slot count
+   * — never dimmer than before, just without the dead slots. A corridor whose
+   * luminaires are spread out lights two at a time instead of paying for six.
+   *
+   * Crucially this depends on `fixtures` and NOT on `reader`: it is fixed for
+   * as long as the document is, so walking never changes the light count and
+   * nothing ever recompiles.
+   */
+  const slots = React.useMemo(() => {
+    const bound = (kind: RoomFixture["kind"], cap: number, range: number) => {
+      const of = fixtures.filter((f) => f.kind === kind);
+      let most = 0;
+      for (const a of of) {
+        let n = 0;
+        for (const b of of) {
+          if (
+            Math.hypot(a.centre.x - b.centre.x, a.centre.z - b.centre.z) <=
+            2 * range
+          )
+            n++;
+        }
+        if (n > most) most = n;
+      }
+      return Math.min(most, cap);
+    };
+    return {
+      ceiling: bound("ceiling", CEILING_LIGHT_SLOTS, CEILING_LIGHT_RANGE),
+      picture: bound("picture", PICTURE_LIGHT_SLOTS, PICTURE_LIGHT_RANGE),
+    };
+  }, [fixtures]);
+
   const lit = React.useMemo(
     () => ({
       ceiling: nearest(
         fixtures,
         "ceiling",
         reader,
-        CEILING_LIGHT_SLOTS,
+        slots.ceiling,
         CEILING_LIGHT_RANGE,
       ),
       picture: nearest(
         fixtures,
         "picture",
         reader,
-        PICTURE_LIGHT_SLOTS,
+        slots.picture,
         PICTURE_LIGHT_RANGE,
       ),
     }),
-    [fixtures, reader],
+    [fixtures, reader, slots],
   );
   const mats = useRoomMaterials();
   const poolMat = React.useMemo(
@@ -1125,7 +1174,7 @@ export function RoomLights({
 
       {/* The real lights: one per slot, parked dark when there is no fitting
           near enough to need it. */}
-      {Array.from({ length: CEILING_LIGHT_SLOTS }, (_, i) => {
+      {Array.from({ length: slots.ceiling }, (_, i) => {
         const f = lit.ceiling[i];
         return (
           <pointLight
@@ -1139,7 +1188,7 @@ export function RoomLights({
           />
         );
       })}
-      {Array.from({ length: PICTURE_LIGHT_SLOTS }, (_, i) => {
+      {Array.from({ length: slots.picture }, (_, i) => {
         const f = lit.picture[i];
         return (
           <AimedSpot

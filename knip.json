@@ -1,17 +1,9 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "entry": [
-    "src/main.tsx",
-    "src/eval/run-benchmark.ts",
-    "src/eval/link-census.ts",
-    "src/eval/fetch-link-corpus.ts",
-    "src/links/__tests__/gold-set.ts",
-    "src/links/__tests__/memory.ts",
-    "src/links/__tests__/slots.ts",
-    "src/renderer/scene/__tests__/minimap-layout.ts",
-    "src/eval/verify-vips-visual.ts",
-    "src/links/__tests__/sample-anchors.ts"
+    "src/main.tsx"
   ],
-  "project": ["src/**/*.{ts,tsx}"],
-  "ignore": ["src/eval/link-corpus/**", "src/eval/corpus/**"]
+  "project": [
+    "src/**/*.{ts,tsx}"
+  ]
 }

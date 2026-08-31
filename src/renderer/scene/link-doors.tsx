@@ -29,8 +29,12 @@ import React from "react";
 import { Text } from "@react-three/drei";
 
 import { useTheme } from "../theme";
-import { FontContext } from "./contexts";
-import { useLinkBinding, usePageLinks, useTraversal } from "./contexts";
+import {
+  FontContext,
+  useLinkBinding,
+  usePageLinks,
+  useTraversal,
+} from "./contexts";
 import {
   buildSlots,
   drawable,
@@ -42,6 +46,7 @@ import {
 import { markFor, markForSide } from "../../links/direction";
 import type { LateralSide } from "../../links/direction";
 import { windowFor, type Axis } from "../../links/memory";
+import { HIT_TARGET_MATERIAL } from "../primitives/constants";
 
 /** The glyph a direction is drawn with — the anchor's mark, at door size. */
 const AXIS_MARK: Record<Axis, string> = {
@@ -95,20 +100,21 @@ export function useDoorSlots(
   const pageLinks = usePageLinks();
   const traversal = useTraversal();
   const nav = traversal?.nav ?? null;
-
   const links = React.useMemo(
     () => (pageLinks?.links ?? []).filter((l) => l.pageIndex === pageIndex),
     [pageLinks, pageIndex],
   );
 
+  const effectiveNav = nav;
+
   const budget = React.useMemo(
-    () => (fit ? fitBudget(links, nav) : windowFor(viewMode)),
-    [fit, links, nav, viewMode],
+    () => (fit ? fitBudget(links, effectiveNav) : windowFor(viewMode)),
+    [fit, links, effectiveNav, viewMode],
   );
 
   const slots = React.useMemo(
-    () => buildSlots({ links, nav, budget }),
-    [links, nav, budget],
+    () => buildSlots({ links, nav: effectiveNav, budget }),
+    [links, effectiveNav, budget],
   );
 
   // Tell the inline marks which hand each sibling's door took, so a mark on
@@ -280,7 +286,11 @@ export function DoorPlate({
       {/* Hit plane, sized to the whole plate so nothing needs a centre hit. */}
       <mesh position={[0, 0, 0.004]}>
         <planeGeometry args={[width, height]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <primitive
+          object={HIT_TARGET_MATERIAL}
+          attach="material"
+          dispose={null}
+        />
       </mesh>
     </group>
   );

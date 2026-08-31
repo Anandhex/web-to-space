@@ -2,8 +2,8 @@
  * compare/types.ts — metric + result shapes for the parser comparison panel.
  */
 import type { IRAnalytics } from "../../ir/types";
-import type { XRSpatialQuality } from "../../eval/xr-quality";
-import type { SegmentationScore } from "../../eval/segmentation";
+import type { XRSpatialQuality } from "./xr-quality";
+import type { SegmentationScore } from "./segmentation";
 import type { VipsMode, VipsFallbackReason } from "../../ir/vips";
 import type { RenderFrameDiagnostics } from "../../ir/render-frame";
 import type { VipsVisualDiagnostics } from "../../ir/vips-visual";

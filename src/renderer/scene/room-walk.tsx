@@ -52,11 +52,7 @@ import {
   type RoomSlab,
   type RoomWall,
 } from "../page-placements";
-import {
-  gazeFloorPoint,
-  useXRDoubleTap,
-  useXRThumbsticks,
-} from "./xr-locomotion";
+import { useXRThumbsticks } from "./xr-locomotion";
 
 export function RoomWalk({
   anchor,
@@ -847,54 +843,120 @@ export function LinkDoors({
 
 /** Radius of the teleport reticle — read as a place to stand, so: a spot. */
 const RETICLE_RADIUS = 0.34;
-/** Scratch, module scope: this runs every frame in a headset. */
-const gazeWorld = new THREE.Vector3();
-const gazeLocal = new THREE.Vector3();
+/** Scratch, module scope: this runs on every ray-cast and every frame. */
+const aimLocal = new THREE.Vector3();
 
 /**
- * LOOK AT THE FLOOR, TAP TWICE, BE THERE — the headset's teleport.
+ * How long a press may be held and still read as a tap rather than a drag.
+ *
+ * In a headset this is nearly a formality — a trigger pull is a click and
+ * @pmndrs/pointer-events has already thresholded it. In the flat preview it is
+ * load-bearing: the floor is also the thing the reader drags across to orbit
+ * the building, and a released orbit is a `click` on whatever the pointer
+ * happened to finish over.
+ */
+const TAP_MS = 400;
+/**
+ * …and how far the aim may have travelled across the floor between press and
+ * release. An orbit drag sweeps it metres; a tap does not move it at all.
+ */
+const TAP_SLIP = 0.9;
+
+/**
+ * The plan extent of every up-facing slab — the floor as the building laid it,
+ * flattened, which is the patch the catcher below has to cover.
+ */
+function floorPlanBounds(
+  slabs: RoomSlab[],
+): { cx: number; cz: number; width: number; depth: number } | null {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const s of slabs) {
+    if (s.facing !== "up") continue;
+    const hw = s.size.width / 2;
+    const hd = Math.abs(s.size.depth) / 2;
+    minX = Math.min(minX, s.centre.x - hw);
+    maxX = Math.max(maxX, s.centre.x + hw);
+    minZ = Math.min(minZ, s.centre.z - hd);
+    maxZ = Math.max(maxZ, s.centre.z + hd);
+  }
+  if (!Number.isFinite(minX)) return null;
+  return {
+    cx: (minX + maxX) / 2,
+    cz: (minZ + maxZ) / 2,
+    width: maxX - minX,
+    depth: maxZ - minZ,
+  };
+}
+
+/**
+ * POINT AT THE FLOOR AND PULL — the headset's teleport.
  *
  * The reader's other two ways of moving both need a device they may not be
  * holding: the keys need a keyboard, the stick needs controllers. Hand tracking
  * has neither, and this view is the one where being unable to move means being
- * unable to read past the first wall. So the gesture is built out of the two
- * things every input mode has — where the head is pointing, and a `select`
- * (a trigger pull, a pinch) — and nothing else.
+ * unable to read past the first wall.
  *
- * It is deliberately the same journey their feet would make. The destination
- * has to be floor the building actually laid (`roomFloorContains`), and the
- * straight line to it has to clear the walls (`roomTeleportPath`), so a reader
- * still enters a room through its doorway and still cannot stand inside a wall.
- * What they are spared is the walking.
+ * ── Why it is not the gesture it used to be ──
  *
- * The reticle is not decoration: without it the gesture is a guess, because the
- * head's aim has no cursor of its own. It stands exactly where a tap would put
- * the reader — including when a wall cuts the journey short, where it stops at
- * the last clear point and goes quiet rather than pretending.
+ * It was: look more than fifteen degrees below the horizon, then `select`
+ * TWICE inside 450 ms. That worked, and it was miserable to use, because both
+ * halves of it were built to dodge a collision rather than to be aimed.
  *
- * ── It happens on the reader's OWN storey ──
+ * The head is the thing the reader READS with. Making it the thing they AIM
+ * with means the two cannot happen at once: to put the mark on a doorway at
+ * the far end of the enfilade you had to point your face at the floor, which
+ * is the one direction from which you cannot see where you are going. And the
+ * pitch gate that kept a glance at a page from arming the gesture also made
+ * every short hop a deliberate stoop — the reader's complaint, and correct.
  *
- * Every one of the three questions below — which floor plane the gaze meets,
- * which walls are in the way, how high the reader ends up — used to be answered
- * against the READING floor, whatever storey the reader was actually standing
- * on. A reader on a landing looked down at the floor under their feet and the
- * ray went straight through it to a plane one storey below, landing metres
- * further out, usually off the end of the building, where `roomFloorContains`
- * said "not floor" and the reticle went out. From up there the gesture simply
- * did nothing. Their height was then left untouched on arrival as well, so
- * anything that did land put them at the old rise over new ground.
+ * The double tap was there because a single `select` is the app's click, and a
+ * teleport that fired on one would fire on every link, pager and reading spot
+ * in the room. But the ambiguity was never in the tap COUNT. It was in where
+ * the tap was AIMED, and the head has no ray to answer that with.
  *
- * `walkSurfaceAt` is the same function the walk samples every step, so a
- * teleport onto a flight puts the reader on the tread their feet would have
- * reached, and a whole storey still has to be climbed rather than jumped: past
- * the head of a flight the surface is the reading floor again, which is what
- * the gaze plane at their own level can see.
+ * The hand does. Both of them already carry a drawn, visible ray (see
+ * `RAY_POINTER` in `useXRSession.tsx`), and it is the same ray the reader
+ * points at links with. So this is now built on the pointer instead of on the
+ * head, and the gesture is the one every headset already taught its owner:
  *
- * Rendered INSIDE the carrier (`RoomWalk`), which is why it can hand the pose
- * building coordinates at all: the carrier's inverse is what turns "where the
- * head is looking, in the world" into "where that is in the building", and
- * reading it off the live group means the ease in flight cannot desynchronise
- * the marker from the floor it is lying on.
+ *  - **Point at the floor.** The mark appears where you would land. Your head
+ *    stays where it was, which means you can watch where you are going.
+ *  - **Pull the trigger** — or pinch, or, in the flat preview, click. Once.
+ *
+ * Nothing about it is head-relative and nothing about it is timed, so it costs
+ * the reader neither a stoop nor a rhythm. And it needs no new discrimination
+ * rule: a ray resting on the floor is a ray that is not on a link, and the
+ * floor catcher this hangs on sits BELOW everything a click could otherwise
+ * have meant — the pages hang above it, and the reading spots (`ReadingSpots`,
+ * which are their own, better teleport when the destination is a page) sit a
+ * few millimetres proud of it, so the nearer hit wins and this never steals
+ * one.
+ *
+ * ── What has NOT changed ──
+ *
+ * The journey. The destination still has to be floor the building actually
+ * laid (`roomFloorContains`), and the straight line to it still has to clear
+ * the walls (`roomTeleportPath`), so a reader still enters a room through its
+ * doorway and still cannot stand inside a wall. What they are spared is the
+ * walking, and now also the stooping.
+ *
+ * It also still happens on the reader's OWN storey: the catcher rides at
+ * `floorY + pose.rise`, the walls consulted are the ones that span that level,
+ * and `walkSurfaceAt` — the same function the walk samples every step — is
+ * what decides the height they arrive at. So a teleport onto a flight lands on
+ * the tread their feet would have reached, and a whole storey still has to be
+ * climbed rather than jumped. (The catcher is a single plane at that level and
+ * its reject is worked in plan, which is the same one-storey model the gaze
+ * version had: it can occlude a ray aimed at something directly below it. Only
+ * the reader's own room is mounted, so there is nothing down there to hit.)
+ *
+ * Rendered INSIDE the carrier (`RoomWalk`), which is why it can turn a world
+ * hit point into building coordinates at all: the carrier's inverse is exactly
+ * that conversion, and reading it off the live group means the ease in flight
+ * cannot desynchronise the mark from the floor it is lying on.
  */
 export function RoomTeleport({
   enabled,
@@ -924,14 +986,23 @@ export function RoomTeleport({
 }) {
   const theme = useTheme();
   const group = React.useRef<THREE.Group>(null);
+  const catcher = React.useRef<THREE.Mesh>(null);
   const marker = React.useRef<THREE.Group>(null);
   const ring = React.useRef<THREE.MeshBasicMaterial>(null);
   const disc = React.useRef<THREE.MeshBasicMaterial>(null);
+
+  const bounds = React.useMemo(() => floorPlanBounds(slabs), [slabs]);
+
   /**
-   * The landing solved this frame, or null when the reader is not looking at
-   * anywhere they could go. A ref, not state: it is recomputed every frame and
-   * re-rendering the building at 90 Hz to move a ring is not on.
+   * Where the reader's ray last crossed the floor, in BUILDING coordinates, or
+   * null when they are pointing at something else. A ref, not state: the
+   * pointer moves every frame a hand does and re-rendering the building to
+   * move a ring is not on.
    */
+  const aim = React.useRef<{ x: number; z: number } | null>(null);
+  /** The press a release has to match to count as a tap: when, and aimed where. */
+  const press = React.useRef<{ at: number; x: number; z: number } | null>(null);
+  /** The landing solved this frame, or null when there is nowhere to go. */
   const landing = React.useRef<{
     x: number;
     z: number;
@@ -939,31 +1010,36 @@ export function RoomTeleport({
     blocked: boolean;
   } | null>(null);
 
-  useFrame((state) => {
+  /**
+   * A world point in the carrier's frame, as building coordinates.
+   *
+   * The carrier's children are laid out at `anchor + buildingOffset`; the pose
+   * and the walls speak the offset alone.
+   */
+  const toBuilding = (p: THREE.Vector3): { x: number; z: number } | null => {
     const g = group.current;
+    if (!g) return null;
+    g.worldToLocal(aimLocal.copy(p));
+    return { x: aimLocal.x - anchor.x, z: aimLocal.z - anchor.z };
+  };
+
+  useFrame(() => {
     const m = marker.current;
-    if (!g || !m) return;
-    if (!enabled || !state.gl.xr.isPresenting) {
-      landing.current = null;
-      m.visible = false;
-      return;
-    }
+    if (!m) return;
     const rise = poseRef.current.rise ?? 0;
-    // The floor UNDER THE READER, not the reading floor — see the note above.
-    const hit = gazeFloorPoint(state.camera, anchor.y + floorY + rise, gazeWorld);
-    if (!hit) {
-      landing.current = null;
-      m.visible = false;
-      return;
-    }
-    // World → the carrier's frame, whose children are laid out at
-    // `anchor + buildingOffset`; the pose and the walls speak the offset.
-    g.worldToLocal(gazeLocal.copy(hit));
-    const bx = gazeLocal.x - anchor.x;
-    const bz = gazeLocal.z - anchor.z;
-    // Inset from the edge by the reader's own radius: a landing half in the
-    // wall is not a landing.
-    if (!roomFloorContains(slabs, bx, bz, -0.3)) {
+    // The catcher rides at the floor UNDER THE READER, not the reading floor:
+    // on a landing the two are a storey apart, and a plane at the wrong one is
+    // a plane the reader's ray reaches past or stops short of.
+    const c = catcher.current;
+    if (c) c.position.y = anchor.y + floorY + rise + 0.004;
+
+    // Where they are pointing has to be floor the building actually LAID —
+    // the catcher is one rectangle over the union of the slabs, so a corridor
+    // that narrows leaves plenty of plane hanging over the void either side.
+    // Inset by the reader's own radius as well: a landing half in the wall is
+    // not a landing.
+    const at = enabled ? aim.current : null;
+    if (!at || !roomFloorContains(slabs, at.x, at.z, -0.3)) {
       landing.current = null;
       m.visible = false;
       return;
@@ -973,7 +1049,7 @@ export function RoomTeleport({
     // reached, and no tap crosses a storey they have not climbed.
     const path = roomTeleportPath(
       poseRef.current,
-      { x: bx, z: bz },
+      at,
       walls,
       floorY,
       stairs,
@@ -989,7 +1065,7 @@ export function RoomTeleport({
     // out altogether reads as "the teleport is broken", which is what it looked
     // like from inside the stair hall.
     //
-    // So it falls back to where they are LOOKING, dimmed: "there, but not from
+    // So it falls back to where they are AIMING, dimmed: "there, but not from
     // where you are standing" — which is a sentence the reader can act on, by
     // aiming a stride to one side of the wall in front of them.
     const reached =
@@ -1001,37 +1077,86 @@ export function RoomTeleport({
     landing.current = reached ? path : null;
     const markRise = reached
       ? path.rise
-      : walkSurfaceAt(stairs, bx, bz, floorY, rise) - floorY;
+      : walkSurfaceAt(stairs, at.x, at.z, floorY, rise) - floorY;
     m.visible = true;
     m.position.set(
-      anchor.x + (reached ? path.x : bx),
+      anchor.x + (reached ? path.x : at.x),
       anchor.y + floorY + markRise + 0.014,
-      anchor.z + (reached ? path.z : bz),
+      anchor.z + (reached ? path.z : at.z),
     );
     const quiet = path.blocked || !reached;
     if (ring.current) ring.current.opacity = quiet ? 0.3 : 0.95;
     if (disc.current) disc.current.opacity = quiet ? 0.1 : 0.34;
   });
 
-  useXRDoubleTap(enabled, () => {
-    const at = landing.current;
-    if (!at) return;
-    const pose = poseRef.current;
-    // The yaw is left exactly as it was. The reader's head did not turn, and
-    // turning the building under it because they moved would be a rotation
-    // nobody asked for — see the square-up in `useRoomWalking`.
-    pose.x = at.x;
-    pose.z = at.z;
-    // Arriving at ground level, not at the height they left from: without this
-    // a teleport across a landing set the reader down at the old rise over the
-    // new floor, and one onto a flight left them walking through the treads.
-    pose.rise = at.rise;
-    jumpRef.current += 1;
-    onArrive(pose);
-  });
+  if (!enabled || !bounds) return null;
 
   return (
     <group ref={group}>
+      {/*
+        THE FLOOR CATCHER: the one hit surface in a building whose scenery is
+        deliberately raycast-inert (see room-decor). It draws nothing — no
+        colour, no depth — and exists only so the reader's ray has a floor to
+        land on and report.
+
+        Its own raycast rejects any hit that is not over floor the building
+        actually laid, so pointing past the end of the enfilade puts the mark
+        nowhere rather than out in the void, and a click out there stays a
+        click on the room behind it rather than being swallowed by a plane.
+      */}
+      <mesh
+        ref={catcher}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[anchor.x + bounds.cx, anchor.y + floorY, anchor.z + bounds.cz]}
+        onPointerMove={(e) => {
+          aim.current = toBuilding(e.point);
+        }}
+        onPointerOut={() => {
+          aim.current = null;
+          press.current = null;
+        }}
+        onPointerDown={(e) => {
+          const p = toBuilding(e.point);
+          press.current = p ? { at: performance.now(), x: p.x, z: p.z } : null;
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          const held = press.current;
+          const to = landing.current;
+          press.current = null;
+          if (!to || !held) return;
+          if (performance.now() - held.at > TAP_MS) return;
+          const end = toBuilding(e.point);
+          if (!end) return;
+          if (Math.hypot(end.x - held.x, end.z - held.z) > TAP_SLIP) return;
+          const pose = poseRef.current;
+          // The yaw is left exactly as it was. The reader's head did not turn,
+          // and turning the building under it because they moved would be a
+          // rotation nobody asked for — see the square-up in `useRoomWalking`.
+          pose.x = to.x;
+          pose.z = to.z;
+          // Arriving at ground level, not at the height they left from: without
+          // this a teleport across a landing set the reader down at the old
+          // rise over the new floor, and one onto a flight left them walking
+          // through the treads.
+          pose.rise = to.rise;
+          jumpRef.current += 1;
+          onArrive(pose);
+          // Consume the aim: the building has just moved under the ray, so the
+          // point it was resting on means somewhere else now. The next move
+          // event re-solves it, and until then the mark is honestly absent.
+          aim.current = null;
+          landing.current = null;
+        }}
+      >
+        <planeGeometry args={[bounds.width, bounds.depth]} />
+        <meshBasicMaterial
+          transparent
+          opacity={0}
+          depthWrite={false}
+          colorWrite={false}
+        />
+      </mesh>
       <group ref={marker} visible={false} rotation={[-Math.PI / 2, 0, 0]}>
         <mesh raycast={() => null}>
           <circleGeometry args={[RETICLE_RADIUS, 32]} />

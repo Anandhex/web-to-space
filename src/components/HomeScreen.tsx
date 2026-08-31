@@ -1788,6 +1788,9 @@ export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
         </div>
       )}
 
+      {/* The evaluation material, one click from Home. Renders nothing until
+          opened, and reports honestly when the generated pages are absent. */}
+
       <style>{`
         @keyframes hs-spin {
           from { transform: rotate(0deg); }

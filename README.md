@@ -67,7 +67,6 @@ Each stage is a pure function with no shared mutable state:
 - `src/renderer/` — renders the layout as Three.js meshes in a React Three Fiber canvas, and owns the WebXR session, the controller/hand input and the three views' geometry (`src/renderer/scene/`)
 - `src/links/` — link classification, direction, slot budgets and the reader-relative navigation memory
 - `src/components/` — tab bar, home screen, view toggle UI
-- `src/eval/` — offline benchmark and link census; runs in Node against a fetched corpus, no GPU or headset needed
 
 Every measurement is in **metres**, in the WebXR right-handed coordinate
 system. There are no pixel units below the parser.
@@ -101,18 +100,6 @@ A CORS proxy is included at `/api/proxy?url=` so you can fetch arbitrary externa
 ```bash
 npm run build    # type-check + production build
 npm run preview  # serve the dist/ output locally
-```
-
-### Checks
-
-No test runner, but the link and parser layers have offline checks that run in
-Node — no browser, no GPU, no headset:
-
-```bash
-npm run test:links    # link classification against the gold set
-npm run test:memory   # navigation memory
-npm run test:slots    # door/slot budgets
-npm run benchmark     # parser benchmark: segmentation + XR legibility metrics
 ```
 
 ---

@@ -10,16 +10,8 @@ npm run build      # Type-check + Vite production build
 npm run preview    # Serve the dist/ output locally
 ```
 
-There is no linter and no test *runner*, but there are checks, and they are the
-gate on anything touching links or the parser:
-
-```bash
-npm run test:links    # link classification against the gold set
-npm run test:memory   # nav memory (reader-relative corridors)
-npm run test:slots    # door/slot budgets
-npm run benchmark     # offline parser benchmark: segmentation + XR legibility
-npm run census        # link census over the fetched corpus
-```
+There is no linter, no test runner and no offline check suite: `npm run build`
+(i.e. `tsc` + Vite) is the only gate.
 
 TypeScript strictness (`noUnusedLocals`, `noUnusedParameters`, `erasableSyntaxOnly`) is enforced at build time. `npm run build` runs `tsc` over the WHOLE project, so it goes red on faults in files you did not touch — run `npx tsc --noEmit` and read which files the errors are in before assuming a change broke it.
 
@@ -118,4 +110,6 @@ One hazard worth knowing before touching any of it: **an uncaught throw inside a
 - **`RenderMetrics` is the single source of dimensional truth.** The engine never hard-codes font sizes or element heights — they come from the active `DeviceProfile`. This includes **spacing**: `metrics.spacing` is the interior-padding ladder every primitive surface insets its content by (`hairline` / `tight` / `snug` / `comfortable` / `generous`, derived as fractions of one degree of visual angle at the profile's viewing distance), and `metrics.rhythm` is the vertical rhythm between stacked blocks (derived as fractions of the body line box). Neither belongs in a mesh as a literal — the meshes used to carry a scatter of 4/14/18/20/26 mm insets that no two primitives agreed on, and several of them silently disagreed with the height the engine had reserved.
 - **Stacking gaps are pair-aware.** Every site that stacks siblings — `stackChildrenSimple` (engine), `sumChildrenHeights` (estimate) and the paginator's flow loops — calls `blockGap(prev, next, metrics)` in `src/layout/utils.ts`. A heading binds tightly to the content below it and opens a wide gap above it; a flat `config.childGapY` could not express that, and `childGapY` now survives only as the residual gap inside a single prose node.
 - **UI surfaces are unlit.** `<Surface>` defaults to `meshBasicMaterial` (`flat` defaults to **true**). Cards are interface, not scenery: lit surfaces took a tint from whatever the surrounding space happened to be lit with, so the same card read warm in the rooms view and neutral elsewhere. Depth comes from the Z ladder, the rim, and the baked top-lighter gradient. Pass `flat={false}` only for something meant to be part of the room.
-- **CORS proxy is dev-only.** `vite.config.ts` registers **`/api/proxy?url=`** as a Vite middleware. It is not available in the production build.
+- **CORS proxy: two of them.** `vite.config.ts` registers **`/api/proxy?url=`** as a Vite middleware for dev. `api/proxy.ts` is a Vercel **edge function** serving the same shape in production, with a one-hour cache — so cross-origin fetching (including the neighbour wings' prefetch) works in both, and only the middleware is dev-only.
+
+- **Neighbour wings hold more than one document.** `docs/neighbour-walls.md`. The wall and the deck draw the few strongest links per axis as the neighbouring DOCUMENT — a receding corridor, three deep, shrinking. `scene/use-neighbourhood.ts` is the only thing in the codebase that fetches and parses a document other than the one the reader is on, and it is budgeted hard for a reason: a full parse costs 60 ms to 2.8 s of main-thread DOM work, and a long block inside an XR frame ends rendering permanently. Depth 1 alone gets a pipeline (4 per document, nothing over 500 KB); depths 2 and 3 get a `links/scan.ts` read. Nothing it does may start before the reader's own document has had the thread.

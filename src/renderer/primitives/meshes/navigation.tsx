@@ -19,6 +19,7 @@ import {
   Z_LAYER_INLINE_TEXT,
   Z_LAYER_BODY_TEXT,
   PANEL_DEPTH,
+  HIT_TARGET_MATERIAL,
 } from "../constants";
 import { Surface, safeDim, cornerRadius, entryTransform } from "../surface";
 import {
@@ -314,7 +315,11 @@ function TOCPanel({
         onPointerLeave={handleDragEnd}
       >
         <planeGeometry args={[w, visibleH]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <primitive
+          object={HIT_TARGET_MATERIAL}
+          attach="material"
+          dispose={null}
+        />
       </mesh>
 
       {/* Scrolling item rows, clipped to the viewport */}

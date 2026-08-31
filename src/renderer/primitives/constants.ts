@@ -1,3 +1,5 @@
+import * as THREE from "three";
+
 /**
  * primitives/constants.ts
  *
@@ -69,3 +71,41 @@ export const RENDER_ORDER_TEXT = 3;
 // Flat rounded-rect ShapeGeometry rounds freely, but a degenerate w/h still
 // produces NaN corners — floor both to a small safe minimum.
 export const MIN_DIM = PANEL_RADIUS * 2 + 0.001; // 0.025 m — safe floor for w and h
+
+
+// ── Hit targets ──────────────────────────────────────────────────────────────
+/**
+ * The material every invisible pointer target shares.
+ *
+ * A hit target is a quad that exists only to be raycast: a generous, regular
+ * grab area over something whose visible geometry is small, irregular, or (for
+ * text) not raycastable at glyph resolution. It is never meant to be SEEN.
+ *
+ * The old spelling — `transparent opacity={0}` — got that wrong in the way
+ * that costs the most. A fully transparent fragment is still a fragment: the
+ * mesh joins the render list, takes a draw call, and lands in the depth-sorted
+ * TRANSPARENT pass, which is the expensive one. Measured on the deck view of
+ * the Wikipedia "Space" article, 140 of 671 draw calls were invisible hit
+ * targets — a fifth of the frame spent rasterising nothing at all.
+ *
+ * `visible: false` on the MATERIAL is the fix, and it is not the same as
+ * `visible={false}` on the mesh. Three's projectObject only adds an object to
+ * the render list `if ( material.visible )`, so the draw call disappears —
+ * while Raycaster tests only layers and geometry and never consults the
+ * material, so the target stays exactly as hittable as it was. Hiding the MESH
+ * would have taken it out of both.
+ *
+ * (Layers look like the other way to do this and are a trap here: three
+ * reserves layers 1 and 2 for the left and right eyes in an XR session —
+ * `cameraL.layers.mask = cameraXR.layers.mask & -5` — so a target parked there
+ * would render to one eye and give the reader a monocular ghost.)
+ *
+ * One module-level instance, shared by every call site: these carry no colour,
+ * no opacity and no clipping, so there is nothing to vary. Meshes using it
+ * must pass `dispose={null}` — it outlives any one of them.
+ */
+export const HIT_TARGET_MATERIAL = /* @__PURE__ */ (() => {
+  const m = new THREE.MeshBasicMaterial();
+  m.visible = false;
+  return m;
+})();

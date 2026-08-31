@@ -45,6 +45,7 @@ import { FontContext } from "./contexts";
 import type { NavState } from "../../links/memory";
 import type { Side } from "./minimap-layout";
 import { W, H, U, NODE_R, Z_EDGE, corridor, plot } from "./minimap-layout";
+import { HIT_TARGET_MATERIAL } from "../primitives/constants";
 
 /**
  * Offset from the sight line, in metres at HEAD_ANCHOR_DIST — down and to the
@@ -314,7 +315,11 @@ function MinimapPanel({
             }}
           >
             <planeGeometry args={[hitW, hitH]} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+            <primitive
+              object={HIT_TARGET_MATERIAL}
+              attach="material"
+              dispose={null}
+            />
           </mesh>
         </group>
       ))}

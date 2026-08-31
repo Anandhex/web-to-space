@@ -41,6 +41,7 @@ function corsProxyPlugin(): Plugin {
   };
 }
 
+
 // WebXR needs a secure context (HTTPS), so basic-ssl is on by default. Set
 // NO_SSL=1 to serve plain HTTP — useful for local previews/tools that can't
 // follow a self-signed cert (WebXR won't work in that mode, but the 2D view does).

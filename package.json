@@ -6,21 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview",
-    "benchmark": "tsx src/eval/run-benchmark.ts",
-    "census": "tsx src/eval/link-census.ts",
-    "census:fetch": "tsx src/eval/fetch-link-corpus.ts",
-    "census:real": "tsx src/eval/link-census.ts src/eval/link-corpus",
-    "test:links": "tsx src/links/__tests__/gold-set.ts",
-    "test:memory": "tsx src/links/__tests__/memory.ts",
-    "test:slots": "tsx src/links/__tests__/slots.ts",
-    "test:minimap": "tsx src/renderer/scene/__tests__/minimap-layout.ts",
-    "test:travel": "tsx src/renderer/scene/__tests__/travel-motion.ts",
-    "gold:fetch": "tsx src/eval/gold/fetch-corpus.ts",
-    "gold:provisional": "tsx src/eval/gold/provisional.ts",
-    "gold:annotate": "tsx src/eval/gold/build-annotator.ts",
-    "evaluate": "node --max-old-space-size=8192 --import tsx src/eval/run-evaluation.ts",
-    "gold:lint": "tsx src/eval/gold/lint.ts"
+    "preview": "vite preview"
   },
   "devDependencies": {
     "@types/jsdom": "^28.0.3",

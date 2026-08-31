@@ -26,19 +26,6 @@ dist-ssr
 
 .claude/*
 CLAUDE.md
-# Offline benchmark output
-eval-out/
 
 .agents
 
-# Fetched link-census corpus (see src/eval/link-corpus.urls)
-src/eval/link-corpus/
-
-# Frozen gold-corpus snapshots — rebuild with `npm run gold:fetch -- --adopt`.
-# manifest.json IS tracked: it is the provenance record (url, stratum, sampling,
-# fetch date) and without it the corpus cannot be reconstructed or audited.
-src/eval/gold-corpus/*.html
-# Model-response cache for the LLM baseline — regenerable, not evidence.
-src/eval/llm-cache/
-
-src/eval/gold-annotations/*.json

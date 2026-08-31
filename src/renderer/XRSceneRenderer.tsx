@@ -80,7 +80,10 @@ import { useXRSession } from "./useXRSession";
 // file into ./scene/* for readability. This file is now just the top-level
 // <XRSceneRenderer> component wiring those pieces together.
 import { EMPTY_CONFIG } from "./scene/config";
-import { FontContext, type PageState } from "./scene/contexts";
+import {
+  FontContext,
+  type PageState,
+} from "./scene/contexts";
 import { usePipeline } from "./scene/use-pipeline";
 import type { AIProviderSettings } from "../ir/ai";
 import { XRViewerAnchor, PreviewFieldOfView, AxisLook } from "./scene/camera";
@@ -752,6 +755,7 @@ export function XRSceneRenderer({
                         reporting on. Every view gets it for free, on top of
                         whatever its own geometry is doing. */}
                     <TransitionMark pending={pending} />
+
 
                     {/* ── In-world browser chrome (replaces HTML overlays) ────
                       Tab switcher, horizontally centred on the content panel

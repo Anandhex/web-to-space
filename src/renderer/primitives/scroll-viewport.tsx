@@ -20,7 +20,9 @@ import { useThree } from "@react-three/fiber";
 
 import { useTheme } from "../theme";
 import { usePanelCurve, curvePoint } from "./curve";
-import { Z_LAYER_ACCENT, Z_LAYER_BODY_TEXT } from "./constants";
+import { Z_LAYER_ACCENT, Z_LAYER_BODY_TEXT,
+  HIT_TARGET_MATERIAL,
+} from "./constants";
 import { capturePointer, releasePointer } from "./pointer-capture";
 
 /**
@@ -166,7 +168,11 @@ export function ScrollViewport({
         onPointerLeave={handleDragEnd}
       >
         <planeGeometry args={[width, height]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <primitive
+          object={HIT_TARGET_MATERIAL}
+          attach="material"
+          dispose={null}
+        />
       </mesh>
 
       <ScrollDragContext.Provider value={didDrag}>

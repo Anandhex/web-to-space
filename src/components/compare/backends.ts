@@ -11,8 +11,8 @@ import { applyParserBackend } from "../../ir/backends";
 import { QUEST_3_PROFILE } from "../../layout/profiles";
 import { getArrangement } from "../../layout/placement";
 import { foldForArrangement } from "../../layout/content-only";
-import { computeXRQuality } from "../../eval/xr-quality";
-import { scoreSceneSegmentation } from "../../eval/segmentation";
+import { computeXRQuality } from "./xr-quality";
+import { scoreSceneSegmentation } from "./segmentation";
 import { INLINE_PRIMITIVE_TYPES } from "./config";
 import {
   deriveIRQuality,

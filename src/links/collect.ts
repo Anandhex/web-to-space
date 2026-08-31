@@ -155,6 +155,8 @@ export function collectSpatialLinks(
         anchorPos: nextAnchorPos,
         order: order++,
         sameBlock: false, // filled in below, once every sibling is known
+        occurrences: 0, // ─┬─ filled in below, once the whole walk is done
+        pageSpread: 0, //  ─┘
         sourceText: nextSourceText,
         targetId,
         targetPage,
@@ -179,6 +181,28 @@ export function collectSpatialLinks(
   for (const l of links)
     l.sameBlock = l.anchorId ? (perBlock.get(l.anchorId) ?? 0) > 1 : false;
 
+  // ── Destination weight: how hard this document leans on a place ──
+  //
+  // Counted over EVERY occurrence and stamped onto every one of them, before
+  // the dedupe below throws the repeats away. The deduper is right for a door
+  // budget — four mentions of one page in a paragraph are one door — but the
+  // count it discards is the whole signal `links/neighbours.ts` ranks on, and
+  // recovering it afterwards would mean walking the document twice.
+  const weight = new Map<string, { n: number; pages: Set<number> }>();
+  for (const l of links) {
+    const key = destinationKey(l);
+    const w = weight.get(key);
+    if (w) {
+      w.n++;
+      w.pages.add(l.pageIndex);
+    } else weight.set(key, { n: 1, pages: new Set([l.pageIndex]) });
+  }
+  for (const l of links) {
+    const w = weight.get(destinationKey(l));
+    l.occurrences = w?.n ?? 1;
+    l.pageSpread = w?.pages.size ?? 1;
+  }
+
   let out = links;
   if (dedupe) {
     const seen = new Set<string>();
@@ -195,6 +219,20 @@ export function collectSpatialLinks(
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * The identity a destination is WEIGHED under: the resolved URL with its
+ * fragment dropped, since `guide#intro` and `guide#api` are one place to go.
+ *
+ * Same-document references keep their fragment — there the fragment IS the
+ * destination, and collapsing them would make every `#…` on the page one
+ * enormously weighted link to the page itself.
+ */
+function destinationKey(l: SpatialLink): string {
+  if (l.region === "arrangement") return `${l.region} ${l.resolved}`;
+  const hash = l.resolved.indexOf("#");
+  return `${l.region} ${hash === -1 ? l.resolved : l.resolved.slice(0, hash)}`;
+}
 
 function walk(p: XRPrimitive, fn: (p: XRPrimitive) => void): void {
   fn(p);

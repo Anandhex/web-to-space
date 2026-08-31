@@ -77,7 +77,64 @@ function roundedRectShape(w: number, h: number, r: number): THREE.Shape {
  * call and works with troika/standard materials via `vertexColors`. When no
  * gradient is requested the geometry carries no colour attribute and the
  * material's flat `color` shows through unchanged.
+ *
+ * PERFORMANCE — the cache is not an optimisation detail, it is the difference
+ * between a view that holds 72 Hz and one that does not. Every card, chip,
+ * rim, tile and page cell in every view is a <Surface>, and each one used to
+ * build its OWN ShapeGeometry through a per-component useMemo. Measured on the
+ * Wikipedia "Space" article that came to 671 distinct geometries in the deck
+ * view for THREE distinct shapes, and 250 for FOUR in the wall — i.e. ~99% of
+ * the triangulation work, the vertex buffers, and the GPU uploads were exact
+ * duplicates. Keying on the quantised dimensions collapses them to one
+ * geometry per genuinely distinct shape, shared by every mesh that wants it.
+ *
+ * Quantising to 0.1 mm is what makes the cache actually HIT: layout produces
+ * float widths that differ in the 15th decimal place, and an exact-match key
+ * would miss on every one of them. 0.1 mm is far below the ~0.3 mm that one
+ * screen pixel subtends at the panel distances this project uses, so no
+ * quantised surface is distinguishable from its exact size.
+ *
+ * Cached geometries are shared and MUST NOT be disposed when any one mesh
+ * unmounts — every consumer passes `dispose={null}` for exactly that reason.
  */
+const QUANTUM = 1e-4; // 0.1 mm — see note above
+const q = (v: number) => Math.round(v / QUANTUM);
+
+const surfaceGeoCache = new Map<string, THREE.ShapeGeometry>();
+
+function getSurfaceGeometry(
+  w: number,
+  h: number,
+  r: number,
+  topColor?: string,
+  bottomColor?: string,
+): THREE.ShapeGeometry {
+  const key = `${q(w)}|${q(h)}|${q(r)}|${topColor ?? ""}|${bottomColor ?? ""}`;
+  const hit = surfaceGeoCache.get(key);
+  if (hit) return hit;
+
+  const geo = new THREE.ShapeGeometry(roundedRectShape(w, h, r), 12);
+  if (topColor && bottomColor) {
+    const top = new THREE.Color(topColor);
+    const bot = new THREE.Color(bottomColor);
+    const pos = geo.attributes.position;
+    const colors = new Float32Array(pos.count * 3);
+    const c = new THREE.Color();
+    for (let i = 0; i < pos.count; i++) {
+      // y runs -h/2 (bottom) → +h/2 (top); t = 0 at bottom, 1 at top.
+      const t = (pos.getY(i) + h / 2) / h;
+      c.copy(bot).lerp(top, THREE.MathUtils.clamp(t, 0, 1));
+      colors[i * 3] = c.r;
+      colors[i * 3 + 1] = c.g;
+      colors[i * 3 + 2] = c.b;
+    }
+    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  }
+  geo.computeBoundingSphere();
+  surfaceGeoCache.set(key, geo);
+  return geo;
+}
+
 function useSurfaceGeometry(
   w: number,
   h: number,
@@ -85,28 +142,81 @@ function useSurfaceGeometry(
   topColor?: string,
   bottomColor?: string,
 ): THREE.ShapeGeometry {
-  return React.useMemo(() => {
-    const geo = new THREE.ShapeGeometry(roundedRectShape(w, h, r), 12);
-    if (topColor && bottomColor) {
-      const top = new THREE.Color(topColor);
-      const bot = new THREE.Color(bottomColor);
-      const pos = geo.attributes.position;
-      const colors = new Float32Array(pos.count * 3);
-      const c = new THREE.Color();
-      for (let i = 0; i < pos.count; i++) {
-        // y runs -h/2 (bottom) → +h/2 (top); t = 0 at bottom, 1 at top.
-        const t = (pos.getY(i) + h / 2) / h;
-        c.copy(bot).lerp(top, THREE.MathUtils.clamp(t, 0, 1));
-        colors[i * 3] = c.r;
-        colors[i * 3 + 1] = c.g;
-        colors[i * 3 + 2] = c.b;
-      }
-      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    }
-    geo.computeBoundingSphere();
-    return geo;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [w, h, r, topColor, bottomColor]);
+  return React.useMemo(
+    () => getSurfaceGeometry(w, h, r, topColor, bottomColor),
+    [w, h, r, topColor, bottomColor],
+  );
+}
+
+/**
+ * Shared, immutable materials for surface fills and rims.
+ *
+ * Same story as the geometry cache: 671 meshes in the deck view carried 671
+ * distinct material instances expressing only 49 distinct configurations. Each
+ * distinct material is its own program lookup and its own uniform upload at
+ * draw time, and three.js sorts by material — so duplicates defeat the sort
+ * and turn what should be a handful of state changes into one per mesh. That
+ * is the dominant per-draw-call CPU cost, and on a mobile GPU with stereo
+ * rendering it is what puts these views on the floor.
+ *
+ * Clipping planes are part of a material's compiled state, so they are part of
+ * the key. They arrive as a per-panel array whose identity is stable, so a
+ * WeakMap keyed on that array gives each panel its own material family without
+ * leaking materials when the panel goes away.
+ */
+const clipMatCaches = new WeakMap<object, Map<string, THREE.Material>>();
+const noClipMatCache = new Map<string, THREE.Material>();
+
+function getSurfaceMaterial(
+  lit: boolean,
+  color: string,
+  vertexColors: boolean,
+  opacity: number,
+  roughness: number,
+  metalness: number,
+  clips: THREE.Plane[] | undefined,
+): THREE.Material {
+  const useClips = clips && clips.length > 0;
+  const bucket = useClips
+    ? (clipMatCaches.get(clips) ??
+      (() => {
+        const m = new Map<string, THREE.Material>();
+        clipMatCaches.set(clips, m);
+        return m;
+      })())
+    : noClipMatCache;
+
+  // Only the properties that actually vary are in the key; roughness/metalness
+  // are ignored for unlit materials because they have no effect there.
+  const key = lit
+    ? `s|${color}|${vertexColors}|${opacity}|${roughness}|${metalness}`
+    : `b|${color}|${vertexColors}|${opacity}`;
+  const hit = bucket.get(key);
+  if (hit) return hit;
+
+  // `transparent` is driven strictly by opacity. A fully-opaque surface flagged
+  // transparent still costs a depth-sort and forfeits early-Z rejection, which
+  // is pure overdraw on a fill-rate-bound headset.
+  const transparent = opacity < 1;
+  const mat = lit
+    ? new THREE.MeshStandardMaterial({
+        color,
+        vertexColors,
+        transparent,
+        opacity,
+        roughness,
+        metalness,
+        clippingPlanes: useClips ? clips : null,
+      })
+    : new THREE.MeshBasicMaterial({
+        color,
+        vertexColors,
+        transparent,
+        opacity,
+        clippingPlanes: useClips ? clips : null,
+      });
+  bucket.set(key, mat);
+  return mat;
 }
 
 /** Lighten a hex colour in HSL space — used to derive a gradient's top stop. */
@@ -252,50 +362,49 @@ export function Surface({
   const fillGeo = bentFillGeo ?? flatFillGeo;
   const rimGeo = bentRimGeo ?? flatRimGeo;
 
+  // Shared materials. A bent geometry is unique to its call site, but the
+  // material never is — colour/opacity/clips are all this pair of meshes can
+  // vary, so both bent and flat surfaces draw from the same cache.
+  const fillMat = getSurfaceMaterial(
+    !flat,
+    resolvedTop ? "#ffffff" : color,
+    !!resolvedTop,
+    opacity,
+    roughness,
+    metalness,
+    clips,
+  );
+  const rimMat = rimColor
+    ? getSurfaceMaterial(false, rimColor, false, rimOpacity, 0, 0, clips)
+    : null;
+
+  // dispose={null} on every mesh below: the geometry cache and the material
+  // cache both hand out SHARED instances, and R3F's default teardown would
+  // dispose them when the first mesh holding one unmounts — taking the buffer
+  // out from under every other mesh still drawing it. Bent geometries are not
+  // shared, but they are memoised per call site and re-created on demand, so
+  // the same rule is safe for them.
   return (
     <group position={[ox, oy, 0]}>
-      {rimColor && (
+      {rimMat && (
         <mesh
           geometry={rimGeo}
+          material={rimMat}
+          dispose={null}
           position={[0, 0, z + Z_SURFACE_RIM - Z_SURFACE]}
           scale={
             bentRimGeo ? [1, 1, 1] : [(w + 0.0025) / w, (h + 0.0025) / h, 1]
           }
           renderOrder={RENDER_ORDER_SURFACE}
-        >
-          <meshBasicMaterial
-            color={rimColor}
-            transparent
-            opacity={rimOpacity}
-            clippingPlanes={clips}
-          />
-        </mesh>
+        />
       )}
       <mesh
         geometry={fillGeo}
+        material={fillMat}
+        dispose={null}
         position={[0, 0, z]}
         renderOrder={RENDER_ORDER_SURFACE}
-      >
-        {flat ? (
-          <meshBasicMaterial
-            color={resolvedTop ? "#ffffff" : color}
-            vertexColors={!!resolvedTop}
-            transparent={opacity < 1}
-            opacity={opacity}
-            clippingPlanes={clips}
-          />
-        ) : (
-          <meshStandardMaterial
-            color={resolvedTop ? "#ffffff" : color}
-            vertexColors={!!resolvedTop}
-            transparent={opacity < 1}
-            opacity={opacity}
-            roughness={roughness}
-            metalness={metalness}
-            clippingPlanes={clips}
-          />
-        )}
-      </mesh>
+      />
     </group>
   );
 }

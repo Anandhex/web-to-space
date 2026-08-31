@@ -40,7 +40,7 @@
  * chosen because it is deterministic, terminates by construction, and yields the
  * top-down block tree the caller actually wants. This is the module's single
  * deviation from the paper and is reported as such; it is stated here for the
- * same reason `eval/segmentation.ts` states its BCubed weighting deviation.
+ * same reason `compare/segmentation.ts` states its BCubed weighting deviation.
  */
 
 import type { RenderedFrame } from "./render-frame";

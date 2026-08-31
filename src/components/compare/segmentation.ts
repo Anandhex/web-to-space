@@ -1,5 +1,5 @@
 /**
- * eval/segmentation.ts — literature-grounded web-page segmentation quality.
+ * compare/segmentation.ts — literature-grounded web-page segmentation quality.
  *
  * Implements the evaluation methodology of:
  *   Kiesel, Kneist, Meyer, Komlossy, Stein, Potthast —
@@ -50,8 +50,8 @@
  *    Segmentation tab breaks down by the same backends as every other tab.
  */
 
-import type { XRPrimitive } from "../mapper/types";
-import { runVipsVisual } from "../ir/vips-visual";
+import type { XRPrimitive } from "../../mapper/types";
+import { runVipsVisual } from "../../ir/vips-visual";
 
 // ─────────────────────────────────────────────────────────────
 // Atomic elements
@@ -660,7 +660,7 @@ export interface SegmentationAnnotation {
 }
 
 /**
- * A gold annotation keyed on `data-eval-id` (see `eval/gold/stamp.ts`) rather
+ * A gold annotation keyed on `data-eval-id` rather
  * than on CSS selectors. This is the form the 60-page gold corpus uses: a
  * hand-written selector silently re-matches when markup shifts, and at corpus
  * scale nobody notices. Units whose element has no annotated ancestor are
