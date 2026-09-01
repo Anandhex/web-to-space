@@ -34,6 +34,8 @@ import { PrimitiveDispatcher } from "./dispatcher";
 import { PageGhostField } from "./page-ghosts";
 import { MIN_PAGES_FOR_PAGE_VIEWS } from "../page-placements";
 import type { Axis, NavState } from "../../links/memory";
+import type { StudyCondition } from "../../study/types";
+import { useStudyTask } from "./task-hud";
 
 function buildPrimitiveMap(
   root: XRPrimitive,
@@ -254,20 +256,27 @@ export function XRSceneGraph({
   nav,
   pending,
   sourceUrl,
+  study,
 }: {
   scene: SemanticScene;
   plan: LayoutPlan;
   pageState: PageState;
   setPage: (id: string, page: number) => void;
   onExternalNavigate?: (href: string) => void;
-  /** Directional traversal — see XRSceneRendererProps.onTraverse. */
-  onTraverse?: (url: string, axis: Axis, label?: string) => void;
+  /**
+   * Directional traversal — see XRSceneRendererProps.onTraverse. Axis is null
+   * only for a study-mode "plain" hop; every door, stair, strip and path still
+   * always passes a real one.
+   */
+  onTraverse?: (url: string, axis: Axis | null, label?: string) => void;
   onTraverseBack?: () => void;
   onTraverseJump?: (historyIndex: number) => void;
   nav?: NavState | null;
   /** A directional move in flight — see XRSceneRendererProps.pending. */
   pending?: { url: string; axis: Axis | null } | null;
   sourceUrl?: string;
+  /** The active study condition, if this tab is running one. See src/study/. */
+  study?: StudyCondition | null;
 }) {
   const primitiveMap = React.useMemo(() => {
     // Start with the tree walk so ordering is preserved for normal nodes,
@@ -387,6 +396,11 @@ export function XRSceneGraph({
     }
   }, [plan, scene]);
 
+  // Block A's click-targets: a `#task/<id>` fragment names nothing this
+  // document drew (see below), so the study layer hooks the dead end rather
+  // than needing any suppression logic of its own.
+  const { onTaskClick } = useStudyTask();
+
   const navigate = useCallback(
     (href: string) => {
       // Is this href a fragment of THE DOCUMENT THE READER IS STANDING IN?
@@ -436,6 +450,14 @@ export function XRSceneGraph({
         // URL: it is a same-document reference either way, and re-fetching the
         // page the reader is on to land at an id that is not there costs them
         // their corridor and gains them nothing.
+        //
+        // A Block A click-target rides exactly this dead end: `#task/<id>` is
+        // an ordinary inline anchor that never resolves to a real primitive,
+        // so it always lands here. Record the hit (or the decoy miss) and
+        // advance the task card; nothing else about the anchor changes.
+        if (fragment.startsWith("task/")) {
+          onTaskClick(fragment.slice("task/".length));
+        }
         return;
       }
 
@@ -447,6 +469,18 @@ export function XRSceneGraph({
         } catch {
           resolved = href;
         }
+      }
+
+      // Study mode never opens a new tab: `openInNewTab` gives every hop its
+      // own tab and its own fresh navigation memory, which the door
+      // conditions do not pay and the baseline should not either — see
+      // src/study/protocol.ts and the plan's "the baseline does not navigate
+      // in place, and must". A plain link has no direction, so this travels
+      // through the same in-place traversal every door uses, with a null
+      // axis — the one thing a plain link is missing.
+      if (study) {
+        onTraverse?.(resolved, null);
+        return;
       }
 
       if (onExternalNavigate) {
@@ -463,6 +497,9 @@ export function XRSceneGraph({
       sourceUrl,
       setFocusedRange,
       pageView,
+      onTaskClick,
+      study,
+      onTraverse,
     ],
   );
 
@@ -520,6 +557,22 @@ export function XRSceneGraph({
   // paragraph are two anchors the reader can look at.
   const pageLinks = React.useMemo<PageLinksApi>(() => {
     let links: SpatialLink[] = [];
+    // The entire directional link system dies at this one seam: inline marks
+    // gate on `directionOf` returning non-null, wall/deck doors come from
+    // `buildSlots` over `pageLinks.links`, and rooms corridors come from
+    // `roomPageLinks`, all derived from this context. An empty list removes
+    // marks, doors and corridors together, with no per-view branch — see the
+    // plan's "The switches (code)". Anchors stay clickable regardless: they
+    // navigate through `NavigateContext`, which this context never touches.
+    if (study?.linkMode === "plain") {
+      return {
+        links: [],
+        byId: new Map(),
+        directionOf: () => null,
+        sideOf: () => null,
+        publishSides: () => {},
+      };
+    }
     try {
       links = collectSpatialLinks(scene, plan, {
         pageUrl: sourceUrl ?? null,
@@ -546,7 +599,7 @@ export function XRSceneGraph({
     // every publish would re-classify the whole document to learn which hand a
     // door took. The two closures below read the ref/setter, which are stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, plan, sourceUrl, lateralSides, publishLateralSides]);
+  }, [scene, plan, sourceUrl, lateralSides, publishLateralSides, study?.linkMode]);
 
   // Directional-link plumbing, provided once for whichever view is mounted.
   // A view reaches it through `useTraversal()` rather than through four

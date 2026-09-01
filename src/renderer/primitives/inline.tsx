@@ -33,9 +33,45 @@ import {
 import {
   Z_LAYER_INLINE_TEXT,
   RENDER_ORDER_TEXT,
+  RENDER_ORDER_ACCENT,
   Z_CURVE_CONTENT_BASE_LIFT,
   HIT_TARGET_MATERIAL,
 } from "./constants";
+
+/**
+ * The fallback underline (docs/directional-links.md's "no colour, no
+ * underline" rule is written for the MARKED system — an anchor with a
+ * directional mark carries its own affordance, and the mark's orientation is
+ * what says "clickable"). A link with no mark has nothing else: `linkMode:
+ * "plain"` in a study trial, and any anchor the classifier never resolved a
+ * direction for. `!markOf(id)`/`!direction` at each call site gates this so
+ * the marked system keeps its no-underline look untouched.
+ *
+ * Thin and muted rather than a heavy blue rule — a shape cue ("something is
+ * different about this text"), not a return to coloured link text.
+ */
+export const UNDERLINE_THICKNESS = 0.0012;
+/** Fraction of the glyph rect's height the underline sits below its bottom edge. */
+const UNDERLINE_GAP_FRACTION = 0.12;
+
+/**
+ * Where an unmarked link's underline sits, given one of `useLinkRects`'s
+ * `hitQuads` entries — same x/z (already curve-correct) and yaw, shifted
+ * down from the glyph rect's centre to its bottom edge plus a small gap.
+ * Shared by `ProseRow` here and `XRLinkMesh` (meshes/inline-mesh.tsx), the
+ * two places a link is drawn.
+ */
+export function underlineTransform(r: {
+  position: [number, number, number];
+  h: number;
+  yaw: number;
+}): { position: [number, number, number]; rotation: [number, number, number] } {
+  const [x, y, z] = r.position;
+  return {
+    position: [x, y - r.h / 2 - r.h * UNDERLINE_GAP_FRACTION, z],
+    rotation: [0, r.yaw, 0],
+  };
+}
 
 // ─────────────────────────────────────────────────────────────
 // ClippedText — troika Text with clipping plane support
@@ -621,6 +657,7 @@ function ProseRow({
   const theme = useTheme();
   const pageLinks = usePageLinks();
   const { lit, setLit } = useLinkBinding();
+  const clips = useClipPlanes();
 
   // The mark an anchor is drawn with. A link with no id, or one the classifier
   // never saw, gets nothing rather than a guessed direction — a wrong mark is
@@ -705,31 +742,50 @@ function ProseRow({
 
       {navigate &&
         hitQuads.map((r) => (
-          <mesh
-            key={r.key}
-            position={r.position}
-            rotation={[0, r.yaw, 0]}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (consumeScrollDrag()) return;
-              navigate(r.href);
-            }}
-            onPointerOver={(e) => {
-              e.stopPropagation();
-              // Light the anchor and, through the shared id, its door.
-              if (r.id) setLit(r.id);
-            }}
-            onPointerOut={() => {
-              if (r.id) setLit(null);
-            }}
-          >
-            <planeGeometry args={[r.w, r.h]} />
-            <primitive
-              object={HIT_TARGET_MATERIAL}
-              attach="material"
-              dispose={null}
-            />
-          </mesh>
+          <React.Fragment key={r.key}>
+            {/* The fallback underline — only for a link `markOf` gave
+                nothing to (no pageLinks context, i.e. `linkMode: "plain"`,
+                or an anchor the classifier never resolved a direction for).
+                A marked link keeps the pure no-underline look; an unmarked
+                one otherwise has NO visual difference from body text at
+                all. See the constant's header comment above. */}
+            {!markOf(r.id) && (
+              <mesh {...underlineTransform(r)} renderOrder={RENDER_ORDER_ACCENT}>
+                <planeGeometry args={[r.w, UNDERLINE_THICKNESS]} />
+                <meshBasicMaterial
+                  color={theme.bodyCol}
+                  transparent
+                  opacity={0.55}
+                  depthWrite={false}
+                  clippingPlanes={clips}
+                />
+              </mesh>
+            )}
+            <mesh
+              position={r.position}
+              rotation={[0, r.yaw, 0]}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (consumeScrollDrag()) return;
+                navigate(r.href);
+              }}
+              onPointerOver={(e) => {
+                e.stopPropagation();
+                // Light the anchor and, through the shared id, its door.
+                if (r.id) setLit(r.id);
+              }}
+              onPointerOut={() => {
+                if (r.id) setLit(null);
+              }}
+            >
+              <planeGeometry args={[r.w, r.h]} />
+              <primitive
+                object={HIT_TARGET_MATERIAL}
+                attach="material"
+                dispose={null}
+              />
+            </mesh>
+          </React.Fragment>
         ))}
     </group>
   );

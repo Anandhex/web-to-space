@@ -40,6 +40,7 @@ import {
   roomAtPose,
   roomReadingPose,
   roomRailY,
+  resolveRanges,
   LIVE_GHOST_RADIUS,
   MIN_PAGES_FOR_PAGE_VIEWS,
   type PagePlacement,
@@ -283,7 +284,17 @@ export function PageGhostField({
       mode === "wall" || mode === "deck" || mode === "rooms"
         ? // Root + 1: the panel's top-level sections are what the wall shows
           // as tiles, and what the other two group by.
-          sectionRangesFor(plan, pageCount)
+          //
+          // Through `resolveRanges` because a document can have no top-level
+          // sections at all, and then this list is empty rather than short.
+          // The geometry already substituted the whole document as one range
+          // (every compute* below resolves it the same way), so rooms built
+          // its corridor and its reading spots and then mounted nothing in
+          // them: the mount gate indexes this list by room, and `undefined`
+          // reads as "not in this room" for every page. One page rendered —
+          // the focused one — and the rest of the document was a walk through
+          // empty rooms.
+          resolveRanges(sectionRangesFor(plan, pageCount), pageCount)
         : [],
     [mode, plan, pageCount],
   );

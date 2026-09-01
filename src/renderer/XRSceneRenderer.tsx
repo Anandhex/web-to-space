@@ -90,6 +90,9 @@ import { XRViewerAnchor, PreviewFieldOfView, AxisLook } from "./scene/camera";
 import { ReferenceFrameGroup, XRSceneGraph } from "./scene/scene-graph";
 import { Minimap } from "./scene/minimap";
 import { TransitionMark } from "./scene/transition";
+import { StudyTaskProvider, TaskHud } from "./scene/task-hud";
+import { StudyGatePanel, type StudyGatePhase } from "./scene/study-gate";
+import type { StudyCondition } from "../study/types";
 import { ROOM_EYE_HEIGHT } from "./page-placements";
 import { SR_ONLY } from "../components/a11y";
 import { VRButton, styles } from "./scene/chrome";
@@ -162,7 +165,7 @@ export interface XRSceneRendererProps {
    * corridor is one reading session, so a tab per door would leave every
    * document with a fresh memory and no corridor to walk back down.
    */
-  onTraverse?: (url: string, axis: Axis, label?: string) => void;
+  onTraverse?: (url: string, axis: Axis | null, label?: string) => void;
   /** The reserved back door every floor, face and table carries. */
   onTraverseBack?: () => void;
   /** A minimap selection: move the world to a node the reader has visited. */
@@ -175,6 +178,31 @@ export interface XRSceneRendererProps {
    * the reader a blank canvas and a spinner.
    */
   pending?: { url: string; axis: Axis | null } | null;
+  /**
+   * The active study condition, if this tab is running one (src/study/). Gates
+   * the directional link system (`plain`), the minimap (only `doors+map`
+   * shows it), and mounts the quest task card. Undefined/null outside a study
+   * — an ordinary reading session never reaches any of these branches.
+   */
+  study?: StudyCondition | null;
+  /**
+   * Which in-headset gate to show over the scene, if any — "complete" right
+   * after a trial's last task/hop lands (with a Start button for the next
+   * one) or "finished" after the session's last trial (no button; the
+   * closing thank-you). "none" (or omitted) renders nothing. Owned by
+   * App.tsx, not derived here, because only it knows whether there IS a
+   * next trial. See scene/study-gate.tsx.
+   */
+  studyGate?: StudyGatePhase;
+  /** The Start-next-trial click on the gate panel. Required whenever `studyGate` can be "complete". */
+  onStudyGateStart?: () => void;
+  /**
+   * Fired once by `StudyTaskProvider` when THIS trial's last task/hop lands
+   * — before App.tsx has decided whether that means "complete" (more
+   * trials left) or "finished" (this was the last one). That decision lives
+   * in App.tsx alongside the full trial list, not here.
+   */
+  onStudyTrialComplete?: () => void;
   /** XR primitive colour palette. Defaults to LIGHT_THEME (Meta Horizon UI Set). */
   theme?: XRTheme;
   /** In-world tab switcher wiring. When provided, a 3D tab bar is rendered. */
@@ -211,6 +239,10 @@ export function XRSceneRenderer({
   onSwitchTab,
   onCloseTab,
   onNewTab,
+  study = null,
+  studyGate = "none",
+  onStudyGateStart,
+  onStudyTrialComplete,
 }: XRSceneRendererProps) {
   // 1. Resolve Device Profile locally
   const deviceProfile = QUEST_3_PROFILE;
@@ -717,45 +749,77 @@ export function XRSceneRenderer({
                   <FontContext.Provider value={fontType}>
                     {/* Web2VR backend: CSS layout extracted from hidden iframe → 3D */}
 
-                    {parserBackend !== "web2vr" && scene && plan && (
-                      <ReferenceFrameGroup
-                        frame={plan.referenceFrame ?? "world"}
-                      >
-                        <XRSceneGraph
-                          scene={scene}
-                          plan={plan}
-                          pageState={pageState}
-                          setPage={setPage}
-                          onExternalNavigate={onExternalNavigate}
-                          onTraverse={onTraverse}
-                          onTraverseBack={onTraverseBack}
-                          onTraverseJump={onTraverseJump}
+                    {/* Study mode's task-index state and event logging live
+                        here, above both the scene graph (whose navigate()
+                        records Block A clicks and Block B arrivals) and the
+                        card that reads the same counter — see task-hud.tsx. A
+                        no-op wrapper when `study` is null. */}
+                    <StudyTaskProvider
+                      study={study}
+                      url={url ?? ""}
+                      onTrialComplete={onStudyTrialComplete}
+                    >
+                      {parserBackend !== "web2vr" && scene && plan && (
+                        <ReferenceFrameGroup
+                          frame={plan.referenceFrame ?? "world"}
+                        >
+                          <XRSceneGraph
+                            scene={scene}
+                            plan={plan}
+                            pageState={pageState}
+                            setPage={setPage}
+                            onExternalNavigate={onExternalNavigate}
+                            onTraverse={onTraverse}
+                            onTraverseBack={onTraverseBack}
+                            onTraverseJump={onTraverseJump}
+                            nav={nav}
+                            pending={pending}
+                            sourceUrl={url}
+                            study={study}
+                          />
+                        </ReferenceFrameGroup>
+                      )}
+
+                      {/* The travelled graph, in a corner of every view.
+                          Mounted HERE and not inside <ReferenceFrameGroup>: it
+                          anchors to the head in world space, and a reference
+                          frame that translates or rotates the scene would carry
+                          the panel off with it — the one surface that must stay
+                          true would be the one drawn in the wrong place.
+
+                          Study mode shows it only in the `doors+map`
+                          condition — Block B's third cell is exactly the
+                          minimap's contribution over `doors` alone. */}
+                      {(!study || study.linkMode === "doors+map") && (
+                        <Minimap
                           nav={nav}
-                          pending={pending}
-                          sourceUrl={url}
+                          viewMode={viewMode}
+                          onJump={onTraverseJump}
                         />
-                      </ReferenceFrameGroup>
-                    )}
+                      )}
 
-                    {/* The travelled graph, in a corner of every view.
-                        Mounted HERE and not inside <ReferenceFrameGroup>: it
-                        anchors to the head in world space, and a reference
-                        frame that translates or rotates the scene would carry
-                        the panel off with it — the one surface that must stay
-                        true would be the one drawn in the wrong place. */}
-                    <Minimap
-                      nav={nav}
-                      viewMode={viewMode}
-                      onJump={onTraverseJump}
-                    />
+                      {/* "You are moving." Head-anchored beside the minimap and
+                          mounted OUTSIDE <ReferenceFrameGroup> for the same
+                          reason: it must not travel with the world it is
+                          reporting on. Every view gets it for free, on top of
+                          whatever its own geometry is doing. */}
+                      <TransitionMark pending={pending} />
 
-                    {/* "You are moving." Head-anchored beside the minimap and
-                        mounted OUTSIDE <ReferenceFrameGroup> for the same
-                        reason: it must not travel with the world it is
-                        reporting on. Every view gets it for free, on top of
-                        whatever its own geometry is doing. */}
-                    <TransitionMark pending={pending} />
+                      {/* The quest card, top-right — mirrors the minimap's
+                          corner. Renders nothing when `study` is null. */}
+                      <TaskHud />
 
+                      {/* The between-trials stop — centred, not a corner,
+                          because while it is up it replaces the reader's
+                          attention rather than sharing it. Renders nothing
+                          when `studyGate` is "none". */}
+                      {onStudyGateStart && (
+                        <StudyGatePanel
+                          gate={studyGate}
+                          onStart={onStudyGateStart}
+                        />
+                      )}
+                    </StudyTaskProvider>
 
                     {/* ── In-world browser chrome (replaces HTML overlays) ────
                       Tab switcher, horizontally centred on the content panel

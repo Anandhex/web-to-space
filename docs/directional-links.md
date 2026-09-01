@@ -65,10 +65,22 @@ So the anchor text keeps a mark — just not a chromatic one:
 
 - `▴` parent · `▸` sibling · `▾` external · same-page gets a filled dot ·
   operational gets nothing
-- **No colour, no underline.** The mark's orientation reinforces the same
-  legend the geometry uses.
+- **No colour, no underline — when there IS a mark.** The mark's orientation
+  reinforces the same legend the geometry uses, and a second affordance on
+  top of it would be redundant.
 - On gaze or hover, the mark and its matching door/strip/path light together.
   That is the binding channel, and it is the only one.
+- **A link with no mark gets a plain underline instead**, added 2026-09
+  (`underlineTransform` in `src/renderer/primitives/inline.tsx`, drawn from
+  each `useLinkRects` hit rect wherever the caller's own direction lookup
+  came back empty). Two cases reach it: `linkMode: "plain"` in a study trial
+  (`src/study/`, where `pageLinks` is null by design — the baseline
+  condition has no direction system to test against) and an anchor the
+  classifier never resolved a direction for. Without it, either case draws a
+  link identically to body text — no colour, no mark, no way to tell it is
+  clickable at all. Thin and muted (`theme.bodyCol` at partial opacity), not
+  a return to coloured link text: a shape cue, not a chromatic one, so the
+  marked system's own no-underline look is untouched.
 
 ### Navigation memory
 

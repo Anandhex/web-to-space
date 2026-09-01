@@ -130,8 +130,12 @@ export function stackZ(depth: number): number {
  * memory only says which slots the TRAVELLED path has already claimed.
  */
 export interface TraversalApi {
-  /** Follow a link in a direction; the axis is what reserves the way back. */
-  traverse: (url: string, axis: Axis, label?: string) => void;
+  /**
+   * Follow a link in a direction; the axis is what reserves the way back.
+   * Null only in study mode's "plain" link condition: the reader still
+   * travels in place, but the channel that sent them has no direction.
+   */
+  traverse: (url: string, axis: Axis | null, label?: string) => void;
   /** The reserved back door every floor, face and table carries. */
   back: () => void;
   /** Move to any node the reader has visited. Emitted by the minimap. */

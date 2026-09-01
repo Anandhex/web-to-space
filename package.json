@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:stimuli": "tsx scripts/build-stimuli.ts && tsx scripts/check-stimuli.ts",
+    "check:stimuli": "tsx scripts/check-stimuli.ts",
+    "derive:study": "tsx scripts/derive-study-metrics.ts"
   },
   "devDependencies": {
     "@types/jsdom": "^28.0.3",
@@ -14,6 +17,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/three": "^0.184.1",
     "@vitejs/plugin-react": "^6.0.2",
+    "exceljs": "^4.4.0",
     "jsdom": "^29.1.1",
     "playwright": "^1.62.1",
     "tsx": "^4.23.1",

@@ -20,13 +20,16 @@ import {
   NavigateContext,
 } from "../contexts";
 import { useLinkBinding, usePageLinks } from "../../scene/contexts";
+import { useClipPlanes } from "../contexts";
 import { MARK_SEPARATOR, markForSide } from "../../../links/direction";
-import { HIT_TARGET_MATERIAL } from "../constants";
+import { HIT_TARGET_MATERIAL, RENDER_ORDER_ACCENT } from "../constants";
 import {
   ClippedText,
   buildInlineRows,
   InlineProseRows,
   useLinkRects,
+  underlineTransform,
+  UNDERLINE_THICKNESS,
 } from "../inline";
 
 interface XRTextMeshProps {
@@ -147,10 +150,14 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
   // Directional marks (docs/directional-links.md, Phase 4). A link drawn on
   // its own — a nav card, a link card — is still an anchor and still carries
   // the legend, so it is marked exactly as one inside a paragraph is. No
-  // accent colour and no underline: what says "this leads somewhere" is the
-  // mark's orientation, and where it leads is the door it opens.
+  // accent colour and no underline WHEN there is a mark: what says "this
+  // leads somewhere" is the mark's orientation, and where it leads is the
+  // door it opens. `direction` is null with no pageLinks context at all
+  // (`linkMode: "plain"`) or for an anchor the classifier never resolved —
+  // see the fallback underline below, at `hitQuads`.
   const pageLinks = usePageLinks();
   const { lit, setLit } = useLinkBinding();
+  const clips = useClipPlanes();
   const isLit = lit !== null && lit === primitive.id;
   const direction = pageLinks?.directionOf(primitive.id) ?? null;
   // Side-aware: see `markForSide`. A link card for a sibling whose door went
@@ -237,23 +244,38 @@ export function XRLinkMesh({ primitive, entry, renderChild }: XRLinkMeshProps) {
               the click: lighting an anchor lights the door it opens, and that
               pairing is the only channel left once colour is gone. */}
           {hitQuads.map((r) => (
-            <mesh
-              key={r.key}
-              position={r.position}
-              rotation={[0, r.yaw, 0]}
-              onPointerOver={(e) => {
-                e.stopPropagation();
-                setLit(primitive.id);
-              }}
-              onPointerOut={() => setLit(null)}
-            >
-              <planeGeometry args={[r.w, r.h]} />
-              <primitive
-                object={HIT_TARGET_MATERIAL}
-                attach="material"
-                dispose={null}
-              />
-            </mesh>
+            <React.Fragment key={r.key}>
+              {/* No mark ⇒ no other affordance at all — see the comment on
+                  `direction` above and inline.tsx's underlineTransform. */}
+              {!direction && (
+                <mesh {...underlineTransform(r)} renderOrder={RENDER_ORDER_ACCENT}>
+                  <planeGeometry args={[r.w, UNDERLINE_THICKNESS]} />
+                  <meshBasicMaterial
+                    color={theme.bodyCol}
+                    transparent
+                    opacity={0.55}
+                    depthWrite={false}
+                    clippingPlanes={clips}
+                  />
+                </mesh>
+              )}
+              <mesh
+                position={r.position}
+                rotation={[0, r.yaw, 0]}
+                onPointerOver={(e) => {
+                  e.stopPropagation();
+                  setLit(primitive.id);
+                }}
+                onPointerOut={() => setLit(null)}
+              >
+                <planeGeometry args={[r.w, r.h]} />
+                <primitive
+                  object={HIT_TARGET_MATERIAL}
+                  attach="material"
+                  dispose={null}
+                />
+              </mesh>
+            </React.Fragment>
           ))}
         </>
       )}

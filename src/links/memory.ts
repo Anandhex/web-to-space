@@ -196,7 +196,14 @@ export function windowFor(viewMode: string | undefined): WindowBudget {
 interface NavMove {
   url: string;
   label: string;
-  axis: Axis;
+  /**
+   * Null for a study-mode "plain" hop: the reader travelled in place, but the
+   * channel that told them where to go carried no direction, which is
+   * precisely what that condition is meant to isolate. A null-axis node takes
+   * no lattice step and reserves no return direction — it behaves exactly
+   * like the session root already does, just not at index 0.
+   */
+  axis: Axis | null;
 }
 
 export function initNav(url: string, label: string): NavState {
@@ -230,7 +237,7 @@ export function enter(state: NavState, move: NavMove): NavState {
     label: move.label,
     direction: move.axis,
     from: state.at,
-    coord: step(here.coord, move.axis),
+    coord: move.axis ? step(here.coord, move.axis) : here.coord,
   };
   const history = [...state.history, node];
   return finalise({ history, at: history.length - 1 });

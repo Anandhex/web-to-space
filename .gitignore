@@ -29,3 +29,12 @@ CLAUDE.md
 
 .agents
 
+# Study run logs (src/study/, vite.config.ts's studyLogPlugin) — per-
+# participant JSONL, never committed.
+study-out/
+
+/public/study/*
+
+/scripts/*
+
+/src/study/*

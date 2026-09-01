@@ -406,21 +406,53 @@ async function createNode(
   const isGenericWrapper = tag === "div" || tag === "span";
   const hasOnlyText = hasOnlyTextContent(element, ctx);
 
-  const isPureTextWrapper =
-    isGenericWrapper && hasOnlyText && resolvedRole === "generic";
-
-  if (isPureTextWrapper) {
-    const text = renderedTextContent(element);
-    if (text) {
-      const textId = `${parentId}-text-${ctx.counters.node++}`;
-      ctx.nodes[textId] = createBaseNode(textId, "text", parentId, ctx, {
-        content: text,
-        source: "inline",
-        confidence: ctx.config.sourceConfidence["inline"],
-        readingDepth,
-        attributes: { ...createEmptyAttributes(), componentType: tag },
-      });
-      return textId;
+  // A wrapper carrying nothing but text and presentational inline markup.
+  //
+  // `<div>` and `<span>` used to leave here as the SAME thing: one inline
+  // `text` node spliced into the parent, with `renderedTextContent` flattening
+  // whatever elements were inside. Two different documents' worth of damage
+  // came out of that one branch, and both are visible on any page that marks
+  // its paragraphs up as `<div>`s rather than `<p>`s — the non-semantic half
+  // of the Block A study stimuli, and most of the real web:
+  //
+  //   * A `<div>` is a BLOCK box; a `<span>` is an inline one. Demoting the
+  //     block to an inline leaf let the mapper's `coalesceInlineRuns` weld an
+  //     entire document body into ONE run-on XRParagraph. The paginator can
+  //     only split such a node by word count, and its words-per-line estimate
+  //     is not the wrapping the renderer performs: on the coral-reefs
+  //     stimulus the first fragment measured 1.25 m against a 0.9 m page and
+  //     everything past the clip plane was simply gone. The reader landed on
+  //     page 0 — the two lines that fit ahead of the weld — and the other 490
+  //     words of the document were on a page they had no way to read.
+  //   * `hasOnlyTextContent` is true of a wrapper whose element children are
+  //     all inline and text-only — `<a href>` included. Flattening kept those
+  //     words and dropped the anchors, so EVERY link in such a document
+  //     disappeared before the mapper ever saw one. In the study that is the
+  //     four click targets of every non-semantic Block A trial.
+  //
+  // So the block box is classified as prose — the same path `<p>` takes, with
+  // its own flow entry and its own pagination — and only a genuinely childless
+  // wrapper is collapsed to text. Anything with inline children falls through
+  // to `isPureInlineContainer` below, which decomposes them and keeps each
+  // `<a>` as a node of its own.
+  if (isGenericWrapper && hasOnlyText && resolvedRole === "generic") {
+    if (tag === "div") {
+      resolvedRole = "paragraph";
+      resolvedSource = "structural";
+      resolvedConfidence = confidenceForSource("structural", ctx.config);
+    } else if (getValidChildren(element, ctx.skipTags).length === 0) {
+      const text = renderedTextContent(element);
+      if (text) {
+        const textId = `${parentId}-text-${ctx.counters.node++}`;
+        ctx.nodes[textId] = createBaseNode(textId, "text", parentId, ctx, {
+          content: text,
+          source: "inline",
+          confidence: ctx.config.sourceConfidence["inline"],
+          readingDepth,
+          attributes: { ...createEmptyAttributes(), componentType: tag },
+        });
+        return textId;
+      }
     }
   }
 

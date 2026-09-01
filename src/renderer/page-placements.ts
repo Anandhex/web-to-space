@@ -109,7 +109,19 @@ interface PagePlacementOptions {
 }
 
 /** Section ranges as given, or one range covering the whole document. */
-function resolveRanges(
+/**
+ * A document's section partition, or the whole document as one section when it
+ * has none. Exported because the RENDERER needs the same substitution: rooms
+ * mounts a page only if it falls inside the range of the room the reader is
+ * standing in, so a document with no top-level sections — every non-semantic
+ * Block A stimulus, and any page written without headings or <section>s — left
+ * every room's range `undefined`, every page outside the focused one unmounted,
+ * and the reader walking a corridor of empty rooms with the one page they
+ * started on behind them. The geometry was always built off this fallback (the
+ * shell, the spots and the placements all come through here); only the mount
+ * gate read the raw list, so the rooms existed and nothing was in them.
+ */
+export function resolveRanges(
   ranges: SectionPageRange[] | undefined,
   pageCount: number,
 ): SectionPageRange[] {

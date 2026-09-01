@@ -18,6 +18,7 @@ import {
   type AIProviderSettings,
 } from "../ir/ai";
 import { DARK_THEME, type XRTheme } from "../renderer/theme";
+import type { StudyCondition } from "../study/types";
 
 import { SR_ONLY, usePrefersReducedMotion } from "./a11y";
 
@@ -90,6 +91,14 @@ export interface HomeSettings {
    * before launch and travels with the tab.
    */
   viewMode: ViewMode;
+  /**
+   * The active study condition (src/study/), when this tab is a study trial.
+   * Rides on settings for the same reason viewMode/theme/parserBackend do —
+   * it inherits through link navigation exactly as they already do, so a
+   * link followed mid-trial does not silently leave the study. Undefined for
+   * every normal reading session; only `src/study/runner.tsx` sets it.
+   */
+  study?: StudyCondition | null;
 }
 
 /**
@@ -208,6 +217,18 @@ function hexToRgb(hex: string): string {
 const TEST_PAGE_TOKEN = "__test_elements__";
 const LINK_TEST_TOKEN = "__link_test__";
 
+/**
+ * The evaluation study (src/study/, docs/study-plan.md).
+ *
+ * NOT in `LOCAL_PAGES`: the other two sentinels resolve to a document the
+ * pipeline renders, and this one does not resolve to a document at all — it
+ * leaves the reading app entirely for the operator's control screen. It is on
+ * the board because that is where the operator looks for a way in, and
+ * because the alternative was typing `?study=1&p=P03` by hand with a
+ * participant already in the headset.
+ */
+const STUDY_TOKEN = "__study__";
+
 /** Sentinel → same-origin path. The only local pages the launcher offers. */
 const LOCAL_PAGES: Record<string, string> = {
   [TEST_PAGE_TOKEN]: "/test-elements.html",
@@ -276,24 +297,36 @@ const PRESET_SITES: PresetSite[] = [
     url: TEST_PAGE_TOKEN,
     initial: "▦",
   },
+  {
+    id: "link-test",
+    title: "Link Direction Test",
+    subtitle: "Relative, top-level & external links · smoke test",
+    url: LINK_TEST_TOKEN,
+    initial: "▸",
+  },
+  {
+    id: "study",
+    title: "Evaluation Study",
+    subtitle: "Operator control screen · 15 trials",
+    url: STUDY_TOKEN,
+    initial: "S",
+  },
 ];
 
 /**
- * The seventh destination, in the wide strip under the grid.
+ * The strip under the grid — the cells that are not websites.
  *
- * It is here rather than in the grid for the reason the note above gives: a
- * seventh cell in a three-wide grid is one card alone on a row, 1.8 m below
+ * They are here rather than in the grid for the reason the note above gives:
+ * a seventh cell in a three-wide grid is one card alone on a row, 1.8 m below
  * the others. The strip is the shape the board already reserves space for
- * (see BOARD_INNER_H) and it reads as what it is — a second local smoke test,
- * not a seventh website.
+ * (see BOARD_INNER_H), and it reads as what it holds — the local smoke test
+ * and the study, neither of which is a destination to browse.
+ *
+ * Two of them share the strip's width rather than each taking a row of their
+ * own: a second full-width strip would push the whole board up by UTIL_H and
+ * a gap, moving all six cards for the sake of one cell.
  */
-const UTILITY_SITE: PresetSite = {
-  id: "link-test",
-  title: "Link Direction Test",
-  subtitle: "Relative, top-level & external links · local smoke test",
-  url: LINK_TEST_TOKEN,
-  initial: "▸",
-};
+const UTILITY_SITES: PresetSite[] = [];
 
 // ─────────────────────────────────────────────────────────────
 // Launcher geometry
@@ -322,9 +355,12 @@ const CARD_GAP_X = 0.1;
 const CARD_GAP_Y = 0.11;
 const CARD_COLS = 3;
 
-/** The utility strip under the grid — wider and shorter than a card. */
-const UTIL_W = CARD_COLS * CARD_W + (CARD_COLS - 1) * CARD_GAP_X;
+/** The utility strip under the grid — shorter than a card, full grid width. */
+const UTIL_ROW_W = CARD_COLS * CARD_W + (CARD_COLS - 1) * CARD_GAP_X;
 const UTIL_H = 0.28;
+/** That width shared between the strip's cells, with a card gap between. */
+const UTIL_W =
+  (UTIL_ROW_W - (UTILITY_SITES.length - 1) * CARD_GAP_X) / UTILITY_SITES.length;
 
 /**
  * Elevation of the BOTTOM of the whole board.
@@ -347,7 +383,7 @@ function yAtElevation(deg: number): number {
 const BOARD_BOTTOM_Y = yAtElevation(BOARD_BOTTOM_DEG);
 const GRID_ROWS = Math.ceil(PRESET_SITES.length / CARD_COLS);
 const BOARD_INNER_H =
-  UTIL_H + CARD_GAP_Y + GRID_ROWS * CARD_H + (GRID_ROWS - 1) * CARD_GAP_Y;
+  CARD_GAP_Y + GRID_ROWS * CARD_H + (GRID_ROWS - 1) * CARD_GAP_Y;
 const BOARD_PAD = 0.12;
 
 interface CardPose {
@@ -383,12 +419,15 @@ function cardPose(i: number): CardPose {
 }
 
 /**
- * Pose of the utility strip: the full width of the grid, at the bottom of the
- * board, on the same arc. BOARD_INNER_H already reserves UTIL_H + a gap for
- * it, so adding it changes no other cell's position.
+ * Pose of the i-th cell of the utility strip, which together span the full
+ * width of the grid at the bottom of the board, on the same arc.
+ * BOARD_INNER_H already reserves UTIL_H + a gap for the row, so the strip's
+ * cells change no other cell's position however many of them there are.
  */
-function utilityPose(): CardPose {
-  return arcPose(0, BOARD_BOTTOM_Y + UTIL_H / 2);
+function utilityPose(i: number): CardPose {
+  const n = UTILITY_SITES.length;
+  const alongX = (i - (n - 1) / 2) * (UTIL_W + CARD_GAP_X);
+  return arcPose(alongX, BOARD_BOTTOM_Y + UTIL_H / 2);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -465,6 +504,27 @@ function SiteCard({
   const titleSize = typeUnit * 0.133;
   const bodySize = typeUnit * 0.088;
   const metaSize = typeUnit * 0.072;
+
+  // A strip STACKS its title over its subtitle, right of the chip — the same
+  // arrangement the cards use, at strip scale.
+  //
+  // It used to put both on one line, title left and subtitle pinned to the
+  // right edge. That worked only while the strip was the full width of the
+  // grid. Once two strips shared the row at half width each, "Link Direction
+  // Test" wanted 0.78 m of a 0.73 m budget and wrapped, and — worse — each
+  // strip's subtitle ended up hard against its own right edge, 0.14 m from
+  // the next strip's title, so the two runs of text read as one and the
+  // strips looked like they were overlapping even though the panels are
+  // 0.14 m apart. Stacking gives both lines the full width right of the chip
+  // and leaves nothing to collide with horizontally.
+  const stripTextLeft = -halfW + pad + chip + pad * 0.7;
+  const stripTextW = halfW - pad - stripTextLeft;
+  /** Leading between the stacked pair. */
+  const stripLead = metaSize * 0.5;
+  // Both anchored "middle", offset so the PAIR is centred on the strip:
+  // the block runs ±(titleSize + lead + metaSize) / 2 about y = 0.
+  const stripTitleY = (metaSize + stripLead) / 2;
+  const stripSubY = -(titleSize + stripLead) / 2;
 
   return (
     <group ref={groupRef} position={pose.position} rotation={[0, pose.yaw, 0]}>
@@ -547,29 +607,29 @@ function SiteCard({
       {/* Title, right of the chip */}
       <Text
         position={[
-          -halfW + pad + chip + pad * 0.7,
-          strip ? 0 : halfH - pad - chip * 0.34,
+          stripTextLeft,
+          strip ? stripTitleY : halfH - pad - chip * 0.34,
           0.006,
         ]}
         fontSize={titleSize}
         color={theme.textPrimary}
         anchorX="left"
         anchorY="middle"
-        maxWidth={width - (pad * 2 + chip + pad * 0.7)}
+        maxWidth={strip ? stripTextW : width - (pad * 2 + chip + pad * 0.7)}
         letterSpacing={-0.01}
       >
         {site.title}
       </Text>
 
-      {/* A strip says the rest on the same line, right-aligned, and stops. */}
+      {/* A strip stacks the rest directly under the title, same left edge. */}
       {strip && (
         <Text
-          position={[halfW - pad, 0, 0.006]}
+          position={[stripTextLeft, stripSubY, 0.006]}
           fontSize={metaSize}
           color={theme.textMuted}
-          anchorX="right"
+          anchorX="left"
           anchorY="middle"
-          maxWidth={width * 0.55}
+          maxWidth={stripTextW}
         >
           {site.subtitle}
         </Text>
@@ -577,56 +637,56 @@ function SiteCard({
 
       {/* Subtitle spans the full width below the header */}
       {!strip && (
-      <Text
-        position={[-halfW + pad, halfH - pad - chip - pad * 0.75, 0.006]}
-        fontSize={bodySize}
-        color={theme.textSecondary}
-        anchorX="left"
-        anchorY="top"
-        maxWidth={width - 2 * pad}
-        lineHeight={1.3}
-      >
-        {site.subtitle}
-      </Text>
+        <Text
+          position={[-halfW + pad, halfH - pad - chip - pad * 0.75, 0.006]}
+          fontSize={bodySize}
+          color={theme.textSecondary}
+          anchorX="left"
+          anchorY="top"
+          maxWidth={width - 2 * pad}
+          lineHeight={1.3}
+        >
+          {site.subtitle}
+        </Text>
       )}
 
       {/* Rule above the footer row */}
       {!strip && (
-      <>
-      <mesh position={[0, -halfH + pad * 1.5, 0.005]}>
-        <planeGeometry args={[width - 2 * pad, 0.004]} />
-        <meshBasicMaterial
-          color={active ? theme.accent : theme.divider}
-          transparent
-          opacity={active ? 0.9 : 0.55}
-        />
-      </mesh>
+        <>
+          <mesh position={[0, -halfH + pad * 1.5, 0.005]}>
+            <planeGeometry args={[width - 2 * pad, 0.004]} />
+            <meshBasicMaterial
+              color={active ? theme.accent : theme.divider}
+              transparent
+              opacity={active ? 0.9 : 0.55}
+            />
+          </mesh>
 
-      {/* Footer: host on the left, the Open affordance on the right */}
-      <Text
-        position={[-halfW + pad, -halfH + pad * 0.72, 0.006]}
-        fontSize={metaSize}
-        color={theme.textMuted}
-        anchorX="left"
-        anchorY="middle"
-        maxWidth={width - 2 * pad - 0.34}
-      >
-        {isLocalPage(site.url)
-          ? "localhost"
-          : site.url.replace(/^https?:\/\//, "")}
-      </Text>
-      {active && (
-        <Text
-          position={[halfW - pad, -halfH + pad * 0.72, 0.006]}
-          fontSize={metaSize}
-          color={theme.accentText}
-          anchorX="right"
-          anchorY="middle"
-        >
-          Open →
-        </Text>
-      )}
-      </>
+          {/* Footer: host on the left, the Open affordance on the right */}
+          <Text
+            position={[-halfW + pad, -halfH + pad * 0.72, 0.006]}
+            fontSize={metaSize}
+            color={theme.textMuted}
+            anchorX="left"
+            anchorY="middle"
+            maxWidth={width - 2 * pad - 0.34}
+          >
+            {isLocalPage(site.url)
+              ? "localhost"
+              : site.url.replace(/^https?:\/\//, "")}
+          </Text>
+          {active && (
+            <Text
+              position={[halfW - pad, -halfH + pad * 0.72, 0.006]}
+              fontSize={metaSize}
+              color={theme.accentText}
+              anchorX="right"
+              anchorY="middle"
+            >
+              Open →
+            </Text>
+          )}
+        </>
       )}
     </group>
   );
@@ -1513,11 +1573,26 @@ export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
   const { theme } = settings;
 
   /** Every cell of the launcher, grid first then the utility strip. */
-  const cells = useMemo(() => [...PRESET_SITES, UTILITY_SITE], []);
+  const cells = useMemo(() => [...PRESET_SITES], []);
 
   function handleLoad(url: string) {
     const raw = url.trim();
     if (!raw) return;
+
+    // The study is not a document, so it is handled before anything that
+    // announces a render or resolves a path: it leaves the reading app for
+    // the operator's control screen, which picks the participant itself.
+    // A full navigation because App.tsx resolves study mode from the query
+    // string once at mount — the runner is a different program, not a panel.
+    if (raw === STUDY_TOKEN) {
+      setAnnouncement("Opening the evaluation study control screen.");
+      const target = new URL(window.location.href);
+      target.search = "";
+      target.searchParams.set("study", "1");
+      window.location.href = target.href;
+      return;
+    }
+
     const site = cells.find((c) => c.url === raw);
     setAnnouncement(
       `Loading ${site?.title ?? raw} in ${settings.viewMode} view. Rendering in 3D.`,
@@ -1589,7 +1664,11 @@ export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
             <SiteCard
               key={site.id}
               site={site}
-              pose={i < PRESET_SITES.length ? cardPose(i) : utilityPose()}
+              pose={
+                i < PRESET_SITES.length
+                  ? cardPose(i)
+                  : utilityPose(i - PRESET_SITES.length)
+              }
               width={i < PRESET_SITES.length ? CARD_W : UTIL_W}
               height={i < PRESET_SITES.length ? CARD_H : UTIL_H}
               variant={i < PRESET_SITES.length ? "card" : "strip"}
@@ -1680,9 +1759,14 @@ export function HomeScreen({ onLoad, loading }: HomeScreenProps) {
           targets={cells.map((site) => ({
             id: site.id,
             label: site.title,
-            hint: isLocalPage(site.url)
-              ? site.subtitle
-              : `${site.subtitle}. ${site.url.replace(/^https?:\/\//, "")}`,
+            // A sentinel is an implementation detail, not something to read
+            // out: the local pages already suppress theirs, and the study —
+            // which is not a URL at all — would otherwise announce
+            // "__study__" as its address.
+            hint:
+              isLocalPage(site.url) || site.url === STUDY_TOKEN
+                ? site.subtitle
+                : `${site.subtitle}. ${site.url.replace(/^https?:\/\//, "")}`,
             onActivate: () => handleLoad(site.url),
           }))}
           focusIndex={focusIndex}
